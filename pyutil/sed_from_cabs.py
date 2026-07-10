@@ -18,8 +18,8 @@ This module mirrors the conventions of the Fortran sed_astrodust_mod
 shipped with this repository: lambda in microns, C_abs in cm^2,
 J_lambda in erg s^-1 cm^-2 um^-1 sr^-1 (Mathis-ISRF compatible), and
 the returned lambda * I_lambda is in erg s^-1 sr^-1 per unit grain
-(the caller multiplies by `dn_grain / dN_H` to get the per-H-atom
-emission HD23 reports).
+(the caller multiplies by `dn_grain / dN_H` to get the emission per H
+atom that HD23 reports).
 
 Why a Python copy: this is the "downstream" form of the dust SED
 solver — the function signature takes only what a 3D-RT cell needs to
@@ -43,7 +43,7 @@ from typing import Tuple
 # ---------------------------------------------------------------------------
 
 def planck_lambda(lam_um: np.ndarray, T: float) -> np.ndarray:
-    """B_lambda(T) at lam_um, in W m^-3 sr^-1 (SI per-um is W m^-2 m^-1 sr^-1).
+    """B_lambda(T) at lam_um, in W m^-3 sr^-1 (SI, per unit wavelength: W m^-2 m^-1 sr^-1).
 
     Mirrors the Fortran `radfield :: bbody` (SI). Multiply by 10 to get CGS
     (erg s^-1 cm^-3 sr^-1 per cm wavelength).
@@ -105,7 +105,7 @@ def sed_equilibrium(lam_um: np.ndarray,
         Equilibrium temperature [K].
     lamI_lam : np.ndarray
         lambda * I_lambda in erg/s/sr per grain on the input lam_um grid.
-        Convert to per-H units by multiplying by `dn_grain/dN_H`.
+        Convert to units per H atom by multiplying by `dn_grain/dN_H`.
 
     The 1e-3 factor converts the mixed-unit product
     `lam_um * Cabs[cm^2] * B_lam[SI W/m^3/sr]` into `erg/s/sr per grain`

@@ -43,7 +43,7 @@ module qpah
    public :: nc_coeff, nc_integer
    real(kind=wp), save :: nc_coeff   = 417.0d0
    logical,       save :: nc_integer = .false.
-   ! Toggle for empirical per-mode sigma rescaling tuned to HD23
+   ! Toggle for empirical mode-by-mode sigma rescaling tuned to HD23
    ! PAH_irem.dat. Default .false. preserves the DL07 Table 1 values
    ! (with the Seon sigma_Ion(4) typo correction already in place).
    ! When .true., the multiplicative factors sigma_tune_neu(30) and
@@ -57,11 +57,11 @@ module qpah
 
    integer, parameter :: NMODE_PUB = 30
    logical, save :: use_tuned_pah = .false.
-   ! Per-mode multiplicative correction factors; default 1.0 (no change).
+   ! Multiplicative correction factor for each mode; default 1.0 (no change).
    ! Set by main_astrodust.f90 or by external tuner before sed_solve.
    real(kind=wp), save :: sigma_tune_neu(NMODE_PUB) = 1.0_wp
    real(kind=wp), save :: sigma_tune_ion(NMODE_PUB) = 1.0_wp
-   ! Per-mode multiplier for the Drude width gamma_j (DL07 Table 1
+   ! Multiplier for the Drude width gamma_j of each mode (DL07 Table 1
    ! column 3). Active only when use_tuned_pah=.true. Default 1.0.
    real(kind=wp), save :: gamma_tune(NMODE_PUB)    = 1.0_wp
    ! xi_gra(a) blending parameters (HD23 eq.16):
@@ -132,7 +132,7 @@ contains
          CPAH = CPAH + 3.5d0 * 10d0**(-19d0 - 1.45d0/x) * exp(-0.1d0*x*x)
       end if
 
-      ! C^PAH is per-C-atom cross section [cm^2]; convert to Q via Q = C·Nc/(πa²).
+      ! C^PAH is the cross section per C atom [cm^2]; convert to Q via Q = C·Nc/(πa²).
       Qabs_pah = CPAH * Nc / (pi * (radius*1d-4)**2)
 
       ! DL07 eq. 5-7 / HD23 eq. 15-16: blend with random-orient graphite Q.

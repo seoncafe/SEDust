@@ -178,7 +178,7 @@ program main_pT_compare
 
       ! Adaptive DA85 cutoff (same prescription as mc_sed_loop):
       ! lam_c = hc / (DT_THRESHOLD * Teq * C(Teq)), so photons whose
-      ! per-event jump dT = (hc/lam)/C(Teq) > DT_THRESHOLD * Teq remain
+      ! jump dT = (hc/lam)/C(Teq) > DT_THRESHOLD * Teq per event remain
       ! stochastic, the rest fold into H_cont.  This keeps the trajectory
       ! near Teq for very large grains and prevents the CMB collapse seen
       ! with a static lam_c=1000 um.

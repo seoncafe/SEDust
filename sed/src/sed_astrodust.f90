@@ -54,7 +54,7 @@ module sed_astrodust_mod
    public :: dust_model_t, build_astrodust, build_dl07, build_zubko, dust_emission
    public :: build_from_files, dust_emission_single_teq
    public :: NLAM, NA, NT, lam, aeff, T_first, dn_ad, dn_pah, initialized
-   ! Exposed for verification drivers (verify_teq.f90, verify_pah_xsec):
+   ! Exposed so that external drivers can cross-check the optics:
    public :: Cabs, Csca, Cabs_pah, kappB_first, kappB_pah_first
    ! Charge-resolved PAH cross sections and number densities (neutral/cation),
    ! exposed so the MC SED builder can reproduce the same charge blend as
@@ -318,8 +318,8 @@ contains
       call build_kappCMB_pah(); kappCMB_cion = kappCMB_pah
       log_kappB_cneu = log(max(kappB_cneu, tiny(0.0_wp)))
       log_kappB_cion = log(max(kappB_cion, tiny(0.0_wp)))
-      ! Restore the f_ion-blended Cabs_pah/kappB_pah/kappCMB_pah for the
-      ! verification drivers (verify_teq, verify_pah_xsec) that still read them.
+      ! Restore the f_ion-blended Cabs_pah/kappB_pah/kappCMB_pah for any
+      ! external driver that reads them.
       call build_Cabs_pah()
       call build_kappB_pah()
       call build_kappCMB_pah()
@@ -376,7 +376,7 @@ contains
       !                       = lambda_um * Jout * 1e-3
       ! No 4*pi divisor (I_lam from a 1-H column in the optically-thin limit
       ! for an isotropic emitter is already integrated correctly without
-      ! one -- the 4pi cancels between emission isotropy and the per-sr
+      ! one -- the 4pi cancels between emission isotropy and the steradian
       ! denominator of B_lambda).
       lamI_lam_out = lam * Jout * 1.0e-3_wp
 
@@ -663,11 +663,11 @@ contains
 
       integer  :: ir, ii, loc1, loc2, iguard, n_guard_resolve
       integer  :: n_stoch, n_equil_eeq, n_equil_prev, n_equil_fail
-      real(wp) :: Teq, EEQ, del, Tmin_n, Tmax_n
+      real(wp) :: Teq, EEQ, del, Tmin_n, Tmax_n, a_cm_qm
       real(wp), allocatable :: spec(:), P(:), lnP(:)
       real(wp), allocatable :: T(:), H(:), kappB(:)
-      real(wp), allocatable :: Jout_local(:)
-      logical :: Equil, Equil_prev, converged
+      real(wp), allocatable :: Jout_local(:), emission_qm(:)
+      logical :: Equil, Equil_prev, converged, qm_ok
 
       Jout = 0.0_wp
 
@@ -841,18 +841,15 @@ contains
          !$omp&   shared(npop, dn_pop, Cabs_pop, kappB_pop, H_pop, &
          !$omp&          log_H_pop, log_kappB_pop, kappCMB_pop, J_lam, &
          !$omp&          T_first, lam, aeff, grain_type, Jout, NLAM, NT) &
-         !$omp&   private(ir, ii, Teq, EEQ, Equil, converged, &
-         !$omp&           spec, P, lnP, T, H, kappB, Jout_local) &
+         !$omp&   private(ir, ii, Teq, EEQ, Equil, converged, a_cm_qm, qm_ok, &
+         !$omp&           spec, P, lnP, T, H, kappB, Jout_local, emission_qm) &
          !$omp&   reduction(+:n_stoch, n_equil_eeq, n_equil_fail)
          allocate(spec(NLAM), P(NT), lnP(NT), T(NT), H(NT), kappB(NT))
-         allocate(Jout_local(NLAM))
+         allocate(Jout_local(NLAM), emission_qm(NLAM))
          Jout_local = 0.0_wp
          !$omp do schedule(dynamic)
          do ir = 1, npop
             block
-               real(wp) :: a_cm_qm, emission_qm(NLAM)
-               logical  :: qm_ok
-
                if (dn_pop(ir) <= 0.0_wp) cycle
                call calc_Teq(lam, Cabs_pop(:, ir), J_lam, T_first, &
                              kappB_pop(:, ir), Teq)
@@ -948,15 +945,17 @@ contains
       real(wp), intent(out) :: lamI_stages(:,:)    ! (NLAM, 2)
       real(wp), intent(out) :: lamI_pah(:)         ! (NLAM)
 
-      integer  :: total_grains, iw, itype, ir, ii
+      integer  :: total_grains, iw, itype, ir, ii, out_idx
       integer  :: n_stoch, n_equil
-      real(wp) :: Teq, EEQ, a_cm_qm, dn_ir
+      real(wp) :: Teq, EEQ, a_cm_qm, dn_ir, kCMBg
       logical  :: Equil, qm_ok, converged
       character(len=3) :: gtype
 
       ! Thread-private arrays
       real(wp), allocatable :: spec(:), P(:), lnP(:), T(:), H_w(:), kappB_w(:)
       real(wp), allocatable :: Jout_local(:,:)    ! (NLAM, 3)
+      real(wp), allocatable :: emission_qm(:), Cabs_g(:), kappB_g(:)
+      real(wp), allocatable :: Hg(:), logHg(:), logkBg(:)
       real(wp) :: Jout_all(NLAM, 3)
 
       if (.not. initialized) then
@@ -979,20 +978,19 @@ contains
       !$omp&          kappB_cneu, kappB_cion, log_H_pah_first, &
       !$omp&          log_kappB_cneu, log_kappB_cion, kappCMB_cneu, kappCMB_cion) &
       !$omp&   private(iw, itype, ir, ii, Teq, EEQ, Equil, converged, &
-      !$omp&           a_cm_qm, dn_ir, gtype, qm_ok, &
-      !$omp&           spec, P, lnP, T, H_w, kappB_w, Jout_local) &
+      !$omp&           a_cm_qm, dn_ir, gtype, qm_ok, out_idx, kCMBg, &
+      !$omp&           spec, P, lnP, T, H_w, kappB_w, Jout_local, &
+      !$omp&           emission_qm, Cabs_g, kappB_g, Hg, logHg, logkBg) &
       !$omp&   reduction(+:n_stoch, n_equil)
       allocate(spec(NLAM), P(NT), lnP(NT), T(NT), H_w(NT), kappB_w(NT))
       allocate(Jout_local(NLAM, 3))
+      allocate(emission_qm(NLAM), Cabs_g(NLAM), kappB_g(NT))
+      allocate(Hg(NT), logHg(NT), logkBg(NT))
       Jout_local = 0.0_wp
 
       !$omp do schedule(dynamic)
       do iw = 1, total_grains
          block
-            real(wp) :: emission_qm(NLAM)
-            real(wp) :: Cabs_g(NLAM), kappB_g(NT), Hg(NT), logHg(NT), logkBg(NT), kCMBg
-            integer  :: out_idx
-
             itype = (iw - 1) / NA + 1    ! 1=S1, 2=S2, 3=PAH-neutral, 4=PAH-cation
             ir    = mod(iw - 1, NA) + 1   ! grain index within type
 
@@ -1899,7 +1897,7 @@ contains
    ! populations through the untouched sed_grain_loop, sums per output
    ! channel, applies the induced factor (if enabled) and the HD23 unit
    ! convention. lamI_total(NLAM) is the summed SED; optional
-   ! lamI_chan(NLAM, n_channel) returns the per-channel SEDs.
+   ! lamI_chan(NLAM, n_channel) returns the SED of each channel.
    ! REQUIRES: m is the most recently built model (its grids == the globals).
    subroutine dust_emission(m, J_lam, lamI_total, lamI_chan)
       type(dust_model_t), intent(in)  :: m

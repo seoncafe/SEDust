@@ -62,7 +62,7 @@ def plot_pop(files, title, outpath, ymin=1e-6):
     axes = axes.flatten()
     for i, fpath in enumerate(files):
         T_gd, P_gd_bin, T_mc, dPdlnT_mc, lbl = load_one(fpath)
-        # Convert GD per-bin probability to dP/dlnT.  T_first is log-spaced
+        # Convert the GD probability in each bin to dP/dlnT.  T_first is log-spaced
         # so dlnT_i = (1/2) ln(T_{i+1}/T_{i-1}).
         lnT = np.log(np.maximum(T_gd, 1e-30))
         dlnT = np.zeros_like(T_gd)

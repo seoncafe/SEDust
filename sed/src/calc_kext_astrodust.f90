@@ -21,7 +21,7 @@ program calc_kext_astrodust
    !                      and the astrodust grains carry all the scattering
    !                      and the asymmetry.
    !
-   ! Per-H size integrals (dn from size_distribution.dat are already binned):
+   ! Size integrals per H atom (dn from size_distribution.dat are already binned):
    !   C_abs/H = sum_a [ dn_Ad Cabs_Ad + dn_cneu Cabs_neu + dn_cion Cabs_ion ]
    !   C_sca/H = sum_a   dn_Ad Csca_Ad
    !   C_ext/H = C_abs/H + C_sca/H

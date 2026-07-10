@@ -405,9 +405,9 @@ contains
 
    !====================================================================
    ! 9b. Thermal cooling integrand (THERM_COOLING_FUNCT)
-   !     Thermal cooling integrand, following Draine's method.
+   !     Follows Draine's method.
    !
-   !     Same as stat_cooling_funct but divided by the Planck thermal
+   !     The photon-emission integrand divided by the Planck thermal
    !     factor (exp(E/kT) - 1). This is the 'dbdis' (thermal-discrete)
    !     method of DL01 Section 8.2: the downward transition rate is set
    !     by the thermal Planck emission at temperature T_i of the upper bin,
@@ -478,8 +478,8 @@ contains
 
    !====================================================================
    ! 9c. Intrabin thermal cooling integrand
-   !     Intrabin thermal cooling integrand, following Draine's method.
-   !     Same as intrabin_stat_cooling_funct but with 1/(exp(E/kT)-1).
+   !     Follows Draine's method: the intrabin emission integrand
+   !     weighted by 1/(exp(E/kT)-1).
    !====================================================================
    function intrabin_therm_cooling_funct(e_ph, dui, t_upper, nisrf, isrf_wl, &
                                           isrf, cabs_arr) result(cf)
@@ -1369,7 +1369,6 @@ contains
    !====================================================================
    ! 14g. T_FROM_U_BISECT -- invert U(T) -> T for enthalpy bin labeling.
    !      Uses our Debye enthalpy_DL01 via bisection.
-   !      (Kept for reference; production now uses T_from_U_modes.)
    !      U_target is in erg; returned T is in K.
    !====================================================================
    function T_from_U_bisect(U_target, grain_type, natom, a_cm) result(T)
@@ -2075,8 +2074,8 @@ contains
             ija = 0
             call dense_to_sparse(amatrix1, nstate1, SPARSE_THRESH, nmax, sa, ija)
 
-            ! BiCG solve with convergence enforcement
-            ! (vsg_td_emission_v7.f lines 1156-1207): grow ITMAX until
+            ! BiCG solve with convergence enforcement:
+            ! grow ITMAX until
             ! err <= tol (warm start), then verify the row residuals of
             ! the linear system; rerun while any row with P > 1e-10 has
             ! |residual|/|A(1,1)| > 1e-6. The original port accepted the

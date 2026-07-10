@@ -54,7 +54,7 @@ def load_one(path):
 
 
 def gd_dpdlnt(T_gd, P_per_bin):
-    """Convert GD per-bin probability into dP/dlnT on T_first."""
+    """Convert the GD probability in each bin into dP/dlnT on T_first."""
     lnT = np.log(np.maximum(T_gd, 1e-30))
     dlnT = np.empty_like(T_gd)
     dlnT[1:-1] = 0.5 * (lnT[2:] - lnT[:-2])

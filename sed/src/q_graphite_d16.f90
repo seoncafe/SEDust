@@ -20,7 +20,7 @@ module q_graphite_d16_mod
    !                       the final line which holds the remainder.
    !   then              : Qext block, Qsca block (we ignore them).
    !
-   ! jori convention (Mishchenko / spot_check_pol.py):
+   ! jori convention (Mishchenko):
    !   1 = random-orientation average  <- what ksi-blend wants
    !   2 = k perp a, E parallel to a   (E along symmetry axis)
    !   3 = k perp a, E perp a

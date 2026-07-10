@@ -8,8 +8,8 @@ module q_silicate_mod
    ! (unlike graphite). Mirrors the structure of q_graphite_mod but
    ! reads (n, k) directly from the index table.
    !
-   ! Reads the Draine (2003) silicate dielectric function:
-   ! calculateQ_v2.f90 (silicate Mie call).
+   ! Reads the Draine (2003) silicate dielectric function and drives the
+   ! silicate Mie call.
 
    use constants, only: wp
    use mathlib,   only: interp

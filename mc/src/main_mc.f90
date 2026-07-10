@@ -139,7 +139,7 @@ program main_mc
    close(u)
 
    if (record_trajectory) then
-      ! ---- write the per-event boundary record (T_pre, T_post) ----
+      ! ---- write the boundary record of each event (T_pre, T_post) ----
       open(newunit=u, file=trim(out_prefix)//'_evt.dat', status='replace', action='write')
       write(u, '(a)') '# columns: t[s]  T_pre[K]  T_post[K]  dt_event[s]'
       write(u, '(a)') '#   T_pre  : cooling-segment endpoint (just BEFORE the photon jump)'

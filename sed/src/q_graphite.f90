@@ -5,8 +5,8 @@ module q_graphite_mod
    ! C_abs(graphite, a) that the PAH transition function ξ_gra(a) blends
    ! into the PAH cross section for a > 50 Å.
    !
-   ! Reads the Draine (2003) graphite dielectric functions:
-   ! calculateQ_v2.f90 (the Car0/Car1 branch). Uses the D03 graphite
+   ! Reads the Draine (2003) graphite dielectric functions and computes
+   ! the Car0/Car1 cross sections. Uses the D03 graphite
    ! refractive-index tables index_CpaD03 (E ∥ c) and index_CpeD03
    ! (E ⊥ c), with the size-dependent free-electron contribution
    ! computed analytically per radius. Random-orientation average is
@@ -178,7 +178,7 @@ contains
       ! Random-orientation-averaged full Mie output for a graphite sphere.
       ! Orientation average is (1/3) E||c + (2/3) E_|_c applied to each
       ! efficiency; g is averaged scattering-weighted (the physically correct
-      ! combination, matching Qext_new/calculateQ1.f90). agrain, lambda: um.
+      ! combination). agrain, lambda: um.
       real(wp), intent(in)  :: agrain, lambda
       real(wp), intent(out) :: Qext, Qsca, Qabs, gsca
       real(wp) :: x, n_pa, k_pa, n_pe, k_pe

@@ -6,8 +6,8 @@ module fallback
    !
    !   - small  x = 2 pi a_eff / lambda  (x < x_small_lim, default 0.1):
    !       Rayleigh-limit polarizability for an oblate/prolate spheroid,
-   !       random-orientation averaged. Ported from Draine 1992
-   !       opt/src/sphero.f. Closes a ~6% systematic vs HD23 release at
+   !       random-orientation averaged, following Draine (1992).
+   !       Closes a ~6% systematic vs HD23 release at
    !       long wavelengths that an isotropic Mie sphere would leave open.
    !
    !   - large x (x > x_large_lim, default 50):
@@ -31,14 +31,14 @@ contains
 
    subroutine fallback_small_x(a_eff, lam, n_r, k_i, eps_ba, qext, qsca, walb, asymm)
       ! Spheroid Rayleigh polarizability + random-orientation average.
-      ! Port of Draine 1992 opt/src/sphero.f to F90 / double precision.
+      ! Follows Draine (1992), in F90 / double precision.
       !
       ! `eps_ba` follows the Mishchenko convention used elsewhere in this
       ! tree (b/a = horizontal axis / rotational axis):
       !   eps_ba > 1  -> oblate  (symmetry axis short)
       !   eps_ba < 1  -> prolate (symmetry axis long)
       !   eps_ba = 1  -> sphere  (degenerate, returns Mie limit)
-      ! sphero.f's AXRAT (= symm/equator) is the inverse of eps_ba.
+      ! Draine's AXRAT (= symm/equator) is the inverse of eps_ba.
       !
       ! Random-orientation average over isotropic incident polarization:
       !   <Q> = (Q_a + 2*Q_b) / 3

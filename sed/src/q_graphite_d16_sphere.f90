@@ -1,7 +1,7 @@
 module q_graphite_d16_sphere_mod
    ! D16 turbostratic graphite (Draine 2016, MG EMT) on *spheres*.
-   ! Reads the Princeton page's "callqcomp.out_D16MGemt.gz" content
-   ! that we keep decompressed as data/dielectric/q_D16graphite.dat.
+   ! Reads the content of data/dielectric/callqcomp_D16MGemt.gz, which we
+   ! keep decompressed as data/dielectric/q_D16graphite.dat.
    !
    ! Used to isolate the sphere-vs-spheroid contribution in the
    ! qpah.f90 xi-blend: comparing this against q_graphite_d16_mod

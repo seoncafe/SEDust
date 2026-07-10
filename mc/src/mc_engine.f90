@@ -509,7 +509,7 @@ contains
          if (T1 < T_FLOOR) T1 = T_FLOOR
 
          ! Sub-sample the exponential trajectory to (a) accumulate the
-         ! per-bin histogram weight and (b) estimate the emission integral.
+         ! histogram weight of each bin and (b) estimate the emission integral.
          call accumulate_step(g, T0, T1, T_eq_loc, slope, dts, &
                               hist_weight, lT_min, dlnT_bin, a_cm, &
                               e_emit_step_now)
@@ -528,8 +528,8 @@ contains
 
    subroutine accumulate_step(g, T0, T1, T_eq_loc, slope, dts, &
                               hist_weight, lT_min, dlnT_bin, a_cm, e_emit_out)
-      ! Sub-sample the cooling step in time, assigning per-bin histogram
-      ! weight and accumulating the emission integral over the step.
+      ! Sub-sample the cooling step in time, assigning histogram weight to
+      ! each bin and accumulating the emission integral over the step.
       ! Returns the step's emission so the caller can apply the
       ! energy-conservation correction.
       type(mc_grain_t), intent(in)    :: g

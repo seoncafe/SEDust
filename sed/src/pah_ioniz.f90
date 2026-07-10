@@ -12,14 +12,15 @@ module pah_ioniz_mod
    ! (CNM 43% + WNM 43% + WIM 14%), with the ISRF scaled to U*MMP83.
    ! This reproduces PAH_CHARGING_DISM(A,U,FRAC_IONIZATION).
    !
-   ! Source routines ported (call tree from PAH_CHARGING_DISM):
-   !    pah_ionizfract.f : PAH_CHARGING_DISM  -> pah_ionfrac (this module)
-   !    charge.f         : CHARGE             -> charge (subroutine)
-   !                       DJPEDE, DGPEDE     -> djpede, dgpede (integrands)
-   !    pethresholds.f   : THRESHOLDS         -> thresholds
-   !    peyield.f        : PEYIELD            -> peyield
-   !    dqg32.f          : DQG32              -> dqg32 (32-pt Gauss)
-   !    radfld.f         : RADFLD (MODE=4)    -> radfld_mmp
+   ! This module follows Draine's grain-charging method (WD01b). Its
+   ! procedures correspond to that method's steps as follows:
+   !    PAH_CHARGING_DISM  -> pah_ionfrac (this module)
+   !    CHARGE             -> charge (subroutine)
+   !    DJPEDE, DGPEDE     -> djpede, dgpede (integrands)
+   !    THRESHOLDS         -> thresholds
+   !    PEYIELD            -> peyield
+   !    DQG32              -> dqg32 (32-pt Gauss)
+   !    RADFLD (MODE=4)    -> radfld_mmp
    !
    ! The Fortran-77 PEYIELD calls INDEX(...) only to obtain the graphite
    ! imaginary refractive index Im(n) for the small-particle yield

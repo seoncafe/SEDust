@@ -17,7 +17,7 @@ program calc_kext_dl07
    !                  is negligible (Rayleigh), so graphite carries it --
    !                  the standard Draine/DL07 treatment.
    !
-   ! Per-H integrals over the WD01 size distribution (index 7 = MW R_V=3.1,
+   ! Integrals over the WD01 size distribution, per H atom (index 7 = MW R_V=3.1,
    ! b_C=6e-5, the "60" model), with the Draine 2003 x0.93 abundance
    ! reduction ON to match the reference file:
    !   C_X/H   = sum_a (dn/da) pi a^2 Q_X  a dln(a)        [cm^2 / H]
