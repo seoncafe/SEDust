@@ -1,12 +1,16 @@
 program use_dustlib
    ! Minimal example of an EXTERNAL Fortran code (a 3D RT driver) linking the
    ! dust-emission library. It is NOT part of the sed build -- it is compiled
-   ! separately against libdust.a + the .mod search path, exactly as an RT
-   ! code would:
+   ! separately against libsedust.a + the .mod search path, exactly as an RT
+   ! code would.  Build and run it from sed/, because the data paths below are
+   ! relative to that directory:
    !
-   !   gfortran -I<sed> use_dustlib.f90 <sed>/libdust.a -fopenmp -o use_dustlib.x
+   !   cd sed
+   !   make libsedust.a
+   !   gfortran -I. rt_example/use_dustlib.f90 libsedust.a -fopenmp -o use_dustlib.x
+   !   ./use_dustlib.x
    !
-   ! It loads a model once, then computes dust emission for a cell's field.
+   ! It loads a model once, then computes dust emission for one cell's field.
    use constants, only: wp
    use radfield,  only: J_Mathis
    use dust_lib,  only: dust_model_t, build_astrodust, build_dl07, build_zubko, &
@@ -27,7 +31,7 @@ program use_dustlib
    call dust_emission(m, J, total, chan)
 
    ipk = maxloc(total, 1)
-   print '(a)',            ' === external RT link to libdust.a: OK ==='
+   print '(a)',            ' === external RT link to libsedust.a: OK ==='
    print '(a,a,a,i0,a,i0)', '   model=', trim(m%name), '  NLAM=', dust_nlam(m), &
                             '  n_channel=', dust_n_channel(m)
    print '(a,f7.1,a,es12.5)', '   SED peak at lam=', m%lam(ipk), ' um, lamI/NH=', total(ipk)
