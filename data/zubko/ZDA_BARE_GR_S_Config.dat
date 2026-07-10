@@ -1,0 +1,90 @@
+# Zubko, Dwek, & Arendt 2004, ApJS, 152, 211
+# Bare grains, PAHs, Graphite and Silicates. 
+# Size distributions defined by: 
+# log g(a) = c0 + b0*log(a) 
+#               - b1*|log(a/a1)|^m1 
+#               - b2*|log(a/a2)|^m2
+#               - b3*|a-a3|^m3
+#               - b4*|a-a4|^m4
+# with f(a) = A*g(a) and Int_(a_min)^(a_max) g(a) da = 1
+# 
+# NOTE: Size distributions are defined such that [g(a)] = um^-1
+#       Make sure you account for that if you have different 
+#       units (cough, cgs, cough). 
+[Model]
+Number of Components=3
+
+[Component 1]
+# Polycylic Aromatic Hydrocarbons.
+Cross Sections=PAH_28_1201_neu
+Calorimetry=Graphitic_Calorimetry_1000.dat
+Size Definition Type=FILE
+Size Definition File=/home/misselt/Code/cpp/dirty/ScratchCode/ZDA_BARE_GR_S_SzDist_PAH.dat
+Size Distribution=ZDA
+A=2.227433e-7
+a_min=0.00035
+a_max=0.005
+c0=-8.02895
+b0=-3.45764
+b1=1183.96
+a1=1.0
+m1=-8.20551
+#b2=NULL
+#a2=NULL
+#m2=NULL 
+b3=1.0e24
+a3=-5.29496e-3
+m3=12.0146
+#b4=NULL
+#a4=NULL
+#m4=NULL
+
+[Component 2] 
+# Graphite
+Cross Sections=Gra_121_1201
+Calorimetry=Graphitic_Calorimetry_1000.dat
+Size Definition Type=FILE
+Size Definition File=/home/misselt/Code/cpp/dirty/ScratchCode/ZDA_BARE_GR_S_SzDist_Gra.dat
+Size Distribution=ZDA
+A=1.905816e-7
+a_min=0.00035
+a_max=0.33
+c0=-9.86
+b0=-5.02082
+b1=5.81215e-3
+a1=0.415861
+m1=4.63229
+#b2=NULL
+#a2=NULL
+#m2=NULL
+b3=1125.02
+a3=0.160344
+m3=3.69897
+b4=1126.02
+a4=0.160501
+m4=3.69967
+
+[Component 3]
+# Astronomical Silicates
+Cross Sections=suvSil_121_1201
+Calorimetry=Silicate_Calorimetry_1000.dat
+Size Definition Type=FILE
+Size Definition File=/home/misselt/Code/cpp/dirty/ScratchCode/ZDA_BARE_GR_S_SzDist_Sil.dat
+Size Distribution=ZDA
+A=1.471288e-7
+a_min=0.00035
+a_max=0.37
+c0=-8.47091
+b0=-3.68708
+b1=2.37316e-5
+a1=7.64943e-3
+m1=22.5489
+#b2=NULL
+#a2=NULL
+#m2=NULL
+b3=2961.28
+a3=0.480229
+m3=12.1717
+#b4=NULL
+#a4=NULL
+#m4=NULL

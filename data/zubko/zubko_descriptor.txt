@@ -1,0 +1,8 @@
+# Zubko (ZDA 2004) BARE-GR-S model for build_from_files.
+# Size distribution from the tabulated SzDist files (the benchmark grid);
+# optics from the DustEM Q-tables; enthalpy from the calorimetry tables.
+# pop: <grain_type> <channel> <optics_file> <dnda_file> <calor_file> <rho(0=use file)>
+name = zubko_bare_gr_s
+pop: pah 1 PAH_28_1201_neu.dat   ZDA_BARE_GR_S_SzDist_PAH.dat Graphitic_Calorimetry_1000.dat 0.0
+pop: gra 2 Gra_121_1201.dat      ZDA_BARE_GR_S_SzDist_Gra.dat Graphitic_Calorimetry_1000.dat 0.0
+pop: sil 3 suvSil_121_1201.dat   ZDA_BARE_GR_S_SzDist_Sil.dat Silicate_Calorimetry_1000.dat  0.0

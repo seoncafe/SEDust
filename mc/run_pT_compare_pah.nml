@@ -1,0 +1,14 @@
+&pT_compare_input
+  qtable_path   = '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat'
+  sizedist_path = '../data/release/size_distribution.dat'
+  U_isrf        = 1.585
+  ad_stage      = 'S2'
+  pop           = 'pah'
+  a_um_list     = 0.0005, 0.001, 0.003, 0.01,
+  N_events      = 500000
+  base_seed     = 23456
+  out_prefix    = 'output/pT_compare_pah'
+  NT_init       = 250
+  T_lo          = 1.0
+  T_hi          = 3000.0
+/

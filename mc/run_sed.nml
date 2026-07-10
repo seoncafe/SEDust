@@ -1,0 +1,12 @@
+&mc_sed_input
+  qtable_path   = '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat'
+  sizedist_path = '../data/release/size_distribution.dat'
+  U_isrf        = 1.585
+  ad_stage      = 'S2'
+  N_events      = 50000
+  base_seed     = 12345
+  out_prefix    = 'output/mc_sed_S2_U1.585'
+  NT_init       = 250
+  T_lo          = 1.0
+  T_hi          = 3000.0
+/
