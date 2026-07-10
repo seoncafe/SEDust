@@ -107,4 +107,4 @@ Rebuild any of them with `pdflatex <name>.tex` (run twice for cross-references).
 
 ---
 
-Last updated: 2026-07-10 17:37
+Last updated: 2026-07-10 17:41
