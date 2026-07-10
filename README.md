@@ -104,3 +104,7 @@ Rebuild any of them with `pdflatex <name>.tex` (run twice for cross-references).
 - Mishchenko, M. I., & Travis, L. D. 1998, JQSRT, 60, 309
 - Draine, B. T., & Hensley, B. S. 2021, ApJ, 909, 94
 - Hensley, B. S., & Draine, B. T. 2023, ApJ, 948, 55
+
+---
+
+Last updated: 2026-07-10 17:13
