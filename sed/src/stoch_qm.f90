@@ -38,9 +38,15 @@ module stoch_qm_mod
    public :: qm_method        ! 'dbdis' (thermal-discrete, production) or
                               ! 'dbcon' (thermal-continuous / GD
                               ! nearest-neighbour collapse)
+   public :: qm_verbose       ! single-grain stderr diagnostics on/off
 
    ! Method selector (set once before solving). Default = validated dbdis path.
    character(len=5) :: qm_method = 'dbdis'
+
+   ! Diagnostic-output toggle. Default .true. so the CLI drivers keep the
+   ! single-grain stderr lines; dust_emission sets it from the model's
+   ! `verbose` field so the library path stays silent by default.
+   logical, save :: qm_verbose = .true.
 
    ! Runtime-settable convention knobs (Draine's production settings: 500 bins, full
    ! 2500-point ISRF grid -- no downsampling).
@@ -914,15 +920,19 @@ contains
    !     Biconjugate-gradient sparse solver.
    !====================================================================
 
-   ! Convert dense matrix to sparse row-indexed storage
-   subroutine dense_to_sparse(a, n, thresh, nmax, sa, ija)
+   ! Convert dense matrix to sparse row-indexed storage. ok=.false. signals a
+   ! storage overflow (more off-diagonal entries than nmax); the caller then
+   ! treats the grain as unsolved and falls back to the GD solver.
+   subroutine dense_to_sparse(a, n, thresh, nmax, sa, ija, ok)
       implicit none
       integer,  intent(in)  :: n, nmax
       real(wp), intent(in)  :: a(n, n), thresh
       real(wp), intent(out) :: sa(nmax)
       integer,  intent(out) :: ija(nmax)
+      logical,  intent(out) :: ok
       integer :: i, j, k
 
+      ok = .true.
       ! Diagonal
       do j = 1, n
          sa(j) = a(j, j)
@@ -934,8 +944,10 @@ contains
             if (abs(a(i, j)) >= thresh .and. i /= j) then
                k = k + 1
                if (k > nmax) then
-                  write(*,'(a,i0,a,i0)') 'stoch_qm: sparse overflow k=', k, ' nmax=', nmax
-                  stop 1
+                  if (qm_verbose) &
+                     write(*,'(a,i0,a,i0)') 'stoch_qm: sparse overflow k=', k, ' nmax=', nmax
+                  ok = .false.
+                  return
                end if
                sa(k) = a(i, j)
                ija(k) = j
@@ -1900,7 +1912,7 @@ contains
       integer :: nc_pah, nh_pah, nset_qm
       real(wp) :: umin, umax, umaxmin, umaxhi, umaxlo, uminhi, uminlo
       real(wp) :: pmax, term, sum_p, err_bcg, tol_bcg
-      logical  :: refine, bicg_ok
+      logical  :: refine, bicg_ok, sparse_ok
       integer  :: itmax_bcg, n_retry
       integer, parameter :: MAX_BCG_RETRY = 30
       ! Full-resolution CGS arrays for emission computation
@@ -2072,7 +2084,14 @@ contains
             ! Sparse storage
             sa = 0.0_wp
             ija = 0
-            call dense_to_sparse(amatrix1, nstate1, SPARSE_THRESH, nmax, sa, ija)
+            call dense_to_sparse(amatrix1, nstate1, SPARSE_THRESH, nmax, sa, ija, sparse_ok)
+            if (.not. sparse_ok) then
+               ! storage overflow: zero the state so this grain is reported
+               ! unsolved (caller falls back to GD), same as a BiCG failure.
+               pstate1(1:nstate1) = 0.0_wp
+               pstate = 0.0_wp
+               exit
+            end if
 
             ! BiCG solve with convergence enforcement:
             ! grow ITMAX until
@@ -2278,34 +2297,36 @@ contains
       end if
 
       ! Single-grain diagnostic
-      if (solved) then
-         ! Dump transition matrix diagnostics for first small grain
-         block
-            real(wp) :: sum_heat_1, cool_21, p1, p2, pmax_diag
-            integer  :: jpmax_diag
+      if (qm_verbose) then
+         if (solved) then
+            ! Dump transition matrix diagnostics for first small grain
+            block
+               real(wp) :: sum_heat_1, cool_21, p1, p2, pmax_diag
+               integer  :: jpmax_diag
 
-            ! Total heating rate out of bin 1
-            sum_heat_1 = 0.0_wp
-            do i = 2, nstate
-               sum_heat_1 = sum_heat_1 + amatrix(i, 1)
-            end do
-            ! Cooling rate from bin 2 to bin 1
-            cool_21 = amatrix(1, 2)
-            p1 = pstate(1)
-            p2 = pstate(2)
-            pmax_diag = maxval(pstate(1:nstate))
-            jpmax_diag = maxloc(pstate(1:nstate), dim=1)
+               ! Total heating rate out of bin 1
+               sum_heat_1 = 0.0_wp
+               do i = 2, nstate
+                  sum_heat_1 = sum_heat_1 + amatrix(i, 1)
+               end do
+               ! Cooling rate from bin 2 to bin 1
+               cool_21 = amatrix(1, 2)
+               p1 = pstate(1)
+               p2 = pstate(2)
+               pmax_diag = maxval(pstate(1:nstate))
+               jpmax_diag = maxloc(pstate(1:nstate), dim=1)
 
-            write(0,'(a,es9.2,a,i5,a,i3,a,l1,a,i3)') &
+               write(0,'(a,es9.2,a,i5,a,i3,a,l1,a,i3)') &
+                  '  QM grain: a[um]=', a_cm * 1.0d4, &
+                  ' natom=', natom, ' nset=', nset_qm, &
+                  ' ok=', solved, ' jPk=', jpmax_diag
+            end block
+         else
+            write(0,'(a,es9.2,a,i5,a,i3,a,l1)') &
                '  QM grain: a[um]=', a_cm * 1.0d4, &
                ' natom=', natom, ' nset=', nset_qm, &
-               ' ok=', solved, ' jPk=', jpmax_diag
-         end block
-      else
-         write(0,'(a,es9.2,a,i5,a,i3,a,l1)') &
-            '  QM grain: a[um]=', a_cm * 1.0d4, &
-            ' natom=', natom, ' nset=', nset_qm, &
-            ' ok=', solved
+               ' ok=', solved
+         end if
       end if
 
       deallocate(isrf_wl_full, isrf_full, cabs_full)

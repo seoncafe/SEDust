@@ -20,11 +20,12 @@ program run_tmatrix
    !    0    T-matrix converged
    !   10    small-x fallback (BHMIE sphere)
    !   20    large-x fallback (geometric optics)
-   !   1..4  T-matrix returned IERR=1..4 (see tmd_one.f header), then we
-   !         fell back to whichever side x is closer to:
-   !           IERR in 1..4 with x < 1.0    : redirected to small-x fallback
+   !   1..5  T-matrix returned IERR=1..5 (see tmd_one.f header; IERR=5 is
+   !         the Gaussian-quadrature refinement loop failing to converge),
+   !         then we fell back to whichever side x is closer to:
+   !           IERR in 1..5 with x < 1.0    : redirected to small-x fallback
    !                                          (flag = IERR + 10)
-   !           IERR in 1..4 with x >= 1.0   : redirected to large-x fallback
+   !           IERR in 1..5 with x >= 1.0   : redirected to large-x fallback
    !                                          (flag = IERR + 20)
 
    use, intrinsic :: iso_fortran_env, only: real64

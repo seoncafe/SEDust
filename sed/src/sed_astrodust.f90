@@ -37,7 +37,7 @@ module sed_astrodust_mod
    use qpah,                  only: qpah_dl07, qpah_ld01, &
                                     nc_coeff, nc_integer, qpah_use_d03_graphite
    use pah_ld01_mod,          only: q_pah_ld01, use_ld01_pah_xsec
-   use stoch_qm_mod,          only: qm_solve_grain
+   use stoch_qm_mod,          only: qm_solve_grain, qm_verbose
    ! DL07 (silicate + carbonaceous) model support
    use grain_dist_mod,        only: grain_dist_dl07, gd_apply_d03_reduction
    use q_silicate_mod,        only: q_silicate_abs
@@ -79,6 +79,10 @@ module sed_astrodust_mod
    !   'qm'        - energy-space transition-matrix solver
    public :: stoch_method
    public :: gd_photon_cutoff
+   ! Diagnostic-output toggle for the shared grain loop. Default .true. so the
+   ! CLI drivers keep their solver diagnostics; dust_emission sets it from the
+   ! model's `verbose` field so the library path stays silent by default.
+   public :: sed_verbose
 
    real(wp), parameter :: PI    = 3.141592653589793238462643383279502884197d0
    real(wp), parameter :: UM2CM = 1.0e-4_wp
@@ -104,6 +108,9 @@ module sed_astrodust_mod
    ! grain-by-grain narrowing); 'qm' = energy-space transition matrix. Selectable via the
    ! 'draine'/'qm' CLI toggles on the drivers.
    character(len=16), save :: stoch_method = 'heuristic'
+
+   ! Guards the shared grain loop's solver diagnostics (see the public note).
+   logical, save :: sed_verbose = .true.
 
    ! Module state set by sed_init
    integer  :: NLAM = 0, NA = 0, NT = 0
@@ -359,7 +366,7 @@ contains
 
       allocate(Jout(NLAM))
 
-      call sed_grain_loop(NA, dn_ad, Cabs, kappB_first, H_first(:,:,is), &
+      call sed_grain_loop(NA, dn_ad, aeff, Cabs, kappB_first, H_first(:,:,is), &
                           log_H_first(:,:,is), log_kappB_first, kappCMB, &
                           J_lam, 'sil', Jout)
 
@@ -407,12 +414,12 @@ contains
       Jout = 0.0_wp
       do icharge = 0, 1
          if (icharge == 0) then
-            call sed_grain_loop(NA, dn_cneu, Cabs_cneu, kappB_cneu, &
+            call sed_grain_loop(NA, dn_cneu, aeff, Cabs_cneu, kappB_cneu, &
                                 H_pah_first, log_H_pah_first, &
                                 log_kappB_cneu, kappCMB_cneu, &
                                 J_lam, 'pah', Jout_q)
          else
-            call sed_grain_loop(NA, dn_cion, Cabs_cion, kappB_cion, &
+            call sed_grain_loop(NA, dn_cion, aeff, Cabs_cion, kappB_cion, &
                                 H_pah_first, log_H_pah_first, &
                                 log_kappB_cion, kappCMB_cion, &
                                 J_lam, 'pah', Jout_q)
@@ -603,7 +610,7 @@ contains
       allocate(Jout_s(NLAM), Jout_c(NLAM), Jout_q(NLAM))
 
       ! Silicate population
-      call sed_grain_loop(NA, dn_ad, Cabs, kappB_first, H_first(:,:,1), &
+      call sed_grain_loop(NA, dn_ad, aeff, Cabs, kappB_first, H_first(:,:,1), &
                           log_H_first(:,:,1), log_kappB_first, kappCMB, &
                           J_lam, 'sil', Jout_s)
 
@@ -620,7 +627,7 @@ contains
          call build_kappB_pah()                 ! reads Cabs_pah -> kappB_pah_first
          log_kappB_pah_first = log(max(kappB_pah_first, tiny(0.0_wp)))
          call build_kappCMB_pah()               ! reads Cabs_pah -> kappCMB_pah
-         call sed_grain_loop(NA, dn_pah, Cabs_pah, kappB_pah_first, &
+         call sed_grain_loop(NA, dn_pah, aeff, Cabs_pah, kappB_pah_first, &
                              H_pah_first, log_H_pah_first, &
                              log_kappB_pah_first, kappCMB_pah, &
                              J_lam, 'pah', Jout_q)
@@ -646,11 +653,12 @@ contains
    ! look-ahead T-window narrowing based on the module variable
    ! stoch_method.
    ! =====================================================================
-   subroutine sed_grain_loop(npop, dn_pop, Cabs_pop, kappB_pop, H_pop, &
+   subroutine sed_grain_loop(npop, dn_pop, aeff_pop, Cabs_pop, kappB_pop, H_pop, &
                               log_H_pop, log_kappB_pop, kappCMB_pop, &
                               J_lam, grain_type, Jout)
       integer,          intent(in)  :: npop
       real(wp),         intent(in)  :: dn_pop(:)          ! (npop)
+      real(wp),         intent(in)  :: aeff_pop(:)        ! (npop) [um] radii of this population
       real(wp),         intent(in)  :: Cabs_pop(:,:)      ! (NLAM, npop)
       real(wp),         intent(in)  :: kappB_pop(:,:)     ! (NT, npop)
       real(wp),         intent(in)  :: H_pop(:,:)         ! (NT, npop)
@@ -731,7 +739,7 @@ contains
          !$omp end critical
          deallocate(spec, P, lnP, T, H, kappB, Jout_local)
          !$omp end parallel
-         write(*,'(a,i4,a,i4,a,i4,a)') &
+         if (sed_verbose) write(*,'(a,i4,a,i4,a,i4,a)') &
             '   [Draine narrowing: stoch=', n_stoch, ' eeq_gate=', n_equil_eeq, &
             ' fail_to_eq=', n_equil_fail, ']'
 
@@ -829,7 +837,7 @@ contains
             Equil_prev = Equil
          end do
          deallocate(spec, P, lnP, T, H, kappB)
-         write(*,'(a,i4,a,i4,a)') '   [heuristic: stoch=', n_stoch, &
+         if (sed_verbose) write(*,'(a,i4,a,i4,a)') '   [heuristic: stoch=', n_stoch, &
             ' guard_resolves=', n_guard_resolve, ']'
 
       case ('qm')
@@ -838,9 +846,9 @@ contains
          ! so the loop is OpenMP-parallelizable.
          n_stoch = 0; n_equil_eeq = 0; n_equil_fail = 0
          !$omp parallel default(none) &
-         !$omp&   shared(npop, dn_pop, Cabs_pop, kappB_pop, H_pop, &
+         !$omp&   shared(npop, dn_pop, aeff_pop, Cabs_pop, kappB_pop, H_pop, &
          !$omp&          log_H_pop, log_kappB_pop, kappCMB_pop, J_lam, &
-         !$omp&          T_first, lam, aeff, grain_type, Jout, NLAM, NT) &
+         !$omp&          T_first, lam, grain_type, Jout, NLAM, NT) &
          !$omp&   private(ir, ii, Teq, EEQ, Equil, converged, a_cm_qm, qm_ok, &
          !$omp&           spec, P, lnP, T, H, kappB, Jout_local, emission_qm) &
          !$omp&   reduction(+:n_stoch, n_equil_eeq, n_equil_fail)
@@ -862,7 +870,7 @@ contains
                end if
 
                if (.not. Equil) then
-                  a_cm_qm = aeff(ir) * UM2CM
+                  a_cm_qm = aeff_pop(ir) * UM2CM
                   call qm_solve_grain(NLAM, lam, Cabs_pop(:,ir), J_lam, &
                                       NT, T_first, H_pop(:,ir), &
                                       Teq, EEQ, EEQSS_ERG, &
@@ -906,7 +914,7 @@ contains
          !$omp end critical
          deallocate(spec, P, lnP, T, H, kappB, Jout_local)
          !$omp end parallel
-         write(*,'(a,i4,a,i4,a,i4,a)') &
+         if (sed_verbose) write(*,'(a,i4,a,i4,a,i4,a)') &
             '   [QM solver: stoch=', n_stoch, ' eeq_gate=', n_equil_eeq, &
             ' fail_to_eq=', n_equil_fail, ']'
 
@@ -925,7 +933,8 @@ contains
             n_equil_eeq = n_equil_eeq + 1
          end do
          deallocate(spec)
-         write(*,'(a,i4,a)') '   [equil (single-grain Teq): ', n_equil_eeq, ' grains]'
+         if (sed_verbose) write(*,'(a,i4,a)') &
+            '   [equil (single-grain Teq): ', n_equil_eeq, ' grains]'
 
       case default
          write(*,'(a,a)') 'sed_grain_loop: unknown stoch_method: ', trim(stoch_method)
@@ -1071,7 +1080,7 @@ contains
       deallocate(spec, P, lnP, T, H_w, kappB_w, Jout_local)
       !$omp end parallel
 
-      write(*,'(a,i4,a,i4,a)') &
+      if (sed_verbose) write(*,'(a,i4,a,i4,a)') &
          '   [QM batch: stoch=', n_stoch, ' equil=', n_equil, ']'
 
       ! Unit conversion: Jout → lamI_lam
@@ -1501,6 +1510,7 @@ contains
       real(wp),          intent(in)    :: log_H_in(:,:), log_kappB_in(:,:)
       p%grain_type = gtype
       p%out_channel = chan
+      p%aeff      = aeff          ! [um] module-global size grid (set by sed_init)
       p%dn        = dn_in
       p%Cabs      = Cabs_in
       p%kappB     = kappB_in
@@ -1723,6 +1733,8 @@ contains
             deallocate(dn)
          end block
 
+         m%pops(ic)%aeff = a_opt        ! [um] radii of this component (needed by 'qm')
+
          deallocate(a_opt, lam_opt, qa, qs, Tcal, Ucal, Ccal)
       end do
    end subroutine build_zubko
@@ -1888,6 +1900,8 @@ contains
             deallocate(dn, Hmat)
          end block
 
+         m%pops(ip)%aeff = a_opt        ! [um] radii of this population (needed by 'qm')
+
          deallocate(a_opt, lam_opt, qa, qs, a_dn, f_dn, la_dn, lf_dn, Tc, Uc, Cc)
       end do
    end subroutine build_from_files
@@ -1899,23 +1913,63 @@ contains
    ! convention. lamI_total(NLAM) is the summed SED; optional
    ! lamI_chan(NLAM, n_channel) returns the SED of each channel.
    ! REQUIRES: m is the most recently built model (its grids == the globals).
-   subroutine dust_emission(m, J_lam, lamI_total, lamI_chan)
+   subroutine dust_emission(m, J_lam, lamI_total, lamI_chan, status)
       type(dust_model_t), intent(in)  :: m
       real(wp),           intent(in)  :: J_lam(:)              ! (NLAM)
       real(wp),           intent(out) :: lamI_total(:)         ! (NLAM)
       real(wp), optional, intent(out) :: lamI_chan(:,:)        ! (NLAM, n_channel)
+      ! Optional error report (0 = success). When present, a bad model is
+      ! reported through it instead of stopping the process; when absent the
+      ! original stop-on-error behavior is kept (as the CLI drivers expect).
+      !   status = 1  unknown stoch_method
+      !   status = 2  'qm' selected but a population is missing its radii
+      integer,  optional, intent(out) :: status
       real(wp), allocatable :: Jout_pop(:), Jchan(:,:)
       integer :: ip, ic
 
-      ! Honor the model's chosen solver ('heuristic'/'draine'/'qm'/'equil').
+      if (present(status)) status = 0
+
+      ! Validate the model's chosen solver before doing any work.
+      select case (trim(m%stoch_method))
+      case ('heuristic', 'draine', 'qm', 'equil')
+         ! supported
+      case default
+         if (present(status)) then
+            status = 1;  return
+         else
+            write(*,'(a,a)') 'dust_emission: unknown stoch_method: ', trim(m%stoch_method)
+            stop 1
+         end if
+      end select
+
+      ! The 'qm' solver reads each population's radii; refuse rather than read
+      ! an unallocated array (all builders now fill them, so this is a guard).
+      if (trim(m%stoch_method) == 'qm') then
+         do ip = 1, size(m%pops)
+            if (.not. allocated(m%pops(ip)%aeff)) then
+               if (present(status)) then
+                  status = 2;  return
+               else
+                  write(*,'(a,i0)') 'dust_emission: qm needs radii but pop is unset, ip=', ip
+                  stop 1
+               end if
+            end if
+         end do
+      end if
+
+      ! Honor the model's chosen solver ('heuristic'/'draine'/'qm'/'equil')
+      ! and its diagnostic verbosity (library path stays silent by default).
       stoch_method = m%stoch_method
+      sed_verbose  = m%verbose
+      if (trim(m%stoch_method) == 'qm') qm_verbose = m%verbose
 
       allocate(Jout_pop(m%NLAM), Jchan(m%NLAM, m%n_channel))
       Jchan = 0.0_wp
       do ip = 1, size(m%pops)
          ! size count for each population (Zubko-like models have
          ! component-by-component grids)
-         call sed_grain_loop(size(m%pops(ip)%dn), m%pops(ip)%dn, m%pops(ip)%Cabs, &
+         call sed_grain_loop(size(m%pops(ip)%dn), m%pops(ip)%dn, m%pops(ip)%aeff, &
+                             m%pops(ip)%Cabs, &
                              m%pops(ip)%kappB, m%pops(ip)%H, m%pops(ip)%log_H, &
                              m%pops(ip)%log_kappB, m%pops(ip)%kappCMB, &
                              J_lam, trim(m%pops(ip)%grain_type), Jout_pop)

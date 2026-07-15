@@ -29,6 +29,7 @@ module dust_model_mod
    type :: grain_pop_t
       character(len=8)      :: grain_type = 'sil'   ! 'sil' | 'pah' | 'gra'
       integer               :: out_channel = 1      ! index into dust_model_t channels
+      real(wp), allocatable :: aeff(:)              ! (NA) [um] effective-radius grid
       real(wp), allocatable :: dn(:)                ! (NA)
       real(wp), allocatable :: Cabs(:,:), Csca(:,:) ! (NLAM, NA)
       real(wp), allocatable :: kappB(:,:), log_kappB(:,:)   ! (NT, NA)
@@ -50,6 +51,9 @@ module dust_model_mod
       character(len=16), allocatable :: channel_name(:)   ! (n_channel)
       logical               :: use_induced_emission = .false.
       character(len=16)     :: stoch_method = 'heuristic'
+      ! When .false. (default), the library solve path stays silent; when
+      ! .true. it emits the same solver diagnostics as the CLI drivers.
+      logical               :: verbose = .false.
    end type dust_model_t
 
 contains
@@ -74,6 +78,7 @@ contains
 
    subroutine free_pop(p)
       type(grain_pop_t), intent(inout) :: p
+      if (allocated(p%aeff))      deallocate(p%aeff)
       if (allocated(p%dn))        deallocate(p%dn)
       if (allocated(p%Cabs))      deallocate(p%Cabs)
       if (allocated(p%Csca))      deallocate(p%Csca)

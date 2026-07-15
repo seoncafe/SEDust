@@ -59,6 +59,9 @@ C                1 INM1 >= NPN1: starting NMAX estimate exceeds storage
 C                2 NGAUSS > NPNG1: Gauss-quadrature point count overflow
 C                3 NMA = NPN1 reached without DSCA/DEXT convergence
 C                4 NMAX1 > NPN4: T-matrix storage overflow
+C                5 Gaussian-quadrature refinement loop exhausted without
+C                  convergence (local change from the original tmd.lp.f,
+C                  whose fall-through leaves IERR = 0)
 C
 C***********************************************************************
       SUBROUTINE TMD_ONE(AXI, LAM, MRR, MRI, EPS, NP,
@@ -195,7 +198,7 @@ C  Single particle, RAT = 1 (volume-equivalent sphere): A = AXI.
          QSCA1 = QSCA
          IF (DSCA.LE.DDELT_LOC.AND.DEXT.LE.DDELT_LOC) GO TO 155
   150 CONTINUE
-
+      IERR = 5
   155 CONTINUE
       QSCA = 0D0
       QEXT = 0D0

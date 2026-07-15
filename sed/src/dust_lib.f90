@@ -26,6 +26,13 @@ module dust_lib
    ! exact solves, so it is exact AT the U grid points; interpolation between
    ! them is the usual smooth-in-U approximation.
    !
+   ! dust_emission takes an optional final argument, status (integer):
+   !   call dust_emission(m, J_lam, lamI_total [, lamI_chan] [, status])
+   ! On return status = 0 means success, 1 an unknown m%stoch_method, and 2 a
+   ! 'qm' model whose populations are missing their radii. When status is
+   ! present a bad model is reported through it instead of stopping the
+   ! process; when it is omitted such a model stops the run, as before.
+   !
    ! The validated solver core (sed_grain_loop & helpers in sed_astrodust_mod)
    ! is untouched; this module only re-exports the model API and adds the
    ! table/interpolation layer.

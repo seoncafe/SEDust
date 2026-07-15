@@ -15,7 +15,11 @@
 #   ./main_dl07.x
 
 FC      = gfortran
-FFLAGS  = -O3 -march=native -ffree-line-length-none -w
+# Portable baseline by default so libsedust.a runs on any node it is copied
+# to.  Uncomment the -march=native line for a host-optimized build (results
+# can differ in the last digits through FMA contraction).
+FFLAGS  = -O3 -ffree-line-length-none -w
+# FFLAGS  = -O3 -march=native -ffree-line-length-none -w
 FFLAGS += -fopenmp
 
 # ---- source groups, in dependency order ------------------------------
@@ -82,6 +86,7 @@ LIB_OBJ = $(notdir $(LIB_SRC:.f90=.o))
 
 libsedust.a: $(LIB_SRC)
 	$(FC) $(FFLAGS) -c $(LIB_SRC)
+	rm -f $@
 	ar rcs $@ $(LIB_OBJ)
 	@echo 'Built: libsedust.a  (link with -L. -lsedust -I.)'
 

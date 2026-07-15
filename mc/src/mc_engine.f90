@@ -145,8 +145,8 @@ contains
 
       integer  :: NL, NCDF, NT, i, j
       real(wp), allocatable :: J_SI(:), integrand_cont(:), integrand_event(:)
-      real(wp), allocatable :: cum_event(:), BB(:)
-      real(wp) :: w, Fmax, integ_BQ, integ_B, Tt
+      real(wp), allocatable :: cum_event(:), BB(:), lam_node(:)
+      real(wp) :: w, Fmax, integ_BQ, integ_B, Tt, frac_c, ie_c, ic_c
 
       NL = size(lam_in)
       if (size(Q_in) /= NL) then
@@ -181,28 +181,65 @@ contains
       g%rate_event = 0.0_wp
       do i = 1, NL-1
          w = 0.5_wp * (g%lam_grid(i+1) - g%lam_grid(i))
-         if (g%lam_grid(i) >= g%lam_c) then
-            g%H_cont = g%H_cont + w * (integrand_cont(i) + integrand_cont(i+1))
-         end if
          if (g%lam_grid(i+1) <= g%lam_c) then
+            ! interval entirely blueward of (or ending at) lam_c: absorption events
             g%rate_event = g%rate_event &
                  + w * (integrand_event(i) + integrand_event(i+1))
+         else if (g%lam_grid(i) >= g%lam_c) then
+            ! interval entirely redward of (or starting at) lam_c: continuous heating
+            g%H_cont = g%H_cont + w * (integrand_cont(i) + integrand_cont(i+1))
+         else
+            ! interval straddles lam_c: split at lam_c by linear interpolation so
+            ! the blueward part feeds rate_event and the redward part feeds H_cont;
+            ! otherwise the cutoff bin is dropped from both terms.
+            frac_c = (g%lam_c - g%lam_grid(i)) / (g%lam_grid(i+1) - g%lam_grid(i))
+            ie_c   = integrand_event(i) + frac_c*(integrand_event(i+1) - integrand_event(i))
+            ic_c   = integrand_cont(i)  + frac_c*(integrand_cont(i+1)  - integrand_cont(i))
+            g%rate_event = g%rate_event &
+                 + 0.5_wp * (g%lam_c - g%lam_grid(i)) * (integrand_event(i) + ie_c)
+            g%H_cont = g%H_cont &
+                 + 0.5_wp * (g%lam_grid(i+1) - g%lam_c) * (ic_c + integrand_cont(i+1))
          end if
       end do
       g%H_cont = (c_cgs / 4.0_wp) * g%H_cont
+
+      ! A grain with no absorption blueward of lam_c has no stochastic events;
+      ! rng_exp would divide by a zero rate.  Such a grain belongs on the
+      ! equilibrium path, so stop rather than propagate Inf/NaN into the engine.
+      if (g%rate_event <= 0.0_wp) then
+         write(*,'(a,es12.4,a)') &
+              'grain_setup_from_cabs: grain radius a =', a_um, &
+              ' um has no absorption blueward of lam_c; such grains should use the equilibrium path'
+         stop 1
+      end if
 
       ! Inverse-CDF table for photon-wavelength sampling
       NCDF = 1024
       g%NCDF = NCDF
       allocate(g%cdf_F(NCDF), g%cdf_lam(NCDF))
-      allocate(cum_event(NL))
+      allocate(cum_event(NL), lam_node(NL))
+      lam_node     = g%lam_grid
       cum_event(1) = 0.0_wp
       do i = 2, NL
-         w = 0.5_wp * (g%lam_grid(i) - g%lam_grid(i-1))
          if (g%lam_grid(i) <= g%lam_c) then
+            ! interval entirely blueward of (or ending at) lam_c
+            w = 0.5_wp * (g%lam_grid(i) - g%lam_grid(i-1))
             cum_event(i) = cum_event(i-1) + w * (integrand_event(i-1) + integrand_event(i))
+         else if (g%lam_grid(i-1) < g%lam_c) then
+            ! interval straddles lam_c: accumulate only the [lam(i-1), lam_c] part,
+            ! using the same split integral as the rate_event loop so cum_event(NL)
+            ! matches rate_event exactly.  Pin this node at lam_c so the inverse CDF
+            ! never returns a sampled wavelength redward of the cutoff.
+            frac_c = (g%lam_c - g%lam_grid(i-1)) / (g%lam_grid(i) - g%lam_grid(i-1))
+            ie_c   = integrand_event(i-1) + frac_c*(integrand_event(i) - integrand_event(i-1))
+            cum_event(i) = cum_event(i-1) &
+                 + 0.5_wp * (g%lam_c - g%lam_grid(i-1)) * (integrand_event(i-1) + ie_c)
+            lam_node(i)  = g%lam_c
          else
+            ! interval entirely redward of lam_c: no event mass; pin at lam_c so
+            ! inversion in the flat tail cannot land redward of the cutoff.
             cum_event(i) = cum_event(i-1)
+            lam_node(i)  = g%lam_c
          end if
       end do
       Fmax = cum_event(NL)
@@ -211,9 +248,9 @@ contains
          g%cdf_F(j) = real(j-1, wp) / real(NCDF-1, wp)
       end do
       do j = 1, NCDF
-         call invert_cdf(cum_event, g%lam_grid, NL, g%cdf_F(j)*Fmax, g%cdf_lam(j))
+         call invert_cdf(cum_event, lam_node, NL, g%cdf_F(j)*Fmax, g%cdf_lam(j))
       end do
-      deallocate(cum_event, integrand_cont, integrand_event)
+      deallocate(cum_event, lam_node, integrand_cont, integrand_event)
 
       ! Thermo tables
       NT = 2000
