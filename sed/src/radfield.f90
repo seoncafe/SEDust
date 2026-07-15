@@ -97,10 +97,32 @@ contains
 
 
    pure function bbody(T, lambda_um) result(B)
+      ! Planck function B_lambda(T), evaluated stably across the tail. The
+      ! three branches keep the production range bit-identical while removing
+      ! the over/underflow and the cancellation at the two extremes:
+      !   x >= 700  : exp(x) would overflow; the Planck tail is 0 there.
+      !   x <  1e-4 : use the exact identity exp(x)-1 = 2 e^{x/2} sinh(x/2),
+      !               which has no cancellation as x -> 0.
+      !   otherwise : the original exp(x)-1 form. The shipping wavelength/
+      !               temperature grid has smallest x ~ 9e-5, so its few
+      !               extreme points fall in the sinh branch; the value there
+      !               moves by ~1e-12 relative (the removed cancellation
+      !               error), below es-format output precision.
       real(wp), intent(in) :: T, lambda_um
-      real(wp) :: B, lambda_m
+      real(wp) :: B, lambda_m, x
+      if (T <= 0.0_wp .or. lambda_um <= 0.0_wp) then
+         B = 0.0_wp
+         return
+      end if
       lambda_m = lambda_um * 1.0e-6_wp
-      B = hc2 / lambda_m**5 / (exp(hc_kB / (T*lambda_m)) - 1.0d0)
+      x = hc_kB / (T*lambda_m)
+      if (x >= 700.0_wp) then
+         B = 0.0_wp
+      else if (x < 1.0e-4_wp) then
+         B = hc2 / lambda_m**5 / (2.0_wp * exp(0.5_wp*x) * sinh(0.5_wp*x))
+      else
+         B = hc2 / lambda_m**5 / (exp(x) - 1.0_wp)
+      end if
    end function bbody
 
 end module radfield

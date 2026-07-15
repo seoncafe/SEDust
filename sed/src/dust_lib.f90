@@ -23,8 +23,10 @@ module dust_lib
    ! ONLY when the cell field is  U * (fixed J_ref shape).  For cells whose
    ! field SHAPE departs from J_ref (e.g. hardened spectra near hot stars),
    ! use the single-cell exact dust_emission instead. The table is built from
-   ! exact solves, so it is exact AT the U grid points; interpolation between
-   ! them is the usual smooth-in-U approximation.
+   ! exact solves, so it reproduces the U grid points to round-off, except that
+   ! dust_emission_interp floors the stored emissivities at 1e-300 before the
+   ! log, so a node whose true value is 0 comes back as 1e-300, not 0;
+   ! interpolation between grid points is the usual smooth-in-U approximation.
    !
    ! dust_emission takes an optional final argument, status (integer):
    !   call dust_emission(m, J_lam, lamI_total [, lamI_chan] [, status])
@@ -32,6 +34,17 @@ module dust_lib
    ! 'qm' model whose populations are missing their radii. When status is
    ! present a bad model is reported through it instead of stopping the
    ! process; when it is omitted such a model stops the run, as before.
+   !
+   ! dust_build_table and dust_emission_interp take the same optional final
+   ! status argument (0 = success); when present a bad argument is reported
+   ! through it instead of stopping the process; when omitted such a call stops
+   ! the run.
+   !   dust_build_table:      1 size(J_ref) /= m%NLAM
+   !                          2 size(U_grid) < 2
+   !                          3 U_grid not positive-and-strictly-increasing
+   !   dust_emission_interp:  1 U <= 0
+   !                          2 size(lamI_total) /= tab%NLAM
+   !                          3 lamI_chan present but not (tab%NLAM, tab%n_channel)
    !
    ! The validated solver core (sed_grain_loop & helpers in sed_astrodust_mod)
    ! is untouched; this module only re-exports the model API and adds the
@@ -88,15 +101,46 @@ contains
    end function dust_channel_name
 
    ! --- emission table over an intensity grid ---------------------------
-   subroutine dust_build_table(m, J_ref, U_grid, tab)
-      ! Precompute lamI(lambda) for J = U*J_ref at each U in U_grid (which
-      ! should be ascending). m must be the active model.
+   subroutine dust_build_table(m, J_ref, U_grid, tab, status)
+      ! Precompute lamI(lambda) for J = U*J_ref at each U in U_grid (which must
+      ! be positive and strictly ascending). m must be the active model.
       type(dust_model_t),      intent(in)  :: m
       real(wp),                intent(in)  :: J_ref(:)    ! (NLAM) shape at U=1
       real(wp),                intent(in)  :: U_grid(:)   ! (NU)
       type(dust_emis_table_t), intent(out) :: tab
+      ! Optional error report (0 = success); see the module header for codes.
+      integer, optional,       intent(out) :: status
       real(wp), allocatable :: total(:), chan(:,:)
-      integer :: iu
+      integer :: iu, nu
+
+      if (present(status)) status = 0
+      nu = size(U_grid)
+
+      if (size(J_ref) /= m%NLAM) then
+         if (present(status)) then
+            status = 1;  return
+         else
+            write(*,'(a,i0,a,i0)') 'dust_build_table: size(J_ref)=', size(J_ref), &
+                                    ' /= m%NLAM=', m%NLAM
+            stop 1
+         end if
+      end if
+      if (nu < 2) then
+         if (present(status)) then
+            status = 2;  return
+         else
+            write(*,'(a,i0)') 'dust_build_table: need size(U_grid) >= 2, got ', nu
+            stop 1
+         end if
+      end if
+      if (U_grid(1) <= 0.0_wp .or. any(U_grid(2:nu) <= U_grid(1:nu-1))) then
+         if (present(status)) then
+            status = 3;  return
+         else
+            write(*,'(a)') 'dust_build_table: U_grid must be positive and strictly increasing'
+            stop 1
+         end if
+      end if
 
       call dust_free_table(tab)
       tab%NLAM = m%NLAM;  tab%n_channel = m%n_channel;  tab%NU = size(U_grid)
@@ -114,17 +158,51 @@ contains
       deallocate(total, chan)
    end subroutine dust_build_table
 
-   subroutine dust_emission_interp(tab, U, lamI_total, lamI_chan)
-      ! Log-log interpolate the table at intensity U (per wavelength &
-      ! channel). Exact at the U grid points (modulo exp(log) round-off);
-      ! clamps to the grid ends outside [U(1), U(NU)].
+   subroutine dust_emission_interp(tab, U, lamI_total, lamI_chan, status)
+      ! Log-log interpolate the table at intensity U (per wavelength and
+      ! channel). Reproduces the U grid points to round-off, except that the
+      ! stored emissivities are floored at 1e-300 before the log, so a node
+      ! whose true value is 0 comes back as 1e-300, not 0; clamps to the grid
+      ! ends outside [U(1), U(NU)].
       type(dust_emis_table_t), intent(in)  :: tab
       real(wp),                intent(in)  :: U
       real(wp),                intent(out) :: lamI_total(:)      ! (NLAM)
       real(wp), optional,      intent(out) :: lamI_chan(:,:)     ! (NLAM, n_channel)
+      ! Optional error report (0 = success); see the module header for codes.
+      ! Validation is scalar/size-only to keep this on the per-cell hot path.
+      integer, optional,       intent(out) :: status
       real(wp), allocatable :: lU(:)
       real(wp) :: lr, lUq
       integer  :: k, c
+
+      if (present(status)) status = 0
+      if (U <= 0.0_wp) then
+         if (present(status)) then
+            status = 1;  return
+         else
+            write(*,'(a,es12.4)') 'dust_emission_interp: need U > 0, got ', U
+            stop 1
+         end if
+      end if
+      if (size(lamI_total) /= tab%NLAM) then
+         if (present(status)) then
+            status = 2;  return
+         else
+            write(*,'(a,i0,a,i0)') 'dust_emission_interp: size(lamI_total)=', &
+                                    size(lamI_total), ' /= tab%NLAM=', tab%NLAM
+            stop 1
+         end if
+      end if
+      if (present(lamI_chan)) then
+         if (size(lamI_chan,1) /= tab%NLAM .or. size(lamI_chan,2) /= tab%n_channel) then
+            if (present(status)) then
+               status = 3;  return
+            else
+               write(*,'(a)') 'dust_emission_interp: lamI_chan must be (tab%NLAM, tab%n_channel)'
+               stop 1
+            end if
+         end if
+      end if
 
       allocate(lU(tab%NU));  lU = log(tab%U)
       lUq = log(U)

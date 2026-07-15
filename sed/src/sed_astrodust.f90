@@ -1209,6 +1209,9 @@ contains
       UMINHI = BIG
       UMINLO = 0.0_wp
 
+      ! defensive; the loop assigns both before any reachable read
+      Pmax  = 0.0_wp
+      P_out = 0.0_wp
       converged = .false.
       do iter = 1, MAX_ITER_NARROW
          call U_to_T(UMIN, H_wide, log_H_wide, TMIN)
@@ -1628,7 +1631,7 @@ contains
 
       type(zda_comp_t)      :: comps(ZDA_MAXCOMP)
       integer               :: ncomp, ic, jt, ja, jw, nsize, nwave, ntc
-      real(wp)              :: rho, vol_fac, mass, dlna, uspec, t
+      real(wp)              :: rho, vol_fac, mass, dlna, uspec, t, wdev
       real(wp), allocatable :: a_opt(:), lam_opt(:), qa(:,:), qs(:,:)
       real(wp), allocatable :: Tcal(:), Ucal(:), Ccal(:), Hcol(:)
       character(len=16)     :: cn(3)
@@ -1656,6 +1659,13 @@ contains
          call read_zubko_optics(trim(data_dir)//trim(optf), nsize, nwave, &
                                 a_opt, lam_opt, qa, qs, rho)
 
+         ! The endpoint dln(a) below reads a_opt(2), so demand at least 2 radii.
+         if (nsize < 2) then
+            write(*,'(a,i0,a,i0)') ' build_zubko: component ', ic, &
+               ' needs >= 2 radii, got ', nsize
+            stop 1
+         end if
+
          ! On the first component, fix the shared lambda + T grids (globals)
          ! and the calc_P setup. All three components share the lambda grid.
          if (ic == 1) then
@@ -1672,6 +1682,19 @@ contains
             m%NLAM = NLAM;  m%NT = NT;  m%NA = nsize
             m%lam = lam;  m%T_first = T_first;  m%log_T_first = log_T_first
             allocate(m%aeff(0))           ! grids held per population; model aeff unused
+         else
+            ! All components must share the lambda grid fixed on component 1.
+            if (nwave /= NLAM) then
+               write(*,'(a,i0,a,i0,a,i0)') ' build_zubko: component ', ic, &
+                  ' wavelength count ', nwave, ' /= ', NLAM
+               stop 1
+            end if
+            wdev = maxval(abs(lam_opt - lam) / lam)
+            if (wdev > 1.0e-6_wp) then
+               write(*,'(a,i0,a,es12.4)') ' build_zubko: component ', ic, &
+                  ' wavelength grid mismatch, max rel dev = ', wdev
+               stop 1
+            end if
          end if
 
          ! --- component-by-component working set in the module globals (scratch) ---
@@ -1788,25 +1811,36 @@ contains
       integer            :: p_ch(MAXP)
       character(len=64)  :: p_opt(MAXP), p_dn(MAXP), p_cal(MAXP)
       real(wp)           :: p_rho(MAXP)
-      integer            :: npop, u, ios, ip, jt, ja, jw, nsize, nwave, ntc, ndn, nchan, ic
-      real(wp)           :: t, rho, mass, vf, dlna, uspec, fa, loga
+      integer            :: npop, u, ios, ip, jt, ja, jw, nsize, nwave, ntc, ndn, nchan, ic, nline
+      real(wp)           :: t, rho, mass, vf, dlna, uspec, fa, loga, wdev
       character(len=256) :: line
       real(wp), allocatable :: a_opt(:), lam_opt(:), qa(:,:), qs(:,:)
       real(wp), allocatable :: a_dn(:), f_dn(:), la_dn(:), lf_dn(:), Tc(:), Uc(:), Cc(:)
 
-      npop = 0;  m%name = 'file_model'
+      npop = 0;  nline = 0;  m%name = 'file_model'
       open(newunit=u, file=trim(descriptor_path), status='old', action='read', iostat=ios)
       if (ios /= 0) then
          write(*,'(a,a)') ' build_from_files: cannot open ', trim(descriptor_path); stop 1
       end if
       do
          read(u,'(a)', iostat=ios) line;  if (ios /= 0) exit
+         nline = nline + 1
          line = adjustl(line)
          if (len_trim(line) == 0 .or. line(1:1) == '#') cycle
          if (line(1:4) == 'pop:') then
+            if (npop >= MAXP) then
+               write(*,'(a,i0,a,i0)') ' build_from_files: too many pop: lines (max ', &
+                  MAXP, ') at input line ', nline
+               stop 1
+            end if
             npop = npop + 1
             read(line(5:), *) p_gt(npop), p_ch(npop), p_opt(npop), p_dn(npop), &
                               p_cal(npop), p_rho(npop)
+            if (p_ch(npop) < 1) then
+               write(*,'(a,i0,a,i0)') ' build_from_files: population ', npop, &
+                  ' has invalid channel ', p_ch(npop)
+               stop 1
+            end if
          else if (index(line,'name') > 0 .and. index(line,'=') > 0) then
             m%name = trim(adjustl(line(index(line,'=')+1:)))
          end if
@@ -1831,6 +1865,13 @@ contains
                                 a_opt, lam_opt, qa, qs, rho)
          if (p_rho(ip) > 0.0_wp) rho = p_rho(ip)         ! descriptor rho overrides file
 
+         ! The endpoint dln(a) below reads a_opt(2), so demand at least 2 radii.
+         if (nsize < 2) then
+            write(*,'(a,i0,a,i0)') ' build_from_files: population ', ip, &
+               ' needs >= 2 radii, got ', nsize
+            stop 1
+         end if
+
          if (ip == 1) then
             NLAM = nwave;  NT = NT_in
             if (allocated(lam)) deallocate(lam, T_first, log_T_first)
@@ -1845,6 +1886,19 @@ contains
             m%NLAM = NLAM;  m%NT = NT;  m%NA = nsize
             m%lam = lam;  m%T_first = T_first;  m%log_T_first = log_T_first
             allocate(m%aeff(0))
+         else
+            ! Every population must share the lambda grid fixed on population 1.
+            if (nwave /= NLAM) then
+               write(*,'(a,i0,a,i0,a,i0)') ' build_from_files: population ', ip, &
+                  ' wavelength count ', nwave, ' /= ', NLAM
+               stop 1
+            end if
+            wdev = maxval(abs(lam_opt - lam) / lam)
+            if (wdev > 1.0e-6_wp) then
+               write(*,'(a,i0,a,es12.4)') ' build_from_files: population ', ip, &
+                  ' wavelength grid mismatch, max rel dev = ', wdev
+               stop 1
+            end if
          end if
 
          NA = nsize

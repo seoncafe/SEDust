@@ -487,7 +487,6 @@ contains
       real(wp) :: dt_left, T_probe, half_life, rel_excursion
       real(wp) :: e_emit_step_now
       real(wp), parameter :: T_FLOOR    = 0.5_wp
-      real(wp), parameter :: DLNT_MAX   = 0.5_wp
       real(wp), parameter :: STEP_FRAC  = 1.0_wp     ! half-life cap (coarse)
       real(wp), parameter :: DT_FRAC_MAX = 0.05_wp   ! max fractional dT per step
                                                      ! (bounds linearization error
@@ -660,8 +659,16 @@ contains
    ! ==========================================================================
 
    subroutine step_advance(g, T0, dt_left, a_cm, T1, dts, T_eq_loc, slope)
-      ! One internal cooling step.  Same logic as the inline block in
-      ! cool_segment(), exposed so adaptive-grid engines can reuse it.
+      ! One internal cooling step for the adaptive-grid engines.  Same
+      ! trajectory math as the inline block in cool_segment() (local
+      ! linearization, exponential relaxation toward T_eq), but with looser
+      ! step control: the cooling branch has no DT_FRAC_MAX cap and the
+      ! heating branch caps the fractional change at DLNT_MAX = 0.5 instead
+      ! of DT_FRAC_MAX = 0.05.  The SED builder (mc_sed) rescales each
+      ! grain's emission to its absorbed power, which removes the
+      ! integrated-energy effect of the coarser steps; a small
+      ! spectral-shape effect remains, inside the few-percent band the
+      ! engines are validated to.
       type(mc_grain_t), intent(in)  :: g
       real(wp),         intent(in)  :: T0, dt_left, a_cm
       real(wp),         intent(out) :: T1, dts, T_eq_loc, slope

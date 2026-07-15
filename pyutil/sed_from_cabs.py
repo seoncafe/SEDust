@@ -15,11 +15,13 @@ Two solve modes:
       B_lambda(T_i).
 
 This module mirrors the conventions of the Fortran sed_astrodust_mod
-shipped with this repository: lambda in microns, C_abs in cm^2,
-J_lambda in erg s^-1 cm^-2 um^-1 sr^-1 (Mathis-ISRF compatible), and
-the returned lambda * I_lambda is in erg s^-1 sr^-1 per unit grain
-(the caller multiplies by `dn_grain / dN_H` to get the emission per H
-atom that HD23 reports).
+shipped with this repository: lambda in microns, C_abs in cm^2, and
+J_lambda in SI W m^-3 sr^-1 (Mathis-ISRF compatible, the same convention
+as `radfield :: bbody` and `planck_lambda` below). The returned
+lambda * I_lambda is in erg s^-1 sr^-1 per unit grain (the caller
+multiplies by `dn_grain / dN_H` to get the emission per H atom that HD23
+reports); the 1e-3 factor in `sed_equilibrium` performs that mixed-unit
+conversion.
 
 Why a Python copy: this is the "downstream" form of the dust SED
 solver — the function signature takes only what a 3D-RT cell needs to
