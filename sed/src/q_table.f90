@@ -13,7 +13,8 @@ module q_table_mod
    ! Also provides a simple log-linear interpolator in `a_eff` at fixed
    ! lambda index, which is the operation tau_check needs.
 
-   use, intrinsic :: iso_fortran_env, only: real64, error_unit
+   use, intrinsic :: iso_fortran_env,  only: real64, error_unit
+   use, intrinsic :: ieee_arithmetic,  only: ieee_is_finite
    implicit none
    private
    public :: load_q_table, interp_q_in_a
@@ -33,15 +34,31 @@ module q_table_mod
 
 contains
 
-   subroutine load_q_table(filename, na_in, nw_in)
+   subroutine load_q_table(filename, na_in, nw_in, ok)
       ! Reads a (NA, NW) Q table written by run_tmatrix.f90 in jw-outer,
       ! ja-inner order. Defaults na=169, nw=1129; pass other values when
       ! reading a different grid.
+      !
+      ! Optional ok: absent -> print + stop on any error (original behavior);
+      ! present -> return .false. with the module left unloaded (arrays freed,
+      ! n_aeff = n_lam = 0) instead of stopping, so an RT host can recover.
+      !
+      ! Beyond the short-file (iostat) guard, the loader validates the table:
+      !   * every value read is finite (IEEE);
+      !   * each row's lam/aeff matches its grid node within rel 1e-6 -- rows of
+      !     one jw block share one lam, and the aeff column repeats across
+      !     blocks;
+      !   * the reconstructed lam_t / aeff_t axes are strictly increasing;
+      !   * the file holds EXACTLY n_aeff*n_lam data rows (a trailing extra data
+      !     row is rejected just as a short file is).
       character(len=*),  intent(in)           :: filename
       integer, optional, intent(in)           :: na_in, nw_in
+      logical, optional, intent(out)          :: ok
       integer  :: u, ios, i, ja, jw, ifl
-      real(wp) :: lam, ae, qe, qa, qs, w, g
+      real(wp) :: lam, ae, qe, qa, qs, w, g, xextra
       character(len=512) :: line
+
+      if (present(ok)) ok = .true.
 
       n_aeff = NA_DEF;  if (present(na_in)) n_aeff = na_in
       n_lam  = NW_DEF;  if (present(nw_in)) n_lam  = nw_in
@@ -54,16 +71,24 @@ contains
 
       open(newunit=u, file=filename, status='old', action='read', iostat=ios)
       if (ios /= 0) then
-         write(error_unit,'(a,a)') 'load_q_table: cannot open ', trim(filename)
-         stop 1
+         if (present(ok)) then
+            call reset_state();  ok = .false.;  return
+         else
+            write(error_unit,'(a,a)') 'load_q_table: cannot open ', trim(filename)
+            stop 1
+         end if
       end if
 
       ! Skip leading `#` header lines.
       do
          read(u,'(a)',iostat=ios) line
          if (ios /= 0) then
-            write(error_unit,'(a)') 'load_q_table: unexpected EOF in header.'
-            stop 1
+            if (present(ok)) then
+               close(u);  call reset_state();  ok = .false.;  return
+            else
+               write(error_unit,'(a)') 'load_q_table: unexpected EOF in header.'
+               stop 1
+            end if
          end if
          line = adjustl(line)
          if (len_trim(line) == 0)   cycle
@@ -74,22 +99,29 @@ contains
       ! Process the first data line we already have.
       ja = 1; jw = 1
       read(line,*) lam, ae, qe, qa, qs, w, g, ifl
-      lam_t(jw)         = lam
-      aeff_t(ja)        = ae
-      qext(jw, ja)      = qe
-      qabs(jw, ja)      = qa
-      qsca(jw, ja)      = qs
-      albedo(jw, ja)    = w
-      gpar(jw, ja)      = g
-      flag(jw, ja)      = ifl
+      if (.not. row_finite(lam, ae, qe, qa, qs, w, g)) then
+         if (present(ok)) then
+            close(u);  call reset_state();  ok = .false.;  return
+         else
+            write(error_unit,'(a,i0)') 'load_q_table: non-finite value at row ', 1
+            stop 1
+         end if
+      end if
+      lam_t(jw)  = lam
+      aeff_t(ja) = ae
+      call store_row(jw, ja, qe, qa, qs, w, g, ifl)
 
       do i = 2, n_aeff*n_lam
          read(u,*,iostat=ios) lam, ae, qe, qa, qs, w, g, ifl
          if (ios /= 0) then
-            write(error_unit,'(a,i0,a,i0,a)') &
-               'load_q_table: read error at row ', i, ' of ', n_aeff*n_lam, &
-               '. Did you run the FULL sweep (./run_tmatrix.x) before tau_check?'
-            stop 1
+            if (present(ok)) then
+               close(u);  call reset_state();  ok = .false.;  return
+            else
+               write(error_unit,'(a,i0,a,i0,a)') &
+                  'load_q_table: read error at row ', i, ' of ', n_aeff*n_lam, &
+                  '. Did you run the FULL sweep (./run_tmatrix.x) before tau_check?'
+               stop 1
+            end if
          end if
          ja = ja + 1
          if (ja > n_aeff) then
@@ -97,20 +129,108 @@ contains
             jw = jw + 1
             if (jw > n_lam) exit
          end if
-         lam_t(jw)         = lam
-         aeff_t(ja)        = ae
-         qext(jw, ja)      = qe
-         qabs(jw, ja)      = qa
-         qsca(jw, ja)      = qs
-         albedo(jw, ja)    = w
-         gpar(jw, ja)      = g
-         flag(jw, ja)      = ifl
+         if (.not. row_finite(lam, ae, qe, qa, qs, w, g)) then
+            if (present(ok)) then
+               close(u);  call reset_state();  ok = .false.;  return
+            else
+               write(error_unit,'(a,i0)') 'load_q_table: non-finite value at row ', i
+               stop 1
+            end if
+         end if
+         ! Grid consistency: lam is set by the first row of a jw block and must
+         ! repeat down that block; the aeff column is set by the jw=1 block and
+         ! must repeat across every later block. Tolerate rel 1e-6.
+         if (ja == 1) then
+            lam_t(jw) = lam
+         else if (abs(lam - lam_t(jw)) > 1.0e-6_wp*abs(lam_t(jw))) then
+            if (present(ok)) then
+               close(u);  call reset_state();  ok = .false.;  return
+            else
+               write(error_unit,'(a,i0)') &
+                  'load_q_table: lambda not constant within block at row ', i
+               stop 1
+            end if
+         end if
+         if (jw == 1) then
+            aeff_t(ja) = ae
+         else if (abs(ae - aeff_t(ja)) > 1.0e-6_wp*abs(aeff_t(ja))) then
+            if (present(ok)) then
+               close(u);  call reset_state();  ok = .false.;  return
+            else
+               write(error_unit,'(a,i0)') 'load_q_table: a_eff grid inconsistent at row ', i
+               stop 1
+            end if
+         end if
+         call store_row(jw, ja, qe, qa, qs, w, g, ifl)
       end do
+
+      ! Reject a file that holds MORE than n_aeff*n_lam data rows.
+      read(u,*,iostat=ios) xextra
+      if (ios == 0) then
+         if (present(ok)) then
+            close(u);  call reset_state();  ok = .false.;  return
+         else
+            write(error_unit,'(a,i0,a)') &
+               'load_q_table: file has more than ', n_aeff*n_lam, ' data rows.'
+            stop 1
+         end if
+      end if
       close(u)
+
+      ! Axis monotonicity (strictly increasing).
+      do jw = 2, n_lam
+         if (lam_t(jw) <= lam_t(jw-1)) then
+            if (present(ok)) then
+               call reset_state();  ok = .false.;  return
+            else
+               write(error_unit,'(a,i0)') 'load_q_table: lam_t not strictly increasing at jw=', jw
+               stop 1
+            end if
+         end if
+      end do
+      do ja = 2, n_aeff
+         if (aeff_t(ja) <= aeff_t(ja-1)) then
+            if (present(ok)) then
+               call reset_state();  ok = .false.;  return
+            else
+               write(error_unit,'(a,i0)') 'load_q_table: aeff_t not strictly increasing at ja=', ja
+               stop 1
+            end if
+         end if
+      end do
 
       do ja = 1, n_aeff
          log_a(ja) = log10(aeff_t(ja))
       end do
+
+   contains
+
+      subroutine reset_state()
+         ! Free the module arrays and mark the table unloaded (error path).
+         if (allocated(aeff_t)) deallocate(aeff_t, lam_t, qext, qabs, qsca, &
+                                           albedo, gpar, flag, log_a)
+         n_aeff = 0;  n_lam = 0
+      end subroutine reset_state
+
+      subroutine store_row(jw_, ja_, qe_, qa_, qs_, w_, g_, ifl_)
+         integer,  intent(in) :: jw_, ja_, ifl_
+         real(wp), intent(in) :: qe_, qa_, qs_, w_, g_
+         qext(jw_, ja_)   = qe_
+         qabs(jw_, ja_)   = qa_
+         qsca(jw_, ja_)   = qs_
+         albedo(jw_, ja_) = w_
+         gpar(jw_, ja_)   = g_
+         flag(jw_, ja_)   = ifl_
+      end subroutine store_row
+
+      logical function row_finite(v1, v2, v3, v4, v5, v6, v7)
+         real(wp), intent(in) :: v1, v2, v3, v4, v5, v6, v7
+         row_finite = ieee_is_finite(v1) .and. ieee_is_finite(v2) .and. &
+                      ieee_is_finite(v3) .and. ieee_is_finite(v4) .and. &
+                      ieee_is_finite(v5) .and. ieee_is_finite(v6) .and. &
+                      ieee_is_finite(v7)
+      end function row_finite
+
    end subroutine load_q_table
 
 

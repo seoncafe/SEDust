@@ -27,8 +27,13 @@ program run_tmatrix
    !                                          (flag = IERR + 10)
    !           IERR in 1..5 with x >= 1.0   : redirected to large-x fallback
    !                                          (flag = IERR + 20)
+   !  100+  : failed physical-consistency check (see stderr).  The base flag
+   !         is preserved in the low two digits; +100 marks a written row
+   !         whose Q / albedo / g fell outside the finiteness, non-negativity,
+   !         or range bounds.
 
    use, intrinsic :: iso_fortran_env, only: real64
+   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
    use constants, only: wp
    use read_index, only: load_index, interp_m
    use fallback,   only: fallback_small_x, fallback_large_x
@@ -63,6 +68,9 @@ program run_tmatrix
    integer  :: ja, jw, ierr_t, flag
    integer  :: ja_step, jw_step, jw_lo, jw_hi, n_total, n_done
    integer  :: u_out, ios
+   integer  :: n_viol
+   logical  :: phys_ok
+   character(len=96)  :: viol_reason
    character(len=256) :: f_out
    character(len=32)  :: arg, arg2, arg3
    integer, parameter :: MODE_FULL=0, MODE_TEST=1, MODE_RANGE=2
@@ -132,6 +140,7 @@ program run_tmatrix
    end select
    n_total = ((NA - 1)/ja_step + 1) * ((jw_hi - jw_lo)/jw_step + 1)
    n_done  = 0
+   n_viol  = 0
 
    open(newunit=u_out, file=trim(f_out), status='replace', action='write')
    write(u_out,'(a)')  '# DH21 astrodust, P = 0.20, fFe = 0.00, b/a = 1.4'
@@ -179,6 +188,21 @@ program run_tmatrix
             qabs = qext - qsca
          end if
 
+         ! Physical-consistency check.  All three branches (T-matrix,
+         ! small-x, large-x) converge here, so validating just before the
+         ! write covers every result path.  A failure keeps the row (the
+         ! downstream reader counts rows to rebuild the grid) but marks its
+         ! flag with +100 and emits a one-line warning.
+         call check_physics(qext, qabs, qsca, walb, asymm, phys_ok, viol_reason)
+         if (.not. phys_ok) then
+            n_viol = n_viol + 1
+            write(*,'(a,es13.6,a,es13.6,a,i0,a,a)') &
+               ' WARNING physical-consistency: lambda=', lambda(jw), &
+               ' um  a_eff=', a_eff(ja), ' um  flag=', flag, &
+               '  broken:', trim(viol_reason)
+            flag = flag + 100
+         end if
+
          write(u_out,'(2es15.6,5es15.6,i6)') &
             lambda(jw), a_eff(ja), qext, qabs, qsca, walb, asymm, flag
 
@@ -191,6 +215,8 @@ program run_tmatrix
    end do
    close(u_out)
    write(*,'(a,a)') ' wrote ', trim(f_out)
+   write(*,'(a,i0,a,i0,a)') ' physical-consistency violations: ', n_viol, &
+      ' of ', n_done, ' rows'
 
 contains
 
@@ -213,5 +239,36 @@ contains
       read(u,*) x(1:n)
       close(u)
    end subroutine read_one_col
+
+   subroutine check_physics(qe, qa, qs, wa, gg, ok, reason)
+      ! Physical-consistency test for one (lambda, a_eff) result.
+      ! Sets ok = .false. and appends a short tag to reason for every bound
+      ! that is violated; reason is empty when everything passes.
+      real(wp),         intent(in)  :: qe, qa, qs, wa, gg   ! qext,qabs,qsca,albedo,g
+      logical,          intent(out) :: ok
+      character(len=*), intent(out) :: reason
+      real(wp), parameter :: tol = 1.0e-9_wp
+
+      reason = ''
+      ! Finiteness (NaN / Inf).
+      if (.not. ieee_is_finite(qe)) reason = trim(reason)//' qext-nonfinite'
+      if (.not. ieee_is_finite(qs)) reason = trim(reason)//' qsca-nonfinite'
+      if (.not. ieee_is_finite(qa)) reason = trim(reason)//' qabs-nonfinite'
+      if (.not. ieee_is_finite(wa)) reason = trim(reason)//' albedo-nonfinite'
+      if (.not. ieee_is_finite(gg)) reason = trim(reason)//' g-nonfinite'
+      ! Non-negativity (small negative roundoff tolerated) and qext >= qsca.
+      if (ieee_is_finite(qe) .and. qe < -tol) reason = trim(reason)//' qext<0'
+      if (ieee_is_finite(qs) .and. qs < -tol) reason = trim(reason)//' qsca<0'
+      if (ieee_is_finite(qa) .and. qa < -tol) reason = trim(reason)//' qabs<0'
+      if (ieee_is_finite(qe) .and. ieee_is_finite(qs) .and. qe < qs - tol) &
+         reason = trim(reason)//' qext<qsca'
+      ! Albedo in [0,1] and asymmetry g in [-1,1].
+      if (ieee_is_finite(wa) .and. (wa < -tol .or. wa > 1.0_wp + tol)) &
+         reason = trim(reason)//' albedo-range'
+      if (ieee_is_finite(gg) .and. (gg < -1.0_wp - tol .or. gg > 1.0_wp + tol)) &
+         reason = trim(reason)//' g-range'
+
+      ok = (len_trim(reason) == 0)
+   end subroutine check_physics
 
 end program run_tmatrix

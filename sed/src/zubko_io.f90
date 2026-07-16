@@ -60,18 +60,25 @@ contains
    end function zda_gofa
 
    ! Parse the ZDA INI-style config. Fills comps(1:n_comp).
-   subroutine read_zda_config(path, n_comp, comps)
+   ! Optional ok (0-arg absent -> stop as before; present -> .false. on error).
+   subroutine read_zda_config(path, n_comp, comps, ok)
       character(len=*),  intent(in)  :: path
       integer,           intent(out) :: n_comp
       type(zda_comp_t),  intent(out) :: comps(ZDA_MAXCOMP)
+      logical, optional, intent(out) :: ok
       integer :: u, ios, ic, ieq, ihash
       character(len=256) :: line, key, val, prevcom
       character(len=256) :: raw
 
+      if (present(ok)) ok = .true.
       n_comp = 0;  ic = 0;  prevcom = ''
       open(newunit=u, file=trim(path), status='old', action='read', iostat=ios)
       if (ios /= 0) then
-         write(*,'(a,a)') ' read_zda_config: cannot open ', trim(path); stop 1
+         if (present(ok)) then
+            ok = .false.;  return
+         else
+            write(*,'(a,a)') ' read_zda_config: cannot open ', trim(path); stop 1
+         end if
       end if
       do
          read(u, '(a)', iostat=ios) raw
@@ -86,7 +93,11 @@ contains
             if (index(line, '[Component') > 0) then
                ic = ic + 1
                if (ic > ZDA_MAXCOMP) then
-                  write(*,'(a)') ' read_zda_config: too many components'; stop 1
+                  if (present(ok)) then
+                     close(u);  ok = .false.;  return
+                  else
+                     write(*,'(a)') ' read_zda_config: too many components'; stop 1
+                  end if
                end if
                comps(ic)%label = trim(prevcom)    ! label comes from the line before? set on next #
             end if
@@ -139,19 +150,26 @@ contains
    ! NWAVE rows of  x  lambda[um]  Q_abs  Q_sca  Q_ext  g.
    ! Returns a_um(nsize), lam_um(nwave) [um], qabs/qsca(nwave,nsize), rho[g/cm^3].
    ! ------------------------------------------------------------------
-   subroutine read_zubko_optics(path, nsize, nwave, a_um, lam_um, qabs, qsca, rho)
+   subroutine read_zubko_optics(path, nsize, nwave, a_um, lam_um, qabs, qsca, rho, ok)
       character(len=*),      intent(in)  :: path
       integer,               intent(out) :: nsize, nwave
       real(wp), allocatable, intent(out) :: a_um(:), lam_um(:), qabs(:,:), qsca(:,:)
       real(wp),              intent(out) :: rho
+      logical, optional,     intent(out) :: ok
       integer :: u, ios, ja, jw, idum
       real(wp) :: x, ldum
+      logical  :: found
       character(len=256) :: line
 
+      if (present(ok)) ok = .true.
       nsize = 0;  nwave = 0;  rho = 0.0_wp
       open(newunit=u, file=trim(path), status='old', action='read', iostat=ios)
       if (ios /= 0) then
-         write(*,'(a,a)') ' read_zubko_optics: cannot open ', trim(path); stop 1
+         if (present(ok)) then
+            ok = .false.;  return
+         else
+            write(*,'(a,a)') ' read_zubko_optics: cannot open ', trim(path); stop 1
+         end if
       end if
 
       ! --- header: scan until the first "= radius" line ---
@@ -164,7 +182,11 @@ contains
          if (index(line,'radius') > 0) exit          ! first radius block header
       end do
       if (nsize <= 0 .or. nwave <= 0) then
-         write(*,'(a)') ' read_zubko_optics: failed to parse NSIZE/NWAVE'; stop 1
+         if (present(ok)) then
+            close(u);  ok = .false.;  return
+         else
+            write(*,'(a)') ' read_zubko_optics: failed to parse NSIZE/NWAVE'; stop 1
+         end if
       end if
       allocate(a_um(nsize), lam_um(nwave), qabs(nwave,nsize), qsca(nwave,nsize))
 
@@ -176,7 +198,14 @@ contains
       end do
       ! --- blocks 2..nsize ---
       do ja = 2, nsize
-         call skip_to_radius(u, line)
+         call skip_to_radius(u, line, found)
+         if (.not. found) then
+            if (present(ok)) then
+               close(u);  deallocate(a_um, lam_um, qabs, qsca);  ok = .false.;  return
+            else
+               write(*,'(a)') ' read_zubko_optics: unexpected EOF seeking radius'; stop 1
+            end if
+         end if
          read(line, *) a_um(ja)
          read(u,'(a)') line                           ! column header
          do jw = 1, nwave
@@ -186,16 +215,19 @@ contains
       close(u)
    end subroutine read_zubko_optics
 
-   subroutine skip_to_radius(u, line)
+   ! Advance to the next "= radius" block header. found=.false. at EOF.
+   subroutine skip_to_radius(u, line, found)
       integer,            intent(in)  :: u
       character(len=256), intent(out) :: line
+      logical,            intent(out) :: found
       integer :: ios
+      found = .false.
       do
          read(u,'(a)', iostat=ios) line
-         if (ios /= 0) then
-            write(*,'(a)') ' read_zubko_optics: unexpected EOF seeking radius'; stop 1
+         if (ios /= 0) return
+         if (index(line,'radius') > 0) then
+            found = .true.;  return
          end if
-         if (index(line,'radius') > 0) return
       end do
    end subroutine skip_to_radius
 
@@ -205,18 +237,24 @@ contains
    !   2 comment lines, then "MIN,TMAX,NT: <Tmin>, <Tmax> <NT>", then NT rows
    !   of  T[K]  U_spec[erg/gm]  C_spec[erg/gm/K].
    ! ------------------------------------------------------------------
-   subroutine read_zubko_calor(path, nt, T, U_spec, C_spec)
+   subroutine read_zubko_calor(path, nt, T, U_spec, C_spec, ok)
       character(len=*),      intent(in)  :: path
       integer,               intent(out) :: nt
       real(wp), allocatable, intent(out) :: T(:), U_spec(:), C_spec(:)
+      logical, optional,     intent(out) :: ok
       integer :: u, ios, i, icol
       real(wp) :: tmin, tmax
       character(len=256) :: line
 
+      if (present(ok)) ok = .true.
       nt = 0
       open(newunit=u, file=trim(path), status='old', action='read', iostat=ios)
       if (ios /= 0) then
-         write(*,'(a,a)') ' read_zubko_calor: cannot open ', trim(path); stop 1
+         if (present(ok)) then
+            ok = .false.;  return
+         else
+            write(*,'(a,a)') ' read_zubko_calor: cannot open ', trim(path); stop 1
+         end if
       end if
       do
          read(u,'(a)', iostat=ios) line;  if (ios /= 0) exit
@@ -227,7 +265,11 @@ contains
          end if
       end do
       if (nt <= 0) then
-         write(*,'(a)') ' read_zubko_calor: failed to parse NT'; stop 1
+         if (present(ok)) then
+            close(u);  ok = .false.;  return
+         else
+            write(*,'(a)') ' read_zubko_calor: failed to parse NT'; stop 1
+         end if
       end if
       allocate(T(nt), U_spec(nt), C_spec(nt))
       do i = 1, nt
@@ -243,19 +285,25 @@ contains
    ! the file holds (e.g. dn/da or f(a)); the caller applies the bin/unit
    ! convention. Two passes: count rows, then read.
    ! ------------------------------------------------------------------
-   subroutine read_dnda_table(path, n, a_um, fval)
+   subroutine read_dnda_table(path, n, a_um, fval, ok)
       character(len=*),      intent(in)  :: path
       integer,               intent(out) :: n
       real(wp), allocatable, intent(out) :: a_um(:), fval(:)
+      logical, optional,     intent(out) :: ok
       integer :: u, ios, i
       real(wp) :: a, f
       character(len=256) :: line
 
+      if (present(ok)) ok = .true.
       ! pass 1: count
       n = 0
       open(newunit=u, file=trim(path), status='old', action='read', iostat=ios)
       if (ios /= 0) then
-         write(*,'(a,a)') ' read_dnda_table: cannot open ', trim(path); stop 1
+         if (present(ok)) then
+            ok = .false.;  return
+         else
+            write(*,'(a,a)') ' read_dnda_table: cannot open ', trim(path); stop 1
+         end if
       end if
       do
          read(u,'(a)', iostat=ios) line;  if (ios /= 0) exit

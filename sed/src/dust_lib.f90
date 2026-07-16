@@ -46,6 +46,22 @@ module dust_lib
    !                          2 size(lamI_total) /= tab%NLAM
    !                          3 lamI_chan present but not (tab%NLAM, tab%n_channel)
    !
+   ! The model builders take the same optional final argument, status (integer,
+   ! 0 = success). When present, a missing or malformed input file is reported
+   ! through it and the model is NOT built (so an RT host can recover); when
+   ! omitted such a failure stops the process, which the CLI drivers rely on.
+   ! The exact non-zero code only distinguishes the failing stage; the contract
+   ! is simply "0 = built, non-zero = build failed". Codes per builder:
+   !   build_astrodust / build_dl07:  1 Q-table load failed
+   !                                  2 size-distribution load failed
+   !   build_zubko:   1 config read failed        2 fewer than 3 components
+   !                  3 a component's optics read  4 grid inconsistent
+   !                  5 a component's calorimetry read failed
+   !   build_from_files: 1 descriptor open   2 too many pop: lines
+   !                     3 invalid channel   4 no pop: lines
+   !                     5 optics read       6 grid inconsistent
+   !                     7 size-dist read    8 calorimetry read failed
+   !
    ! The validated solver core (sed_grain_loop & helpers in sed_astrodust_mod)
    ! is untouched; this module only re-exports the model API and adds the
    ! table/interpolation layer.

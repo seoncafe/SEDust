@@ -2,7 +2,9 @@ module mc_engine
    ! Thread-safe MC engine.  Takes an mc_grain_t (filled by one of the
    ! grain_setup_* routines) and an rng_t and produces a P(T) histogram
    ! plus aggregate (t, T) records.  Each thread should own its own
-   ! mc_grain_t and rng_t; there is no shared state in this module.
+   ! mc_grain_t and rng_t.  The only shared module state is the optional
+   ! trajectory buffer (single-thread use) and the step-cap diagnostic
+   ! counters, which are updated inside an OpenMP critical region.
 
    use constants,      only: wp, pi
    use mc_grain_type,  only: mc_grain_t
@@ -41,6 +43,19 @@ module mc_engine
    ! cool_segment can map its internal tau_seg to a global wall time.
    real(wp),           save :: traj_seg_start_time = 0.0_wp
    real(wp), allocatable, save :: traj_time_buf(:), traj_temp_buf(:)
+
+   ! ------------------------------------------------------------------
+   ! Adaptive-engine step-cap diagnostics.  step_advance uses the same
+   ! tight DT_FRAC_MAX tolerance as cool_segment, so a cooling segment may
+   ! need more internal steps; if a segment exhausts MAX_STEPS before
+   ! reaching the next event it is truncated, which biases P(T).  These
+   ! process-wide counters tally the total number of cooling segments and
+   ! how many hit the step cap.  Each adaptive engine call adds its per-call
+   ! tallies once (not per step) inside an OpenMP critical region, so the
+   ! size loop in mc_sed stays thread-safe.
+   ! ------------------------------------------------------------------
+   integer(kind=8), save :: stepcap_nseg = 0_8
+   integer(kind=8), save :: stepcap_nhit = 0_8
 
 contains
 
@@ -96,6 +111,27 @@ contains
       traj_temp_buf(traj_n) = T_now
       traj_t_last    = t_global
    end subroutine traj_push
+
+
+   subroutine stepcap_tally(tag, a_um, nseg_call, ncap_call)
+      ! Add this adaptive-engine call's cooling-segment and step-cap-hit
+      ! counts to the process-wide totals and print a one-line diagnostic
+      ! summary.  Called once per engine invocation (not per step), inside a
+      ! named OpenMP critical region so the size loop in mc_sed stays
+      ! thread-safe.  The cumulative fields let a reader recover the run total
+      ! from the last line (e.g. tail -1).
+      character(len=*), intent(in) :: tag
+      real(wp),         intent(in) :: a_um
+      integer(kind=8),  intent(in) :: nseg_call, ncap_call
+      !$omp critical (stepcap_report)
+      stepcap_nseg = stepcap_nseg + nseg_call
+      stepcap_nhit = stepcap_nhit + ncap_call
+      write(*,'(a,a,a,es10.2,a,i0,a,i0,a,i0,a,i0)') &
+         ' [stepcap ', trim(tag), ' a=', a_um, &
+         ' um] seg=', nseg_call, ' step_cap_hits=', ncap_call, &
+         ' | cum seg=', stepcap_nseg, ' step_cap_hits=', stepcap_nhit
+      !$omp end critical (stepcap_report)
+   end subroutine stepcap_tally
 
    ! =========================================================================
    ! Setup variants
@@ -653,29 +689,32 @@ contains
 
    ! ==========================================================================
    ! Shared helpers for adaptive-grid engines.
-   ! step_advance + sub_sample_step factor out the trajectory math from
-   ! cool_segment so that the binning policy (fixed-grid / probe / replay /
-   ! buffer) is decoupled from the integration.
+   ! step_advance + sub_sample_step factor out the trajectory math AND the
+   ! step-size control of cool_segment so that the binning policy (fixed-grid
+   ! / probe / replay / buffer) is the only thing that differs between the
+   ! fixed-grid and adaptive-grid engines; the integrated trajectory is
+   ! identical.
    ! ==========================================================================
 
    subroutine step_advance(g, T0, dt_left, a_cm, T1, dts, T_eq_loc, slope)
       ! One internal cooling step for the adaptive-grid engines.  Same
       ! trajectory math as the inline block in cool_segment() (local
-      ! linearization, exponential relaxation toward T_eq), but with looser
-      ! step control: the cooling branch has no DT_FRAC_MAX cap and the
-      ! heating branch caps the fractional change at DLNT_MAX = 0.5 instead
-      ! of DT_FRAC_MAX = 0.05.  The SED builder (mc_sed) rescales each
-      ! grain's emission to its absorbed power, which removes the
-      ! integrated-energy effect of the coarser steps; a small
-      ! spectral-shape effect remains, inside the few-percent band the
-      ! engines are validated to.
+      ! linearization, exponential relaxation toward T_eq) AND the same step
+      ! tolerance: both the cooling and heating branches cap the fractional
+      ! temperature change per step at DT_FRAC_MAX = 0.05, identical to
+      ! cool_segment.  The adaptive-grid engines therefore integrate the
+      ! same trajectory as the fixed-grid engine; only the histogram binning
+      ! policy differs.
       type(mc_grain_t), intent(in)  :: g
       real(wp),         intent(in)  :: T0, dt_left, a_cm
       real(wp),         intent(out) :: T1, dts, T_eq_loc, slope
       real(wp) :: dTdt0, dTdt1, T_probe, half_life, rel_excursion
       real(wp), parameter :: T_FLOOR    = 0.5_wp
-      real(wp), parameter :: DLNT_MAX   = 0.5_wp
-      real(wp), parameter :: STEP_FRAC  = 1.0_wp
+      real(wp), parameter :: STEP_FRAC  = 1.0_wp     ! half-life cap (coarse)
+      real(wp), parameter :: DT_FRAC_MAX = 0.05_wp   ! max fractional dT per step
+                                                     ! (bounds linearization error
+                                                     !  of the super-linear cooling)
+      real(wp), parameter :: TINY_RATE  = 1.0e-300_wp
       real(wp), parameter :: CONVERGED  = 1.0e-3_wp
       real(wp), parameter :: LN2        = 0.6931471805599453_wp
 
@@ -693,11 +732,12 @@ contains
             dts = dt_left
             T1  = T_eq_loc
          else
-            dts = min(dt_left, STEP_FRAC * half_life)
+            dts = min(dt_left, STEP_FRAC * half_life, &
+                      DT_FRAC_MAX * T0 / max(abs(dTdt0), TINY_RATE))
             T1  = T_eq_loc + (T0 - T_eq_loc) * exp(slope * dts)
          end if
       else if (abs(dTdt0) > 0.0_wp) then
-         dts      = min(dt_left, DLNT_MAX * T0 / abs(dTdt0))
+         dts      = min(dt_left, DT_FRAC_MAX * T0 / abs(dTdt0))
          T1       = T0 + dts * dTdt0
          T_eq_loc = T0
       else
@@ -849,8 +889,11 @@ contains
       real(wp) :: T_sub(N_SUB), dt_sub, lT_or_T_lo, dlnT_or_dT
       logical  :: is_log
       integer  :: ev, j, nstep, N_burn_eff, N_pass1_eff
+      integer(kind=8) :: nseg_call, ncap_call
 
       a_cm = g%a_um * 1.0e-4_wp
+      nseg_call = 0_8
+      ncap_call = 0_8
       N_pass1_eff = N_pass1
       ! Default = N_events (full probe pass).  Shortening Pass 1 makes the
       ! adaptive grid built from N_pass1 < N_events samples too narrow: the
@@ -898,6 +941,8 @@ contains
             T0_step = T1_step
             tau_seg = tau_seg + dts
          end do
+         nseg_call = nseg_call + 1_8
+         if (nstep >= MAX_STEPS .and. tau_seg < dt_act) ncap_call = ncap_call + 1_8
          Tcur     = T0_step
          time_cur = time_cur + tau_seg
 
@@ -952,6 +997,8 @@ contains
             T0_step = T1_step
             tau_seg = tau_seg + dts
          end do
+         nseg_call = nseg_call + 1_8
+         if (nstep >= MAX_STEPS .and. tau_seg < dt_act) ncap_call = ncap_call + 1_8
          Tcur     = T0_step
          time_cur = time_cur + tau_seg
 
@@ -966,6 +1013,8 @@ contains
       end do
 
       t_total = time_cur
+
+      call stepcap_tally('2pass', g%a_um, nseg_call, ncap_call)
 
       dP_dT   = 0.0_wp
       dP_dlnT = 0.0_wp
@@ -1022,8 +1071,11 @@ contains
       real(wp) :: T_sub(N_SUB), dt_sub, lT_or_T_lo, dlnT_or_dT, t_buf_total
       logical  :: is_log, buf_full
       integer  :: ev, j, k, nstep, N_burn_eff, n_used
+      integer(kind=8) :: nseg_call, ncap_call
 
       a_cm = g%a_um * 1.0e-4_wp
+      nseg_call = 0_8
+      ncap_call = 0_8
       N_burn_eff = N_burn
       if (N_burn_eff <= 0)       N_burn_eff = max(50, N_events / 20)
       if (N_burn_eff >= N_events) N_burn_eff = 0
@@ -1073,6 +1125,8 @@ contains
             T0_step = T1_step
             tau_seg = tau_seg + dts
          end do
+         nseg_call = nseg_call + 1_8
+         if (nstep >= MAX_STEPS .and. tau_seg < dt_act) ncap_call = ncap_call + 1_8
          Tcur     = T0_step
          time_cur = time_cur + tau_seg
 
@@ -1087,6 +1141,8 @@ contains
       end do
 
       t_total = time_cur
+
+      call stepcap_tally('buffered', g%a_um, nseg_call, ncap_call)
 
       if (T_min_obs >= T_max_obs) then
          T_min_obs = max(T_init * 0.5_wp, 0.5_wp)

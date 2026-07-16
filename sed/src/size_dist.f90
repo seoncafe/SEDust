@@ -30,16 +30,24 @@ module size_dist_mod
 
 contains
 
-   subroutine load_size_dist(filename)
-      character(len=*), intent(in) :: filename
+   subroutine load_size_dist(filename, ok)
+      character(len=*),  intent(in)  :: filename
+      ! Optional ok: absent -> stop on error as before; present -> return
+      ! .false. (leaving the module unloaded) instead of stopping.
+      logical, optional, intent(out) :: ok
       integer :: u, ios, i
       character(len=512) :: line
 
+      if (present(ok)) ok = .true.
       ! First pass: count data lines (skip leading `#` lines).
       open(newunit=u, file=filename, status='old', action='read', iostat=ios)
       if (ios /= 0) then
-         write(error_unit,'(a,a)') 'load_size_dist: cannot open ', trim(filename)
-         stop 1
+         if (present(ok)) then
+            ok = .false.;  return
+         else
+            write(error_unit,'(a,a)') 'load_size_dist: cannot open ', trim(filename)
+            stop 1
+         end if
       end if
       n_size = 0
       do
@@ -53,9 +61,13 @@ contains
       close(u)
 
       if (n_size < 2) then
-         write(error_unit,'(a,i0,a)') 'load_size_dist: ', n_size, &
-            ' data rows; expected > 100.'
-         stop 1
+         if (present(ok)) then
+            n_size = 0;  ok = .false.;  return
+         else
+            write(error_unit,'(a,i0,a)') 'load_size_dist: ', n_size, &
+               ' data rows; expected > 100.'
+            stop 1
+         end if
       end if
 
       if (allocated(a_dist))  deallocate(a_dist)
@@ -82,9 +94,14 @@ contains
 
       do i = 2, n_size
          if (a_dist(i) <= a_dist(i-1)) then
-            write(error_unit,'(a,i0)') &
-               'load_size_dist: a_dist not strictly ascending at i=', i
-            stop 1
+            if (present(ok)) then
+               deallocate(a_dist, dn_ad, dn_pah, f_ion, f_align)
+               n_size = 0;  ok = .false.;  return
+            else
+               write(error_unit,'(a,i0)') &
+                  'load_size_dist: a_dist not strictly ascending at i=', i
+               stop 1
+            end if
          end if
       end do
    end subroutine load_size_dist

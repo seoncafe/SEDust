@@ -41,23 +41,35 @@ module q_graphite_d16_mod
 
 contains
 
-   subroutine load_q_graphite_d16()
+   subroutine load_q_graphite_d16(ok)
+      ! Optional ok: absent -> stop on error as before; present -> return
+      ! .false. (leaving loaded=.false.) instead of stopping.
+      logical, optional, intent(out) :: ok
       integer  :: u, ios, nrad_h, nwav_h
       character(len=256) :: hdr
       real(wp), allocatable :: Q_all(:,:,:)
       real(wp) :: axrat
 
+      if (present(ok)) ok = .true.
       open(newunit=u, file=F_D16, status='old', action='read', iostat=ios)
       if (ios /= 0) then
-         write(*,'(a,a)') 'q_graphite_d16: cannot open ', F_D16
-         stop 1
+         if (present(ok)) then
+            ok = .false.;  return
+         else
+            write(*,'(a,a)') 'q_graphite_d16: cannot open ', F_D16
+            stop 1
+         end if
       end if
 
       read(u, '(a)') hdr                    ! title
       read(u, *)     nrad_h, nwav_h         ! 168 1008 (indices 0..N)
       if (nrad_h+1 /= NA_D .or. nwav_h+1 /= NW_D) then
-         write(*,'(a,2i6)') 'q_graphite_d16: dim mismatch ', nrad_h, nwav_h
-         stop 1
+         if (present(ok)) then
+            close(u);  ok = .false.;  return
+         else
+            write(*,'(a,2i6)') 'q_graphite_d16: dim mismatch ', nrad_h, nwav_h
+            stop 1
+         end if
       end if
       read(u, *)     axrat                  ! 1.4
       read(u, '(a)') hdr                    ! 'rad(0)...rad(NRAD) follow:'

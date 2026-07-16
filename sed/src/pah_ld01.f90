@@ -24,25 +24,45 @@ module pah_ld01_mod
 
 contains
 
-   subroutine load_pah_ld01()
+   subroutine load_pah_ld01(ok)
+      ! Optional ok: absent -> stop on error as before; present -> return
+      ! .false. (leaving loaded=.false.) instead of stopping. When ok is
+      ! present it is forwarded to read_one so the reader stays silent and
+      ! reports through the flag; when absent read_one keeps its own message.
+      logical, optional, intent(out) :: ok
+      logical :: ok1
+      if (present(ok)) ok = .true.
       if (loaded) return
-      call read_one(F_NEU, lqn, .true.)
-      call read_one(F_ION, lqi, .false.)
+      if (present(ok)) then
+         call read_one(F_NEU, lqn, .true.,  ok1)
+         if (.not. ok1) then;  ok = .false.;  return;  end if
+         call read_one(F_ION, lqi, .false., ok1)
+         if (.not. ok1) then;  ok = .false.;  return;  end if
+      else
+         call read_one(F_NEU, lqn, .true.)
+         call read_one(F_ION, lqi, .false.)
+      end if
       loaded = .true.
    end subroutine load_pah_ld01
 
-   subroutine read_one(fname, lq, set_grids)
+   subroutine read_one(fname, lq, set_grids, ok)
       character(len=*), intent(in)  :: fname
       real(wp),         intent(out) :: lq(NWAV,NRAD)
       logical,          intent(in)  :: set_grids
+      logical, optional, intent(out) :: ok
       integer  :: u, ios, ir, iw, ist
       real(wp) :: ww, qe, qa
       character(len=256) :: line
       real(wp) :: araw(NRAD), wraw(NWAV), qraw(NWAV,NRAD)
 
+      if (present(ok)) ok = .true.
       open(newunit=u, file=fname, status='old', action='read', iostat=ios)
       if (ios /= 0) then
-         write(*,'(a,a)') ' pah_ld01: cannot open ', trim(fname); stop 1
+         if (present(ok)) then
+            ok = .false.;  return
+         else
+            write(*,'(a,a)') ' pah_ld01: cannot open ', trim(fname); stop 1
+         end if
       end if
       ir = 0
       do
@@ -58,8 +78,12 @@ contains
                ! Q_sca/g (items 4-5) can have malformed exponents -> skip them.
                read(line,*,iostat=ist) ww, qe, qa
                if (ist /= 0) then
-                  write(*,'(a,i0,a,i0,a)') ' pah_ld01: parse fail ir=', ir, &
-                       ' iw=', iw, ' line=['//trim(line)//']'; stop 1
+                  if (present(ok)) then
+                     close(u);  ok = .false.;  return
+                  else
+                     write(*,'(a,i0,a,i0,a)') ' pah_ld01: parse fail ir=', ir, &
+                          ' iw=', iw, ' line=['//trim(line)//']'; stop 1
+                  end if
                end if
                qraw(iw,ir) = qa
                if (ir == 1) wraw(iw) = ww

@@ -194,16 +194,32 @@ module sed_astrodust_mod
 contains
 
    ! =====================================================================
-   subroutine sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi)
+   subroutine sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status)
       character(len=*), intent(in) :: qtable_path, sizedist_path
       integer,          intent(in) :: NT_in
       real(wp),         intent(in) :: T_lo, T_hi
+      ! Optional status (0 = success). When present, a failed input read is
+      ! reported through it instead of stopping the process; when absent the
+      ! readers keep their message + stop behavior (as the CLI drivers expect).
+      !   status = 1  Q-table load failed
+      !   status = 2  size-distribution load failed
+      integer, optional, intent(out) :: status
       integer  :: i, ja, jw, jt, is
       real(wp) :: a_um, x, t, Q_neu, Q_ion
+      logical  :: rok
+
+      if (present(status)) status = 0
 
       ! ---- Load Q table and size dist (modules cache their own state) ----
-      call load_q_table(qtable_path)
-      call load_size_dist(sizedist_path)
+      if (present(status)) then
+         call load_q_table(qtable_path, ok=rok)
+         if (.not. rok) then;  status = 1;  return;  end if
+         call load_size_dist(sizedist_path, ok=rok)
+         if (.not. rok) then;  status = 2;  return;  end if
+      else
+         call load_q_table(qtable_path)
+         call load_size_dist(sizedist_path)
+      end if
 
       NLAM = qt_n_lam
       NA   = sd_n
@@ -452,14 +468,21 @@ contains
    ! grain-charging model (pah_ionfrac) at intensity u_isrf.
    ! =====================================================================
    subroutine sed_init_dl07(qtable_path, sizedist_path, sd_index, u_isrf, &
-                            NT_in, T_lo, T_hi)
+                            NT_in, T_lo, T_hi, status)
       character(len=*), intent(in) :: qtable_path, sizedist_path
       integer,          intent(in) :: sd_index, NT_in
       real(wp),         intent(in) :: u_isrf, T_lo, T_hi
+      ! Optional status (0 = success). When present, a failed input read is
+      ! reported through it instead of stopping the process; when absent the
+      ! readers keep their message + stop behavior (as the CLI drivers expect).
+      !   status = 1  Q-table load failed
+      !   status = 2  size-distribution load failed
+      integer, optional, intent(out) :: status
 
       integer  :: i, ja, jw, jt
       real(wp) :: a_um, t, da, qabs1, Q_neu, Q_ion, ksi
       real(wp), allocatable :: fion(:), lna(:)
+      logical  :: rok
       ! Draine's size grid: A(KA) = 1e-8*10^(0.55+(KA-1)*0.05) cm,
       ! NSIZE=84 (3.548 A .. 5.012 um, 0.05-dex log spacing). A(30)=100 A lands
       ! exactly on a node, so the 100 A charge cutoff sits on a grid point.
@@ -470,8 +493,16 @@ contains
       ! Lambda grid from the Q-table. The aeff grid is Draine's analytic 84-pt
       ! log grid built below -- NOT the size-dist file, whose dn columns are
       ! unused here (dn/da comes from grain_dist_dl07, the WD01 analytic model).
-      call load_q_table(qtable_path)
-      call load_size_dist(sizedist_path)
+      if (present(status)) status = 0
+      if (present(status)) then
+         call load_q_table(qtable_path, ok=rok)
+         if (.not. rok) then;  status = 1;  return;  end if
+         call load_size_dist(sizedist_path, ok=rok)
+         if (.not. rok) then;  status = 2;  return;  end if
+      else
+         call load_q_table(qtable_path)
+         call load_size_dist(sizedist_path)
+      end if
 
       NLAM = qt_n_lam
       NA   = NSIZE_BD
@@ -1526,15 +1557,26 @@ contains
 
    ! Build the HD23 astrodust model into m. Channels: AD_S1, AD_S2, PAH
    ! (PAH = neutral + cation populations summed into one channel).
-   subroutine build_astrodust(m, qtable_path, sizedist_path, NT_in, T_lo, T_hi)
+   subroutine build_astrodust(m, qtable_path, sizedist_path, NT_in, T_lo, T_hi, status)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: qtable_path, sizedist_path
       integer,            intent(in)  :: NT_in
       real(wp),           intent(in)  :: T_lo, T_hi
+      ! Optional status (0 = success, non-zero = model build failed). When
+      ! present, a failed input read is reported through it instead of stopping
+      ! the process; when absent the build stops on error (CLI behavior).
+      !   status = 1  Q-table load failed
+      !   status = 2  size-distribution load failed
+      integer, optional,  intent(out) :: status
+
+      if (present(status)) status = 0
 
       ! Astrodust/HD23 optics: Nc=417 (rho=2.0), D16 turbostratic graphite.
       nc_coeff = 417.0d0;  nc_integer = .false.;  qpah_use_d03_graphite = .false.
-      call sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi)   ! sets globals
+      call sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status=status)  ! sets globals
+      if (present(status)) then
+         if (status /= 0) return
+      end if
 
       m%name = 'astrodust'
       m%NA = NA;  m%NLAM = NLAM;  m%NT = NT
@@ -1562,17 +1604,29 @@ contains
    ! Build the DL07 model into m. Channels: SIL, CARB (carbonaceous =
    ! neutral + cation summed). Reuses sed_init_dl07 to set the globals.
    subroutine build_dl07(m, qtable_path, sizedist_path, sd_index, u_isrf, &
-                         NT_in, T_lo, T_hi)
+                         NT_in, T_lo, T_hi, status)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: qtable_path, sizedist_path
       integer,            intent(in)  :: sd_index, NT_in
       real(wp),           intent(in)  :: u_isrf, T_lo, T_hi
+      ! Optional status (0 = success, non-zero = model build failed). When
+      ! present, a failed input read is reported through it instead of stopping
+      ! the process; when absent the build stops on error (CLI behavior).
+      !   status = 1  Q-table load failed
+      !   status = 2  size-distribution load failed
+      integer, optional,  intent(out) :: status
+
+      if (present(status)) status = 0
 
       ! DL07 carbonaceous optics (matching Draine): Nc=470 (rho~2.2, NINT),
       ! D03 graphite, and the Draine-2003a 0.93 abundance reduction.
       nc_coeff = 470.0d0;  nc_integer = .true.;  qpah_use_d03_graphite = .true.
       gd_apply_d03_reduction = .true.
-      call sed_init_dl07(qtable_path, sizedist_path, sd_index, u_isrf, NT_in, T_lo, T_hi)
+      call sed_init_dl07(qtable_path, sizedist_path, sd_index, u_isrf, NT_in, T_lo, T_hi, &
+                         status=status)
+      if (present(status)) then
+         if (status /= 0) return
+      end if
 
       m%name = 'dl07'
       m%NA = NA;  m%NLAM = NLAM;  m%NT = NT
@@ -1623,27 +1677,48 @@ contains
    ! (Cabs = Qabs*pi*a^2); enthalpy from the specific-heat calorimetry tables
    ! (H = u_spec(T)*rho*(4pi/3)a^3). The shared lambda grid is the optics
    ! grid (all 3 components share 1201 wavelengths). Channels: PAH, GRA, SIL.
-   subroutine build_zubko(m, config_path, data_dir, NT_in, T_lo, T_hi)
+   subroutine build_zubko(m, config_path, data_dir, NT_in, T_lo, T_hi, status)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: config_path, data_dir
       integer,            intent(in)  :: NT_in
       real(wp),           intent(in)  :: T_lo, T_hi
+      ! Optional status (0 = success, non-zero = model build failed). When
+      ! present, a bad input is reported through it instead of stopping; when
+      ! absent the build stops on error (CLI behavior).
+      !   status = 1  config read failed
+      !   status = 2  fewer than 3 components in the config
+      !   status = 3  a component's optics read failed
+      !   status = 4  a component's size/wavelength grid is inconsistent
+      !   status = 5  a component's calorimetry read failed
+      integer, optional,  intent(out) :: status
 
       type(zda_comp_t)      :: comps(ZDA_MAXCOMP)
       integer               :: ncomp, ic, jt, ja, jw, nsize, nwave, ntc
       real(wp)              :: rho, vol_fac, mass, dlna, uspec, t, wdev
       real(wp), allocatable :: a_opt(:), lam_opt(:), qa(:,:), qs(:,:)
       real(wp), allocatable :: Tcal(:), Ucal(:), Ccal(:), Hcol(:)
+      logical               :: rok
       character(len=16)     :: cn(3)
       character(len=8)      :: gt(3)
       character(len=64)     :: optf
 
+      if (present(status)) status = 0
+
       cn = [character(len=16):: 'PAH', 'GRA', 'SIL']
       gt = [character(len=8) :: 'pah', 'gra', 'sil']
 
-      call read_zda_config(config_path, ncomp, comps)
+      if (present(status)) then
+         call read_zda_config(config_path, ncomp, comps, ok=rok)
+         if (.not. rok) then;  status = 1;  return;  end if
+      else
+         call read_zda_config(config_path, ncomp, comps)
+      end if
       if (ncomp < 3) then
-         write(*,'(a)') ' build_zubko: expected 3 components'; stop 1
+         if (present(status)) then
+            status = 2;  return
+         else
+            write(*,'(a)') ' build_zubko: expected 3 components'; stop 1
+         end if
       end if
 
       m%name = 'zubko'
@@ -1656,14 +1731,24 @@ contains
       do ic = 1, 3
          ! Cross-section file name from the config ('Cross Sections=...').
          optf = trim(comps(ic)%xsec)//'.dat'
-         call read_zubko_optics(trim(data_dir)//trim(optf), nsize, nwave, &
-                                a_opt, lam_opt, qa, qs, rho)
+         if (present(status)) then
+            call read_zubko_optics(trim(data_dir)//trim(optf), nsize, nwave, &
+                                   a_opt, lam_opt, qa, qs, rho, ok=rok)
+            if (.not. rok) then;  status = 3;  return;  end if
+         else
+            call read_zubko_optics(trim(data_dir)//trim(optf), nsize, nwave, &
+                                   a_opt, lam_opt, qa, qs, rho)
+         end if
 
          ! The endpoint dln(a) below reads a_opt(2), so demand at least 2 radii.
          if (nsize < 2) then
-            write(*,'(a,i0,a,i0)') ' build_zubko: component ', ic, &
-               ' needs >= 2 radii, got ', nsize
-            stop 1
+            if (present(status)) then
+               status = 4;  return
+            else
+               write(*,'(a,i0,a,i0)') ' build_zubko: component ', ic, &
+                  ' needs >= 2 radii, got ', nsize
+               stop 1
+            end if
          end if
 
          ! On the first component, fix the shared lambda + T grids (globals)
@@ -1685,15 +1770,23 @@ contains
          else
             ! All components must share the lambda grid fixed on component 1.
             if (nwave /= NLAM) then
-               write(*,'(a,i0,a,i0,a,i0)') ' build_zubko: component ', ic, &
-                  ' wavelength count ', nwave, ' /= ', NLAM
-               stop 1
+               if (present(status)) then
+                  status = 4;  return
+               else
+                  write(*,'(a,i0,a,i0,a,i0)') ' build_zubko: component ', ic, &
+                     ' wavelength count ', nwave, ' /= ', NLAM
+                  stop 1
+               end if
             end if
             wdev = maxval(abs(lam_opt - lam) / lam)
             if (wdev > 1.0e-6_wp) then
-               write(*,'(a,i0,a,es12.4)') ' build_zubko: component ', ic, &
-                  ' wavelength grid mismatch, max rel dev = ', wdev
-               stop 1
+               if (present(status)) then
+                  status = 4;  return
+               else
+                  write(*,'(a,i0,a,es12.4)') ' build_zubko: component ', ic, &
+                     ' wavelength grid mismatch, max rel dev = ', wdev
+                  stop 1
+               end if
             end if
          end if
 
@@ -1710,7 +1803,12 @@ contains
          call build_kappCMB()       ! -> kappCMB
 
          ! --- enthalpy H(T,a) = u_spec(T) * rho * (4pi/3) a_cm^3 ---
-         call read_zubko_calor(trim(data_dir)//trim(comps(ic)%calor), ntc, Tcal, Ucal, Ccal)
+         if (present(status)) then
+            call read_zubko_calor(trim(data_dir)//trim(comps(ic)%calor), ntc, Tcal, Ucal, Ccal, ok=rok)
+            if (.not. rok) then;  status = 5;  return;  end if
+         else
+            call read_zubko_calor(trim(data_dir)//trim(comps(ic)%calor), ntc, Tcal, Ucal, Ccal)
+         end if
          vol_fac = (4.0_wp/3.0_wp) * PI
          allocate(Hcol(NT))
          block
@@ -1800,11 +1898,23 @@ contains
    ! 2-column a[um] dn/da[cm^-1 H^-1] table, and the enthalpy a specific-heat
    ! calorimetry table; all files are sought under data_dir. This is the
    ! data-driven path (build_astrodust/dl07/zubko are the coded builders).
-   subroutine build_from_files(m, descriptor_path, data_dir, NT_in, T_lo, T_hi)
+   subroutine build_from_files(m, descriptor_path, data_dir, NT_in, T_lo, T_hi, status)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: descriptor_path, data_dir
       integer,            intent(in)  :: NT_in
       real(wp),           intent(in)  :: T_lo, T_hi
+      ! Optional status (0 = success, non-zero = model build failed). When
+      ! present, a bad input is reported through it instead of stopping; when
+      ! absent the build stops on error (CLI behavior).
+      !   status = 1  descriptor open failed
+      !   status = 2  too many pop: lines (MAXP exceeded)
+      !   status = 3  a population has an invalid channel
+      !   status = 4  no pop: lines found
+      !   status = 5  a population's optics read failed
+      !   status = 6  a population's size/wavelength grid is inconsistent
+      !   status = 7  a population's size-distribution read failed
+      !   status = 8  a population's calorimetry read failed
+      integer, optional,  intent(out) :: status
 
       integer, parameter :: MAXP = 16
       character(len=8)   :: p_gt(MAXP)
@@ -1813,14 +1923,21 @@ contains
       real(wp)           :: p_rho(MAXP)
       integer            :: npop, u, ios, ip, jt, ja, jw, nsize, nwave, ntc, ndn, nchan, ic, nline
       real(wp)           :: t, rho, mass, vf, dlna, uspec, fa, loga, wdev
+      logical            :: rok
       character(len=256) :: line
       real(wp), allocatable :: a_opt(:), lam_opt(:), qa(:,:), qs(:,:)
       real(wp), allocatable :: a_dn(:), f_dn(:), la_dn(:), lf_dn(:), Tc(:), Uc(:), Cc(:)
 
+      if (present(status)) status = 0
+
       npop = 0;  nline = 0;  m%name = 'file_model'
       open(newunit=u, file=trim(descriptor_path), status='old', action='read', iostat=ios)
       if (ios /= 0) then
-         write(*,'(a,a)') ' build_from_files: cannot open ', trim(descriptor_path); stop 1
+         if (present(status)) then
+            status = 1;  return
+         else
+            write(*,'(a,a)') ' build_from_files: cannot open ', trim(descriptor_path); stop 1
+         end if
       end if
       do
          read(u,'(a)', iostat=ios) line;  if (ios /= 0) exit
@@ -1829,17 +1946,25 @@ contains
          if (len_trim(line) == 0 .or. line(1:1) == '#') cycle
          if (line(1:4) == 'pop:') then
             if (npop >= MAXP) then
-               write(*,'(a,i0,a,i0)') ' build_from_files: too many pop: lines (max ', &
-                  MAXP, ') at input line ', nline
-               stop 1
+               if (present(status)) then
+                  close(u);  status = 2;  return
+               else
+                  write(*,'(a,i0,a,i0)') ' build_from_files: too many pop: lines (max ', &
+                     MAXP, ') at input line ', nline
+                  stop 1
+               end if
             end if
             npop = npop + 1
             read(line(5:), *) p_gt(npop), p_ch(npop), p_opt(npop), p_dn(npop), &
                               p_cal(npop), p_rho(npop)
             if (p_ch(npop) < 1) then
-               write(*,'(a,i0,a,i0)') ' build_from_files: population ', npop, &
-                  ' has invalid channel ', p_ch(npop)
-               stop 1
+               if (present(status)) then
+                  close(u);  status = 3;  return
+               else
+                  write(*,'(a,i0,a,i0)') ' build_from_files: population ', npop, &
+                     ' has invalid channel ', p_ch(npop)
+                  stop 1
+               end if
             end if
          else if (index(line,'name') > 0 .and. index(line,'=') > 0) then
             m%name = trim(adjustl(line(index(line,'=')+1:)))
@@ -1847,7 +1972,11 @@ contains
       end do
       close(u)
       if (npop == 0) then
-         write(*,'(a)') ' build_from_files: no pop: lines found'; stop 1
+         if (present(status)) then
+            status = 4;  return
+         else
+            write(*,'(a)') ' build_from_files: no pop: lines found'; stop 1
+         end if
       end if
       nchan = maxval(p_ch(1:npop))
 
@@ -1861,15 +1990,25 @@ contains
       allocate(m%pops(npop))
 
       do ip = 1, npop
-         call read_zubko_optics(trim(data_dir)//trim(p_opt(ip)), nsize, nwave, &
-                                a_opt, lam_opt, qa, qs, rho)
+         if (present(status)) then
+            call read_zubko_optics(trim(data_dir)//trim(p_opt(ip)), nsize, nwave, &
+                                   a_opt, lam_opt, qa, qs, rho, ok=rok)
+            if (.not. rok) then;  status = 5;  return;  end if
+         else
+            call read_zubko_optics(trim(data_dir)//trim(p_opt(ip)), nsize, nwave, &
+                                   a_opt, lam_opt, qa, qs, rho)
+         end if
          if (p_rho(ip) > 0.0_wp) rho = p_rho(ip)         ! descriptor rho overrides file
 
          ! The endpoint dln(a) below reads a_opt(2), so demand at least 2 radii.
          if (nsize < 2) then
-            write(*,'(a,i0,a,i0)') ' build_from_files: population ', ip, &
-               ' needs >= 2 radii, got ', nsize
-            stop 1
+            if (present(status)) then
+               status = 6;  return
+            else
+               write(*,'(a,i0,a,i0)') ' build_from_files: population ', ip, &
+                  ' needs >= 2 radii, got ', nsize
+               stop 1
+            end if
          end if
 
          if (ip == 1) then
@@ -1889,15 +2028,23 @@ contains
          else
             ! Every population must share the lambda grid fixed on population 1.
             if (nwave /= NLAM) then
-               write(*,'(a,i0,a,i0,a,i0)') ' build_from_files: population ', ip, &
-                  ' wavelength count ', nwave, ' /= ', NLAM
-               stop 1
+               if (present(status)) then
+                  status = 6;  return
+               else
+                  write(*,'(a,i0,a,i0,a,i0)') ' build_from_files: population ', ip, &
+                     ' wavelength count ', nwave, ' /= ', NLAM
+                  stop 1
+               end if
             end if
             wdev = maxval(abs(lam_opt - lam) / lam)
             if (wdev > 1.0e-6_wp) then
-               write(*,'(a,i0,a,es12.4)') ' build_from_files: population ', ip, &
-                  ' wavelength grid mismatch, max rel dev = ', wdev
-               stop 1
+               if (present(status)) then
+                  status = 6;  return
+               else
+                  write(*,'(a,i0,a,es12.4)') ' build_from_files: population ', ip, &
+                     ' wavelength grid mismatch, max rel dev = ', wdev
+                  stop 1
+               end if
             end if
          end if
 
@@ -1911,10 +2058,20 @@ contains
          end do
          call build_kappB();  call build_kappCMB()
 
-         call read_dnda_table(trim(data_dir)//trim(p_dn(ip)), ndn, a_dn, f_dn)
+         if (present(status)) then
+            call read_dnda_table(trim(data_dir)//trim(p_dn(ip)), ndn, a_dn, f_dn, ok=rok)
+            if (.not. rok) then;  status = 7;  return;  end if
+         else
+            call read_dnda_table(trim(data_dir)//trim(p_dn(ip)), ndn, a_dn, f_dn)
+         end if
          allocate(la_dn(ndn), lf_dn(ndn))
          la_dn = log(a_dn);  lf_dn = log(max(f_dn, tiny(0.0_wp)))
-         call read_zubko_calor(trim(data_dir)//trim(p_cal(ip)), ntc, Tc, Uc, Cc)
+         if (present(status)) then
+            call read_zubko_calor(trim(data_dir)//trim(p_cal(ip)), ntc, Tc, Uc, Cc, ok=rok)
+            if (.not. rok) then;  deallocate(la_dn, lf_dn);  status = 8;  return;  end if
+         else
+            call read_zubko_calor(trim(data_dir)//trim(p_cal(ip)), ntc, Tc, Uc, Cc)
+         end if
          vf = (4.0_wp/3.0_wp) * PI
 
          block

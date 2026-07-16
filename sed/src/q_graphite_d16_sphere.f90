@@ -31,14 +31,22 @@ module q_graphite_d16_sphere_mod
 
 contains
 
-   subroutine load_q_graphite_d16_sphere()
+   subroutine load_q_graphite_d16_sphere(ok)
+      ! Optional ok: absent -> stop on error as before; present -> return
+      ! .false. (leaving loaded=.false.) instead of stopping.
+      logical, optional, intent(out) :: ok
       integer  :: u, ios, ja
       character(len=512) :: hdr
 
+      if (present(ok)) ok = .true.
       open(newunit=u, file=F_D16S, status='old', action='read', iostat=ios)
       if (ios /= 0) then
-         write(*,'(a,a)') 'q_graphite_d16_sphere: cannot open ', F_D16S
-         stop 1
+         if (present(ok)) then
+            ok = .false.;  return
+         else
+            write(*,'(a,a)') 'q_graphite_d16_sphere: cannot open ', F_D16S
+            stop 1
+         end if
       end if
       read(u, '(a)') hdr             ! '41 3501   # NRAD NWAV ...'
       read(u, *)     a_grid          ! 41 radii (um)
