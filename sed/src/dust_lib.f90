@@ -66,7 +66,7 @@ module dust_lib
    ! is untouched; this module only re-exports the model API and adds the
    ! table/interpolation layer.
    use constants,         only: wp
-   use mathlib,           only: interp
+   use mathlib,           only: locate
    use sed_astrodust_mod, only: dust_model_t, &
                                 build_astrodust, build_dl07, build_zubko, build_from_files, &
                                 dust_emission, dust_emission_single_teq
@@ -84,6 +84,7 @@ module dust_lib
    type :: dust_emis_table_t
       integer               :: NLAM = 0, n_channel = 0, NU = 0
       real(wp), allocatable :: U(:)            ! (NU)   intensity-scaling grid
+      real(wp), allocatable :: logU(:)         ! (NU)   log(U), cached for interp
       real(wp), allocatable :: lam(:)          ! (NLAM) [um]
       real(wp), allocatable :: J_ref(:)        ! (NLAM) reference field shape (U=1)
       real(wp), allocatable :: total(:,:)      ! (NLAM, NU)
@@ -160,10 +161,11 @@ contains
 
       call dust_free_table(tab)
       tab%NLAM = m%NLAM;  tab%n_channel = m%n_channel;  tab%NU = size(U_grid)
-      allocate(tab%U(tab%NU), tab%lam(tab%NLAM), tab%J_ref(tab%NLAM))
+      allocate(tab%U(tab%NU), tab%logU(tab%NU), tab%lam(tab%NLAM), tab%J_ref(tab%NLAM))
       allocate(tab%total(tab%NLAM, tab%NU))
       allocate(tab%chan(tab%NLAM, tab%n_channel, tab%NU))
       tab%U = U_grid;  tab%lam = m%lam;  tab%J_ref = J_ref
+      tab%logU = log(tab%U)   ! cached once; the U bracket is grid-fixed at interp
 
       allocate(total(m%NLAM), chan(m%NLAM, m%n_channel))
       do iu = 1, tab%NU
@@ -187,9 +189,9 @@ contains
       ! Optional error report (0 = success); see the module header for codes.
       ! Validation is scalar/size-only to keep this on the per-cell hot path.
       integer, optional,       intent(out) :: status
-      real(wp), allocatable :: lU(:)
+      real(wp) :: ly(tab%NU)
       real(wp) :: lr, lUq
-      integer  :: k, c
+      integer  :: k, c, jlo
 
       if (present(status)) status = 0
       if (U <= 0.0_wp) then
@@ -220,26 +222,45 @@ contains
          end if
       end if
 
-      allocate(lU(tab%NU));  lU = log(tab%U)
+      ! tab%logU (= log(tab%U)) is cached at build time and is strictly
+      ! ascending because U_grid is positive and strictly increasing. The U
+      ! bracket is the same for every wavelength and channel, so locate it once
+      ! and reuse jlo below. The interpolation arithmetic is the ascending
+      ! branch of interp1, kept term-for-term (log-log, clamped to the ends).
       lUq = log(U)
+      call locate(tab%logU, lUq, jlo)
       do k = 1, tab%NLAM
-         call interp(lU, log(max(tab%total(k, :), 1.0e-300_wp)), lUq, lr)
+         ly = log(max(tab%total(k, :), 1.0e-300_wp))
+         if (jlo == 0) then
+            lr = ly(1)
+         else if (jlo == tab%NU) then
+            lr = ly(tab%NU)
+         else
+            lr = ly(jlo) + (ly(jlo+1)-ly(jlo))*(lUq-tab%logU(jlo))/(tab%logU(jlo+1)-tab%logU(jlo))
+         end if
          lamI_total(k) = exp(lr)
       end do
       if (present(lamI_chan)) then
          do c = 1, tab%n_channel
             do k = 1, tab%NLAM
-               call interp(lU, log(max(tab%chan(k, c, :), 1.0e-300_wp)), lUq, lr)
+               ly = log(max(tab%chan(k, c, :), 1.0e-300_wp))
+               if (jlo == 0) then
+                  lr = ly(1)
+               else if (jlo == tab%NU) then
+                  lr = ly(tab%NU)
+               else
+                  lr = ly(jlo) + (ly(jlo+1)-ly(jlo))*(lUq-tab%logU(jlo))/(tab%logU(jlo+1)-tab%logU(jlo))
+               end if
                lamI_chan(k, c) = exp(lr)
             end do
          end do
       end if
-      deallocate(lU)
    end subroutine dust_emission_interp
 
    subroutine dust_free_table(tab)
       type(dust_emis_table_t), intent(inout) :: tab
       if (allocated(tab%U))     deallocate(tab%U)
+      if (allocated(tab%logU))  deallocate(tab%logU)
       if (allocated(tab%lam))   deallocate(tab%lam)
       if (allocated(tab%J_ref)) deallocate(tab%J_ref)
       if (allocated(tab%total)) deallocate(tab%total)
