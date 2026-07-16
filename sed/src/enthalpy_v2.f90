@@ -28,7 +28,6 @@ contains
 
    real(kind=wp) :: natom
    real(kind=wp) :: H_C, UCH
-   integer :: NH
 
    select case (trim(dtype))
    case ('Car0', 'Car1')
@@ -39,6 +38,7 @@ contains
       U     = (natom-2._wp)*kB*T*(2.0_wp*debye2(real(T2/T,8)) + debye3(real(T3/T,8)))
    case default
       print*, '! enthalpy_DL01: calculations only available for Gra, PAH, or Sil'
+      stop 1
    end select
 
    ! DL01-original C-H mode size threshold (natom <= 5.75e4, a <~ 50 AA).
@@ -102,7 +102,11 @@ contains
                                two = 2.0_8
    
    u1 = zero
-   
+   ! Init d2/u2 so the (compiler-visible) n<0 path cannot read them; the
+   ! actual series always has n>=0 and overwrites them in the loops below.
+   u2 = zero
+   d2 = zero
+
    !   If ABS ( T )  < 0.6 use the standard Clenshaw method
    IF (ABS(t) < test) THEN
      u0 = zero
@@ -428,6 +432,7 @@ contains
       U = (real(natom,8)-2.0_wp) * U
    case default
       print*, '! enthalpy_GD89: calculations only available for Gra & Sil identifiers'
+      stop 1
    end select
 
    contains

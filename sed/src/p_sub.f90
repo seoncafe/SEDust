@@ -109,7 +109,7 @@ contains
       integer  :: nlambda, nT, k, i1, i2, j
       real(wp) :: ener, wavl, kappB_tot
       real(wp) :: Jwavl, delH, Cross
-      real(wp) :: sumP, sumlnP
+      real(wp) :: sumP
       real(wp) :: sumB
       integer  :: nwav
       real(wp) :: dlnwav, wav

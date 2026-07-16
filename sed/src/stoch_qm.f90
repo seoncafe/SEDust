@@ -864,58 +864,6 @@ contains
 
 
    !====================================================================
-   ! 12b. Compute cooling rate = 4*pi * integral Cabs * B_lam(T) dlam
-   !      Total cooling rate, following Draine's method.
-   !
-   !      Uses log-spaced trapezoidal integration on the ISRF wavelength
-   !      grid: integral f(lam) dlam = integral f(lam) * lam * d(ln lam)
-   !
-   !      B_lambda(T) = (2*h*c^2/lambda^5) / (exp(hc/(lambda*kT)) - 1)
-   !      in CGS: erg/s/cm^2/sr/cm (lambda in cm).
-   !
-   !      Returns: total cooling power (erg/s) = 4*pi * integral(Cabs * B_lam * dlam)
-   !====================================================================
-   function calc_cooling_rate(T, nisrf, isrf_wl, cabs_arr) result(rate)
-      implicit none
-      real(wp), intent(in)  :: T
-      integer,  intent(in)  :: nisrf
-      real(wp), intent(in)  :: isrf_wl(nisrf), cabs_arr(nisrf)
-      real(wp) :: rate
-
-      integer  :: i
-      real(wp) :: wl, x, blam, fi, dlnlam
-      real(wp), parameter :: TWO_HC2 = 2.0_wp * H_CGS * C_CGS * C_CGS
-      real(wp), parameter :: FOUR_PI = 4.0_wp * PI_CGS
-
-      rate = 0.0_wp
-      if (T <= 0.0_wp) return
-
-      ! Trapezoidal integration in ln(lambda) space:
-      ! integral f(lam) dlam = sum f(lam_i) * lam_i * dlnlam_i
-      do i = 1, nisrf
-         wl = isrf_wl(i)
-         x  = HC_CGS / (wl * KB_CGS * T)
-         if (x < 500.0_wp) then
-            blam = TWO_HC2 / (wl**5 * (exp(x) - 1.0_wp))
-         else
-            blam = 0.0_wp
-         end if
-         fi = FOUR_PI * cabs_arr(i) * blam
-
-         ! Log-spaced trapezoidal weights
-         if (i == 1) then
-            dlnlam = 0.5_wp * log(isrf_wl(2) / isrf_wl(1))
-         else if (i == nisrf) then
-            dlnlam = 0.5_wp * log(isrf_wl(nisrf) / isrf_wl(nisrf - 1))
-         else
-            dlnlam = 0.5_wp * log(isrf_wl(i + 1) / isrf_wl(i - 1))
-         end if
-         rate = rate + fi * wl * dlnlam
-      end do
-   end function calc_cooling_rate
-
-
-   !====================================================================
    ! 13. Sparse matrix routines + BiCG solver
    !     Biconjugate-gradient sparse solver.
    !====================================================================
@@ -1037,7 +985,7 @@ contains
       real(wp), intent(out)   :: err_out
 
       real(wp), allocatable :: p(:), pp(:), r(:), rr(:), z(:), zz(:)
-      real(wp) :: ak, akden, bk, bkden, bknum, bnrm, dxnrm, xnrm, &
+      real(wp) :: ak, akden, bk, bkden, bknum, bnrm, &
                   zm1nrm, znrm
       real(wp), parameter :: EPS_BCG = 1.0d-14
       integer :: j, iter
@@ -1671,35 +1619,6 @@ contains
       end subroutine select_de
 
 
-      ! DE selection for thermal path (dbdis/dbcon), silicate only.
-      ! Following Draine's method.
-      ! Default DE = 1e-2; refined only when mode spacing < 0.02.
-      subroutine select_de_thermal(dx, de_out)
-         real(wp), intent(in)  :: dx
-         real(wp), intent(out) :: de_out
-         de_out = 1.0d-2
-         if (dx < 0.02_wp) then
-            if (dx > 0.01_wp) then
-               de_out = 5.0d-3
-            else if (dx > 0.004_wp) then
-               de_out = 2.0d-3
-            else if (dx > 0.002_wp) then
-               de_out = 1.0d-3
-            else if (dx > 0.001_wp) then
-               de_out = 5.0d-4
-            else if (dx > 0.0004_wp) then
-               de_out = 2.0d-4
-            else if (dx > 0.0002_wp) then
-               de_out = 1.0d-4
-            else if (dx > 0.0001_wp) then
-               de_out = 5.0d-5
-            else
-               de_out = 1.0d-5
-            end if
-         end if
-      end subroutine select_de_thermal
-
-
       ! Fallback: simple log-spaced bins when mode-tracking is infeasible
       subroutine fallback_log_bins(ns, umin_f, umax_f, u_f, ua_f, ub_f)
          integer,  intent(in)  :: ns
@@ -1753,68 +1672,6 @@ contains
       end select
       natom = max(natom, 3)
    end function compute_natom
-
-
-   !====================================================================
-   ! 16. (LEGACY) Construct enthalpy bins from H(T) table -- log-spaced.
-   !     Kept for reference; replaced by build_enthalpy_bins_qm (14h).
-   !====================================================================
-   subroutine build_enthalpy_bins_legacy(nstate, umin, umax, &
-                                         u, ua, ub, t_bins, &
-                                         nt_wide, t_wide, h_wide)
-      use mathlib, only: interp
-      implicit none
-      integer,  intent(in)  :: nstate, nt_wide
-      real(wp), intent(in)  :: umin, umax
-      real(wp), intent(in)  :: t_wide(nt_wide), h_wide(nt_wide)
-      real(wp), intent(out) :: u(nstate), ua(nstate), ub(nstate), t_bins(nstate)
-
-      integer  :: i
-      real(wp) :: dlgu, log_t, umin_eff
-
-      if (umin == 0.0_wp) then
-         umin_eff = umax * 1.0d-8
-         dlgu = log10(umax / umin_eff) / real(nstate - 1, wp)
-         do i = 1, nstate
-            u(i) = umin_eff * 10.0_wp**(real(i - 1, wp) * dlgu)
-         end do
-         do i = 2, nstate - 1
-            ua(i) = (u(i) + u(i-1)) / 2.0_wp
-            ub(i) = (u(i) + u(i+1)) / 2.0_wp
-         end do
-         ua(1) = u(1) * 0.5_wp
-         ub(1) = ua(2)
-         ua(nstate) = ub(nstate - 1)
-         ub(nstate) = u(nstate)
-      else
-         dlgu = log10(umax / umin) / real(nstate - 1, wp)
-         do i = 1, nstate
-            u(i) = umin * 10.0_wp**(real(i - 1, wp) * dlgu)
-         end do
-         do i = 2, nstate - 1
-            ua(i) = (u(i) + u(i-1)) / 2.0_wp
-            ub(i) = (u(i) + u(i+1)) / 2.0_wp
-         end do
-         ua(1) = u(1)
-         ub(1) = ua(2)
-         ua(nstate) = ub(nstate - 1)
-         ub(nstate) = u(nstate)
-      end if
-
-      do i = 1, nstate
-         if (u(i) <= 0.0_wp) then
-            t_bins(i) = 0.0_wp
-         else if (u(i) <= h_wide(1)) then
-            t_bins(i) = t_wide(1)
-         else if (u(i) >= h_wide(nt_wide)) then
-            t_bins(i) = t_wide(nt_wide)
-         else
-            call interp(log(max(h_wide, tiny(1.0_wp))), log(t_wide), &
-                         log(u(i)), log_t)
-            t_bins(i) = exp(log_t)
-         end if
-      end do
-   end subroutine build_enthalpy_bins_legacy
 
 
    !====================================================================

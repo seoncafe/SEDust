@@ -29,7 +29,7 @@ program main_pT_compare
    use mc_grain_type,     only: mc_grain_t
    use mc_engine,         only: grain_setup_from_cabs, mc_run_engine, &
                                 mc_run_engine_2pass, mc_run_engine_buffered
-   use sed_astrodust_mod, only: sed_init, NLAM, NA, NT, lam, aeff, T_first, &
+   use sed_astrodust_mod, only: sed_init, NLAM, NA, lam, aeff, T_first, &
                                 Cabs, Cabs_pah, kappB_first, kappB_pah_first, &
                                 H_first, H_pah_first, kappCMB, kappCMB_pah
    use enthalpy_astrodust_mod, only: s1_density_corrected

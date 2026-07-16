@@ -68,7 +68,7 @@ contains
 
   n  = size(x)
   dx = x(2) - x(1)
-  i  = (xnew-x(1))/dx + 1
+  i  = int((xnew-x(1))/dx + 1)
   if (i <= 0) then
      ynew = y(1)
   else if (i >= n) then

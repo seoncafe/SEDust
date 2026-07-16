@@ -574,9 +574,15 @@ contains
          else if (abs(dTdt0) > 0.0_wp) then
             dts = min(dt_left, DT_FRAC_MAX * T0 / abs(dTdt0))
             T1  = T0 + dts * dTdt0
+            ! Non-cooling step: set T_eq_loc = T0 (same convention as
+            ! step_advance) so accumulate_step takes the linear sub-sampling
+            ! branch (T0 + (T1-T0)*t/dts) instead of the exponential-relaxation
+            ! branch with a stale/uninitialized T_eq_loc.
+            T_eq_loc = T0
          else
             dts = dt_left
             T1  = T0
+            T_eq_loc = T0
          end if
          if (T1 < T_FLOOR) T1 = T_FLOOR
 

@@ -18,8 +18,15 @@ FC      = gfortran
 # Portable baseline by default so libsedust.a runs on any node it is copied
 # to.  Uncomment the -march=native line for a host-optimized build (results
 # can differ in the last digits through FMA contraction).
-FFLAGS  = -O3 -ffree-line-length-none -w
-# FFLAGS  = -O3 -march=native -ffree-line-length-none -w
+# Warning set: -Wall -Wextra minus a few false-positive categories.
+#   compare-reals: intended sentinel / exactly-0 / NaN comparisons (documented).
+#   unused-dummy-argument: kept to preserve shared interfaces.
+#   unused-parameter: named constants kept for documentation.
+#   do-subscript: false positives from the guarded trapezoid loops.
+WARN    = -Wall -Wextra -Wno-compare-reals -Wno-unused-dummy-argument \
+          -Wno-unused-parameter -Wno-do-subscript
+FFLAGS  = -O3 -ffree-line-length-none $(WARN)
+# FFLAGS  = -O3 -march=native -ffree-line-length-none $(WARN)
 FFLAGS += -fopenmp
 
 # ---- source groups, in dependency order ------------------------------

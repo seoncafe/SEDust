@@ -153,7 +153,7 @@ contains
       real(wp), intent(in)  :: lambda
       real(wp), intent(out) :: Qabs
       real(wp) :: x, n_pa, k_pa, n_pe, k_pe
-      real(wp) :: Qext1, Qsca1, Qabs1, alb1, gsca1
+      real(wp) :: Qext1, Qsca1, alb1, gsca1
       real(wp) :: Qabs_pa, Qabs_pe
 
       if (.not. loaded) call load_tables()

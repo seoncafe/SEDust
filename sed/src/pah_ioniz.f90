@@ -16,7 +16,9 @@ module pah_ioniz_mod
    ! procedures correspond to that method's steps as follows:
    !    PAH_CHARGING_DISM  -> pah_ionfrac (this module)
    !    CHARGE             -> charge (subroutine)
-   !    DJPEDE, DGPEDE     -> djpede, dgpede (integrands)
+   !    DJPEDE             -> djpede (integrand; DGPEDE, the
+   !                          photodetachment-heating integrand, is not used
+   !                          by this pipeline and was not carried over)
    !    THRESHOLDS         -> thresholds
    !    PEYIELD            -> peyield
    !    DQG32              -> dqg32 (32-pt Gauss)
@@ -666,52 +668,6 @@ contains
 
       f = 3.946e23_wp*eev**2*en*sigma
    end function djpede
-
-
-   function dgpede(e) result(f)
-      real(wp), intent(in) :: e
-      real(wp) :: f
-      integer  :: icomp, jz
-      real(wp) :: eev, wavnum, en, qabs, peyld, peke, sigke, x, eke
-      real(wp) :: ar, tg, emin, epdt, epet, wave_um
-
-      eev    = e
-      wavnum = 8065.6_wp*e
-      icomp  = icomp_com
-      jz     = jz_com
-      emin   = emin_com
-      epdt   = epdt_com
-      epet   = epet_com
-
-      if (icomp == 11 .and. jz /= 0) icomp = 12
-      if (icomp == 13 .and. jz /= 0) icomp = 14
-      if (icomp == 15 .and. jz /= 0) icomp = 16
-
-      ar = ar_com
-      tg = tg_com
-
-      call radfld_mmp(rftyp_com, rfchi_com, rfr_v_com, rftau_com, &
-                      rfion_com, rfpar_com, wavnum, en)
-
-      wave_um = 1.0e4_wp/wavnum
-      call qabs_pahgra(ar*1.0e4_wp, wave_um, icomp, qabs)
-
-      call peyield(eev, icomp, ar, tg, jz, emin, epet, peyld, peke)
-
-      sigke = 3.14159_wp*ar**2*qabs*peyld*peke
-
-      if (jz < 0) then
-         if (e > epdt) then
-            x   = (e - epdt)/3.0_wp
-            eke = e - epdt + emin
-            sigke = sigke - real(jz, wp)*1.219e-17_wp*x*eke/(1.0_wp + x**2/3.0_wp)**2
-         else
-            sigke = 0.0_wp
-         end if
-      end if
-
-      f = 6.3221e11_wp*eev**2*en*sigke
-   end function dgpede
 
 
    ! ======================================================================

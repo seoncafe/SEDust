@@ -39,8 +39,8 @@ program main_astrodust
    real(wp)              :: U_MATHIS = 1.585_wp   ! log U = 0.20
    real(wp)              :: logU_val
    real(wp), allocatable :: J_lam(:), lamI_lam(:)
-   integer               :: is, u, k, narg, iarg
-   character(len=64)     :: fname, arg, suffix, logutag
+   integer               :: is, narg, iarg
+   character(len=64)     :: arg, suffix, logutag
 
    ! Parse optional CLI arguments (any position). The solver toggle (qm /
    ! qm_dbcon) and the logU= override each contribute a filename tag so a

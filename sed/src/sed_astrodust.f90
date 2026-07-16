@@ -480,7 +480,7 @@ contains
       integer, optional, intent(out) :: status
 
       integer  :: i, ja, jw, jt
-      real(wp) :: a_um, t, da, qabs1, Q_neu, Q_ion, ksi
+      real(wp) :: a_um, t, da, qabs1, Q_neu, Q_ion
       real(wp), allocatable :: fion(:), lna(:)
       logical  :: rok
       ! Draine's size grid: A(KA) = 1e-8*10^(0.55+(KA-1)*0.05) cm,
@@ -701,7 +701,7 @@ contains
       real(wp),         intent(out) :: Jout(:)            ! (NLAM)
 
       integer  :: ir, ii, loc1, loc2, iguard, n_guard_resolve
-      integer  :: n_stoch, n_equil_eeq, n_equil_prev, n_equil_fail
+      integer  :: n_stoch, n_equil_eeq, n_equil_fail
       real(wp) :: Teq, EEQ, del, Tmin_n, Tmax_n, a_cm_qm
       real(wp), allocatable :: spec(:), P(:), lnP(:)
       real(wp), allocatable :: T(:), H(:), kappB(:)
