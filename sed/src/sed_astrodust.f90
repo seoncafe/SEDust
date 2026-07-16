@@ -1350,7 +1350,8 @@ contains
       ! Same algorithm as build_kappB() but using Cabs_pah → kappB_pah_first.
       integer,  parameter :: NW_INT = 1001
       real(wp) :: w(NW_INT), lnw(NW_INT)
-      real(wp) :: Cross(NW_INT), B(NW_INT)
+      real(wp) :: Cross(NW_INT)
+      real(wp), allocatable :: Bt(:,:)
       real(wp) :: lnlam(NLAM), w1, w2, dlnw
       integer  :: jt, ja, iw
 
@@ -1364,18 +1365,25 @@ contains
          lnw(iw) = log(w(iw))
       end do
 
+      ! The Planck factor depends only on (T, w): evaluate it once instead of
+      ! once for every size.
+      allocate(Bt(NW_INT, NT))
+      do jt = 1, NT
+         do iw = 1, NW_INT
+            Bt(iw, jt) = bbody(T_first(jt), w(iw))
+         end do
+      end do
+
       kappB_pah_first = 0.0_wp
       do ja = 1, NA
          do iw = 1, NW_INT
             call interp(lnlam, Cabs_pah(:, ja), lnw(iw), Cross(iw))
          end do
          do jt = 1, NT
-            do iw = 1, NW_INT
-               B(iw) = bbody(T_first(jt), w(iw))
-            end do
-            kappB_pah_first(jt, ja) = sum(Cross * B * w) * dlnw
+            kappB_pah_first(jt, ja) = sum(Cross * Bt(:, jt) * w) * dlnw
          end do
       end do
+      deallocate(Bt)
    end subroutine build_kappB_pah
 
 
@@ -1449,7 +1457,8 @@ contains
       ! setup_kappB1's algorithm.
       integer,  parameter :: NW_INT = 1001
       real(wp) :: w(NW_INT), lnw(NW_INT)
-      real(wp) :: Cross(NW_INT), B(NW_INT)
+      real(wp) :: Cross(NW_INT)
+      real(wp), allocatable :: Bt(:,:)
       real(wp) :: lnlam(NLAM), w1, w2, dlnw
       integer  :: jt, ja, iw
 
@@ -1464,18 +1473,25 @@ contains
          lnw(iw) = log(w(iw))
       end do
 
+      ! The Planck factor depends only on (T, w): evaluate it once instead of
+      ! once for every size.
+      allocate(Bt(NW_INT, NT))
+      do jt = 1, NT
+         do iw = 1, NW_INT
+            Bt(iw, jt) = bbody(T_first(jt), w(iw))
+         end do
+      end do
+
       kappB_first = 0.0_wp
       do ja = 1, NA
          do iw = 1, NW_INT
             call interp(lnlam, Cabs(:, ja), lnw(iw), Cross(iw))
          end do
          do jt = 1, NT
-            do iw = 1, NW_INT
-               B(iw) = bbody(T_first(jt), w(iw))
-            end do
-            kappB_first(jt, ja) = sum(Cross * B * w) * dlnw
+            kappB_first(jt, ja) = sum(Cross * Bt(:, jt) * w) * dlnw
          end do
       end do
+      deallocate(Bt)
    end subroutine build_kappB
 
 
