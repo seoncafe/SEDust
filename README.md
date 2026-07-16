@@ -11,7 +11,9 @@ call (`dust_emission`). The solver core does not know which model it is running.
 
 The whole package can also be linked into a Fortran 3D radiative-transfer code
 as a static library, `libsedust.a`, with a two-step API: initialize once, then
-solve one cell at a time.
+solve one cell at a time. Every model builder and solver call takes an optional
+`status` argument, so a missing input file or an invalid model is reported back
+to the host instead of stopping the process.
 
 ## Layout
 
@@ -107,4 +109,4 @@ Rebuild any of them with `pdflatex <name>.tex` (run twice for cross-references).
 
 ---
 
-Last updated: 2026-07-15 23:18
+Last updated: 2026-07-16 12:48
