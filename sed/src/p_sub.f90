@@ -35,6 +35,11 @@ module p_sub
    real(wp), allocatable :: log_lambda(:)
    integer :: NLAM = 0
 
+   ! calc_P matrix workspace, reused per thread across calls to avoid the
+   ! nT x nT allocate/zero/deallocate on every call inside the RT loop.
+   real(wp), allocatable, save :: Amat_ws(:,:), Bmat_ws(:,:)
+   !$omp threadprivate(Amat_ws, Bmat_ws)
+
 contains
 
    subroutine p_sub_setup(lambda)
@@ -101,7 +106,6 @@ contains
       real(wp), intent(in)    :: T(:), kappB(:), H(:)
       real(wp), intent(inout) :: P(:), lnP(:)
       real(wp), optional, intent(in) :: kappCMB
-      real(wp), allocatable :: Amat(:,:), Bmat(:,:)
       integer  :: nlambda, nT, k, i1, i2, j
       real(wp) :: ener, wavl, kappB_tot
       real(wp) :: Jwavl, delH, Cross
@@ -112,9 +116,17 @@ contains
 
       nlambda = size(lambda)
       nT      = size(T)
-      allocate(Amat(nT, nT), Bmat(nT, nT))
-      Amat = 0d0
-      Bmat = 0d0
+      ! Amat_ws/Bmat_ws are reused per thread across calls: (re)allocate only
+      ! when unallocated or when nT changes, then zero-fill (the recursion
+      ! rebuilds the whole matrix each call).
+      if (.not. allocated(Amat_ws)) then
+         allocate(Amat_ws(nT, nT), Bmat_ws(nT, nT))
+      else if (size(Amat_ws, 1) /= nT) then
+         deallocate(Amat_ws, Bmat_ws)
+         allocate(Amat_ws(nT, nT), Bmat_ws(nT, nT))
+      end if
+      Amat_ws = 0d0
+      Bmat_ws = 0d0
 
       ! Downward transitions
       do i1 = 2, nT
@@ -123,7 +135,7 @@ contains
          else
             kappB_tot = kappB(i1)
          end if
-         Amat(i1-1, i1) = FOURPI / (H(i1) - H(i1-1)) * kappB_tot
+         Amat_ws(i1-1, i1) = FOURPI / (H(i1) - H(i1-1)) * kappB_tot
       end do
 
       ! Upward transitions
@@ -138,7 +150,7 @@ contains
             wavl = hc / ener
             call interp(lambda, Jfield, wavl, Jwavl)
             call interp(lambda, Cabs,   wavl, Cross)
-            Amat(i2, i1) = FOURPI * Cross * hc * delH / ener**3 * Jwavl
+            Amat_ws(i2, i1) = FOURPI * Cross * hc * delH / ener**3 * Jwavl
             ! Highest-bin: add transitions to all energies above this bin.
             if (i2 == nT) then
                nwav   = 51
@@ -147,7 +159,7 @@ contains
                   wav = lambda(1) * exp((k-1)*dlnwav)
                   call interp(lambda, Jfield, wav, Jwavl)
                   call interp(lambda, Cabs,   wav, Cross)
-                  Amat(i2, i1) = Amat(i2, i1) + &
+                  Amat_ws(i2, i1) = Amat_ws(i2, i1) + &
                      FOURPI * Cross * wav**2 / hc * dlnwav * Jwavl
                end do
             end if
@@ -157,13 +169,13 @@ contains
       sumB = 0_wp
       i2 = nT
       do i1 = 1, i2-1
-         Bmat(i2, i1) = Amat(i2, i1)
-         sumB = sumB + Bmat(i2, i1)
+         Bmat_ws(i2, i1) = Amat_ws(i2, i1)
+         sumB = sumB + Bmat_ws(i2, i1)
       end do
       do i1 = 1, nT-1
          do i2 = nT-1, i1+1, -1
-            Bmat(i2, i1) = Bmat(i2+1, i1) + Amat(i2, i1)
-            sumB = sumB + Bmat(i2, i1)
+            Bmat_ws(i2, i1) = Bmat_ws(i2+1, i1) + Amat_ws(i2, i1)
+            sumB = sumB + Bmat_ws(i2, i1)
          end do
       end do
 
@@ -173,7 +185,7 @@ contains
          ! Linear-P method.
          P(1) = 1.0_wp
          do j = 2, nT
-            if (Amat(j-1, j) > 0_wp) P(j) = sum(Bmat(j, 1:j-1) * P(1:j-1)) / Amat(j-1, j)
+            if (Amat_ws(j-1, j) > 0_wp) P(j) = sum(Bmat_ws(j, 1:j-1) * P(1:j-1)) / Amat_ws(j-1, j)
             if (P(j) > 1d50)         P(1:j) = P(1:j) / P(j)
          end do
          sumP = sum(P)
@@ -182,8 +194,8 @@ contains
             lnP = log(P)
          end if
       end if
-
-      deallocate(Amat, Bmat)
+      ! Amat_ws/Bmat_ws are intentionally not deallocated: they are kept
+      ! (per thread) for reuse on the next call.
    end subroutine calc_P
 
 end module p_sub
