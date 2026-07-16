@@ -18,12 +18,12 @@ contains
    real(kind=wp), intent(in) :: radius
    character(len=4), intent(in) :: dtype
 ! Local variables
-   real(kind=wp), parameter :: Top = 863.0, Tip = 2504.0, T2 = 500.0, T3 = 1500.0
-   real(kind=wp), parameter :: kB  = 1.3806488e-16 ! erg K^-1
+   real(kind=wp), parameter :: Top = 863.0_wp, Tip = 2504.0_wp, T2 = 500.0_wp, T3 = 1500.0_wp
+   real(kind=wp), parameter :: kB  = 1.3806488e-16_wp ! erg K^-1
 ! C2 = h x c / k, lambdaj(1:3) in cm
 ! Note C2, and hwc should be double precision to avoid NaN.
-   real(kind=wp), parameter :: C2 = 1.4387687
-   real(kind=wp), parameter :: lambdaj(3) = (/11.3, 8.6, 3.3/) * 1e-4
+   real(kind=wp), parameter :: C2 = 1.4387687_wp
+   real(kind=wp), parameter :: lambdaj(3) = (/11.3_wp, 8.6_wp, 3.3_wp/) * 1e-4_wp
    real(kind=wp), parameter :: hwc(3) = C2/lambdaj(:)
 
    real(kind=wp) :: natom
@@ -32,32 +32,32 @@ contains
 
    select case (trim(dtype))
    case ('Car0', 'Car1')
-      natom = 4.6820810e11*radius**3
-      U     = (natom-2.)*kB*T*(debye2(real(Top/T,8)) + 2.0*debye2(real(Tip/T,8)))
+      natom = 4.6820810e11_wp*radius**3
+      U     = (natom-2._wp)*kB*T*(debye2(real(Top/T,8)) + 2.0_wp*debye2(real(Tip/T,8)))
    case('Sil')
-      natom = 7d0*(5.1040126e10*radius**3)
-      U     = (natom-2.)*kB*T*(2.0*debye2(real(T2/T,8)) + debye3(real(T3/T,8)))
+      natom = 7d0*(5.1040126e10_wp*radius**3)
+      U     = (natom-2._wp)*kB*T*(2.0_wp*debye2(real(T2/T,8)) + debye3(real(T3/T,8)))
    case default
       print*, '! enthalpy_DL01: calculations only available for Gra, PAH, or Sil'
    end select
 
    ! DL01-original C-H mode size threshold (natom <= 5.75e4, a <~ 50 AA).
    ! (Previously modified to 1.00e4; reverted to the Draine & Li 2001 value.)
-   if ((dtype == 'Car0' .or. dtype == 'Car1') .and. natom <= 5.75e4) then
+   if ((dtype == 'Car0' .or. dtype == 'Car1') .and. natom <= 5.75e4_wp) then
       ! H/C = the hydrogen to carbon ratio
       ! NH = number of H
       if (natom <= 25) then
-         H_C = 0.5
+         H_C = 0.5_wp
          !NH = int(0.5*natom+0.5)
       elseif (natom < 100) then
-         H_C = 0.5/sqrt(real(natom)/25.)
+         H_C = 0.5_wp/sqrt(real(natom,wp)/25._wp)
          !NH = int(2.5*sqrt(real(natom))+0.5)
       else
-         H_C = 0.25
+         H_C = 0.25_wp
          !NH = int(0.25*natom+0.5)
       endif
       ! C-H mode
-      UCH = (H_C*natom) * kB * sum(hwc(:)/(exp(hwc(:)/T)-1.0))
+      UCH = (H_C*natom) * kB * sum(hwc(:)/(exp(hwc(:)/T)-1.0_wp))
       !UCH = NH * kB * sum(hwc(:)/(exp(hwc(:)/T)-1.0))
       U = U + UCH
    endif
@@ -404,36 +404,54 @@ contains
    real(kind=wp), intent(in) :: natom
    character(len=3), intent(in) :: dtype
 
-! local variables and inline functions
+! local variables
 ! volume: grain volume = 4pi/3 * radius^3 (cm^3)
-   real(kind=wp) :: U1,U2,U3,U4,volume
-! inline functions
-   U1(T) = (1.4e3/3.0)  * T**3
-   U2(T) = (2.2e4/2.3)  * (T**2.3  - 50.**2.3)
-   U3(T) = (4.8e5/1.68) * (T**1.68 - 150.**1.68)
-   U4(T) = 3.41e7 * (T - 500.0)
+   real(kind=wp) :: volume
 
    select case (dtype)
    ! Silicate (Leger, Jura, & Omont 1985; G&D1989)
    case ('Sil')
-      volume = 4.18878*1.e-12 * radius**3
-      if (T <= 50.) then
+      volume = 4.18878_wp*1.e-12_wp * radius**3
+      if (T <= 50._wp) then
          U = U1(T)
-      else if (T <= 150.) then
+      else if (T <= 150._wp) then
          U = U1(50._wp) + U2(T)
-      else if (T <= 500.) then
+      else if (T <= 500._wp) then
          U = U1(50._wp) + U2(150._wp) + U3(T)
       else
          U = U1(50._wp) + U2(150._wp) + U3(500._wp) + U4(T)
       end if
-      U = (1.0-(2.0/real(natom,8))) * volume * U
+      U = (1.0_wp-(2.0_wp/real(natom,8))) * volume * U
    ! Graphite (Chase et al. 1985; G&D1989)
    case('Gra')
-      U = (4.15e-22*T**3.3)/(1.0+6.51e-3*T+1.5e-6*T*T+8.3e-7*T**2.3)
-      U = (real(natom,8)-2.0) * U
+      U = (4.15e-22_wp*T**3.3_wp)/(1.0_wp+6.51e-3_wp*T+1.5e-6_wp*T*T+8.3e-7_wp*T**2.3_wp)
+      U = (real(natom,8)-2.0_wp) * U
    case default
       print*, '! enthalpy_GD89: calculations only available for Gra & Sil identifiers'
    end select
+
+   contains
+   ! Piecewise silicate enthalpy segments (G&D1989 fits)
+   pure function U1(T) result(res)
+      real(kind=wp), intent(in) :: T
+      real(kind=wp) :: res
+      res = (1.4e3_wp/3.0_wp)  * T**3
+   end function U1
+   pure function U2(T) result(res)
+      real(kind=wp), intent(in) :: T
+      real(kind=wp) :: res
+      res = (2.2e4_wp/2.3_wp)  * (T**2.3_wp  - 50._wp**2.3_wp)
+   end function U2
+   pure function U3(T) result(res)
+      real(kind=wp), intent(in) :: T
+      real(kind=wp) :: res
+      res = (4.8e5_wp/1.68_wp) * (T**1.68_wp - 150._wp**1.68_wp)
+   end function U3
+   pure function U4(T) result(res)
+      real(kind=wp), intent(in) :: T
+      real(kind=wp) :: res
+      res = 3.41e7_wp * (T - 500.0_wp)
+   end function U4
    end function enthalpy_GD89
 !------------------------------------
 ! Enthalpy for graphite given by Dwek et al. (1986, ApJ, 302, 363)
@@ -444,13 +462,7 @@ contains
    real(kind=wp), intent(in) :: T,radius
 !   integer(kind=8), intent(in) :: natom
    real(kind=wp), intent(in) :: natom
-   real(kind=wp) :: U1,U2,U3,U4,U5,volume
-! inline functions
-   U1(T) = (3.84e2/3.00) * T**3
-   U2(T) = (2.32e3/2.56) * (T**2.56 -  60.**2.56)
-   U3(T) = (5.61e3/2.37) * (T**2.37 - 100.**2.37)
-   U4(T) = (7.74e5/1.57) * (T**1.57 - 470.**1.57)
-   U5(T) = 4.14e7 * (T - 1070.)
+   real(kind=wp) :: volume
 
    if (T <= 60._wp) then
       U = U1(T)
@@ -458,12 +470,40 @@ contains
       U = U1(60._wp) + U2(T)
    else if (T <= 470._wp) then
       U = U1(60._wp) + U2(100._wp) + U3(T)
-   else if (T <=1070.) then
+   else if (T <=1070._wp) then
       U = U1(60._wp) + U2(100._wp) + U3(470._wp) + U4(T)
    else
       U = U1(60._wp) + U2(100._wp) + U3(470._wp) + U4(1070._wp) + U5(T)
    end if
-   volume = 4.18878*1.e-12 * radius**3
-   U      = (1.0-(2.0/real(natom,8))) * volume * U
+   volume = 4.18878_wp*1.e-12_wp * radius**3
+   U      = (1.0_wp-(2.0_wp/real(natom,8))) * volume * U
+
+   contains
+   ! Piecewise graphite enthalpy segments (Dwek 1986 fits)
+   pure function U1(T) result(res)
+      real(kind=wp), intent(in) :: T
+      real(kind=wp) :: res
+      res = (3.84e2_wp/3.00_wp) * T**3
+   end function U1
+   pure function U2(T) result(res)
+      real(kind=wp), intent(in) :: T
+      real(kind=wp) :: res
+      res = (2.32e3_wp/2.56_wp) * (T**2.56_wp -  60._wp**2.56_wp)
+   end function U2
+   pure function U3(T) result(res)
+      real(kind=wp), intent(in) :: T
+      real(kind=wp) :: res
+      res = (5.61e3_wp/2.37_wp) * (T**2.37_wp - 100._wp**2.37_wp)
+   end function U3
+   pure function U4(T) result(res)
+      real(kind=wp), intent(in) :: T
+      real(kind=wp) :: res
+      res = (7.74e5_wp/1.57_wp) * (T**1.57_wp - 470._wp**1.57_wp)
+   end function U4
+   pure function U5(T) result(res)
+      real(kind=wp), intent(in) :: T
+      real(kind=wp) :: res
+      res = 4.14e7_wp * (T - 1070._wp)
+   end function U5
    end function enthalpy_Dwek
 end module enthalpy
