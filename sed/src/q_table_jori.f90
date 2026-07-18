@@ -150,6 +150,10 @@ contains
          read_path = 'q_jori_scratch.dat'
          call gunzip_to(q_file, trim(read_path), sub_ok)
          if (.not. sub_ok) then
+            ! The redirection creates the target before gzip can fail, so
+            ! remove the empty file rather than leave it in the caller's
+            ! working directory.
+            call cleanup_scratch(.true., trim(read_path))
             call bail('gzip -dc failed on '//trim(q_file))
             return
          end if

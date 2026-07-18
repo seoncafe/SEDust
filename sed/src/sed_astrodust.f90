@@ -29,6 +29,9 @@ module sed_astrodust_mod
                                     qt_n_lam=>n_lam, qt_n_aeff=>n_aeff, &
                                     qt_lam=>lam_t, qt_aeff=>aeff_t, &
                                     qt_qext=>qext, qt_qabs=>qabs, qt_qsca=>qsca
+   use q_table_jori_mod,      only: load_q_table_jori, falign_hd23, &
+                                    qj_n_lam=>nj_lam, qj_lam=>lam_j, &
+                                    qj_aeff=>aeff_j, qj_qpol_abs=>qpol_abs
    use size_dist_mod,         only: load_size_dist, sd_n=>n_size, &
                                     sd_aeff=>a_dist, sd_dn=>dn_ad, &
                                     sd_dn_pah=>dn_pah, sd_fion=>f_ion
@@ -56,6 +59,9 @@ module sed_astrodust_mod
    public :: NLAM, NA, NT, lam, aeff, T_first, dn_ad, dn_pah, initialized
    ! Exposed so that external drivers can cross-check the optics:
    public :: Cabs, Csca, Cabs_pah, kappB_first, kappB_pah_first
+   ! Polarized absorption cross section and alignment efficiency of the
+   ! astrodust population (zero when the orientation-resolved table is absent).
+   public :: Cpol, falign_ad
    ! Charge-resolved PAH cross sections and number densities (neutral/cation),
    ! exposed so the MC SED builder can reproduce the same charge blend as
    ! the production sed_solve_pah (it loops both charge states).
@@ -120,6 +126,13 @@ module sed_astrodust_mod
    real(wp), allocatable :: dn_ad(:)            ! [1/H per bin] (NA)
    real(wp), allocatable :: Cabs(:,:)           ! [cm^2] (NLAM, NA)
    real(wp), allocatable :: Csca(:,:)           ! [cm^2] (NLAM, NA)
+   ! Polarized absorption cross section of an aligned astrodust spheroid whose
+   ! symmetry axis lies in the plane of the sky, and the HD23 alignment
+   ! efficiency. Both are zero when the orientation-resolved table cannot be
+   ! read, which makes the polarized emission vanish while everything else
+   ! stays intact. See build_Cpol.
+   real(wp), allocatable :: Cpol(:,:)           ! [cm^2] (NLAM, NA)
+   real(wp), allocatable :: falign_ad(:)        ! (NA)
    real(wp), allocatable :: kappB_first(:,:)    ! integral C_abs * B_lam dlam (NT, NA), wide grid
    real(wp), allocatable :: H_first(:,:,:)      ! enthalpy U(T, a, stage) (NT, NA, 2), wide grid
    real(wp), allocatable :: kappCMB(:)          ! 2.9 K CMB integral (NA)
@@ -191,10 +204,19 @@ module sed_astrodust_mod
 
    integer,  parameter :: NSTAGE         = 2                       ! S1, S2
 
+   ! Default location of the orientation-resolved DH21 spheroid table and its
+   ! grid axes, relative to the sed/ working directory. Overridable through
+   ! sed_init / build_astrodust for a host that runs from elsewhere.
+   character(len=*), parameter :: QPOL_Q_DEF = &
+        '../data/dielectric/q_DH21Ad_P0.20_Fe0.00_1.400.dat.gz'
+   character(len=*), parameter :: QPOL_W_DEF = '../data/dielectric/DH21_wave'
+   character(len=*), parameter :: QPOL_A_DEF = '../data/dielectric/DH21_aeff'
+
 contains
 
    ! =====================================================================
-   subroutine sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status)
+   subroutine sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status, &
+                       qpol_path, qpol_wave_path, qpol_aeff_path)
       character(len=*), intent(in) :: qtable_path, sizedist_path
       integer,          intent(in) :: NT_in
       real(wp),         intent(in) :: T_lo, T_hi
@@ -204,9 +226,16 @@ contains
       !   status = 1  Q-table load failed
       !   status = 2  size-distribution load failed
       integer, optional, intent(out) :: status
+      ! Orientation-resolved DH21 table and its grid axes, supplying the
+      ! polarized optics. Default to QPOL_*_DEF. A table that cannot be read
+      ! is NOT an error: Cpol and falign_ad stay zero and the run continues
+      ! without polarized emission.
+      character(len=*), optional, intent(in) :: qpol_path, qpol_wave_path, &
+                                                qpol_aeff_path
       integer  :: i, ja, jw, jt, is
       real(wp) :: a_um, x, t, Q_neu, Q_ion
       logical  :: rok
+      character(len=512) :: pol_q, pol_w, pol_a
 
       if (present(status)) status = 0
 
@@ -231,6 +260,8 @@ contains
                                           dn_pah, Cabs_pah, kappB_pah_first, &
                                           H_pah_first, kappCMB_pah, &
                                           log_H_pah_first, log_kappB_pah_first)
+      if (allocated(Cpol))     deallocate(Cpol, falign_ad)
+      allocate(Cpol(NLAM, NA), falign_ad(NA))
       allocate(lam(NLAM), aeff(NA), T_first(NT), dn_ad(NA))
       allocate(Cabs(NLAM, NA), Csca(NLAM, NA), kappB_first(NT, NA), &
                H_first(NT, NA, NSTAGE), kappCMB(NA))
@@ -276,6 +307,12 @@ contains
          Cabs(:, ja) = Cabs(:, ja) * PI * (a_um * UM2CM)**2
          Csca(:, ja) = Csca(:, ja) * PI * (a_um * UM2CM)**2
       end do
+
+      ! ---- Cpol(NLAM, NA), falign_ad(NA) from the DH21 spheroid table ----
+      pol_q = QPOL_Q_DEF;  if (present(qpol_path))      pol_q = qpol_path
+      pol_w = QPOL_W_DEF;  if (present(qpol_wave_path)) pol_w = qpol_wave_path
+      pol_a = QPOL_A_DEF;  if (present(qpol_aeff_path)) pol_a = qpol_aeff_path
+      call build_Cpol(trim(pol_q), trim(pol_w), trim(pol_a))
 
       ! ---- kappB_first(NT, NA) = integral of Cabs * B_lambda over lambda ----
       call build_kappB()
@@ -513,6 +550,9 @@ contains
             log_T_first, log_H_first, log_kappB_first, &
             dn_pah, Cabs_pah, kappB_pah_first, H_pah_first, kappCMB_pah, &
             log_H_pah_first, log_kappB_pah_first)
+      ! DL07 has no polarized optics; drop anything a previous astrodust
+      ! init left behind rather than leave stale arrays on the wrong grid.
+      if (allocated(Cpol)) deallocate(Cpol, falign_ad)
       allocate(lam(NLAM), aeff(NA), T_first(NT), dn_ad(NA))
       allocate(Cabs(NLAM, NA), Csca(NLAM, NA), kappB_first(NT, NA), &
                H_first(NT, NA, NSTAGE), kappCMB(NA))
@@ -1501,6 +1541,72 @@ contains
    end subroutine interp_q_grid
 
 
+   subroutine build_Cpol(q_file, wave_file, aeff_file)
+      ! Fill Cpol(NLAM, NA) and falign_ad(NA) from the orientation-resolved
+      ! DH21 spheroid table:
+      !
+      !   Q_pol,abs = 0.5 * (Q_abs(k perp a, E perp a) - Q_abs(k perp a, E || a))
+      !   C_pol     = Q_pol,abs * pi * a_eff^2
+      !
+      ! i.e. the absorption difference a perfectly aligned grain with its
+      ! symmetry axis in the plane of the sky presents to the two linear
+      ! polarizations. The grain loop weights this by dn * f_align(a), so the
+      ! result is the INTRINSIC polarized emission; the geometric projection
+      ! onto the sky is the radiative transfer's job.
+      !
+      ! MIXED RANDOM-ORIENTATION AVERAGES. Cabs above comes from our own
+      ! T-matrix run, whose random-orientation average is exact, whereas the
+      ! release table's average is the 1/3 trace (Q1+Q2+Q3)/3. The two are
+      ! different approximations, so this routine deliberately does NOT touch
+      ! Cabs -- it only adds the polarized channel. Measured on the shared
+      ! (lambda, a_eff) grid, |trace-average / exact - 1| for Q_abs has a
+      ! median of 0.022% for lambda > 30 um (0.023% over 30-100 um, 0.025%
+      ! over 100-1000 um, 0.020% beyond), with a worst case of 2.0% among the
+      ! grains that carry 99.999% of the geometric cross section (a <= 0.5 um).
+      ! Polarized emission is a far-infrared phenomenon and, at a << lambda,
+      ! both averages approach the same Rayleigh limit -- so the mixture is
+      ! harmless here. It would NOT be in the ultraviolet, where the median
+      ! rises to 0.21% and the worst case to 9.5%.
+      character(len=*), intent(in) :: q_file, wave_file, aeff_file
+      integer  :: ja, jw
+      logical  :: rok
+
+      Cpol      = 0.0_wp
+      falign_ad = 0.0_wp
+
+      call load_q_table_jori(q_file, wave_file, aeff_file, ok=rok)
+      if (.not. rok) then
+         if (sed_verbose) write(*,'(a,a)') &
+            ' sed_init: no polarized optics (cannot read ', trim(q_file)//')'
+         return
+      end if
+
+      ! The polarized table and the Cabs table are both computed on the DH21
+      ! wavelength grid, so they must agree node for node. A mismatch means
+      ! inconsistent input, not a recoverable condition.
+      if (qj_n_lam /= NLAM) then
+         write(*,'(a,i0,a,i0)') ' sed_init: polarized table has ', qj_n_lam, &
+            ' wavelengths but the Q table has ', NLAM
+         stop 1
+      end if
+      do jw = 1, NLAM
+         if (abs(qj_lam(jw) - lam(jw)) > 1.0e-10_wp * abs(lam(jw))) then
+            write(*,'(a,i0)') &
+               ' sed_init: polarized and Q wavelength grids differ at jw=', jw
+            stop 1
+         end if
+      end do
+
+      ! The size axes DO differ (169 table nodes vs the size-distribution
+      ! grid), so interpolate in log(a) exactly as Cabs/Csca are.
+      do ja = 1, NA
+         call interp_q_grid(log(aeff(ja)), qj_aeff, qj_qpol_abs, Cpol(:, ja))
+         Cpol(:, ja)   = Cpol(:, ja) * PI * (aeff(ja) * UM2CM)**2
+         falign_ad(ja) = falign_hd23(aeff(ja))
+      end do
+   end subroutine build_Cpol
+
+
    subroutine build_kappB()
       ! kappB_first(jt, ja) = integral_lam Cabs(lam, ja) * B_lam(T_first(jt), lam) dlam
       ! Uses a denser internal log-lam grid (1001 pts) over [min(lam),
@@ -1602,13 +1708,18 @@ contains
 
    ! Copy one population's arrays (from the module globals) into a grain_pop_t.
    subroutine set_pop(p, gtype, chan, dn_in, Cabs_in, kappB_in, H_in, &
-                      log_H_in, log_kappB_in, kappCMB_in)
+                      log_H_in, log_kappB_in, kappCMB_in, Cpol_in, falign_in)
       type(grain_pop_t), intent(inout) :: p
       character(len=*),  intent(in)    :: gtype
       integer,           intent(in)    :: chan
       real(wp),          intent(in)    :: dn_in(:), kappCMB_in(:)
       real(wp),          intent(in)    :: Cabs_in(:,:), kappB_in(:,:), H_in(:,:)
       real(wp),          intent(in)    :: log_H_in(:,:), log_kappB_in(:,:)
+      ! Polarized optics. Supply BOTH to make this population contribute to
+      ! the polarized emission; leave them out and p%Cpol / p%falign stay
+      ! unallocated, which is how dust_emission recognizes an unpolarized
+      ! population.
+      real(wp), optional, intent(in)   :: Cpol_in(:,:), falign_in(:)
       p%grain_type = gtype
       p%out_channel = chan
       p%aeff      = aeff          ! [um] module-global size grid (set by sed_init)
@@ -1619,12 +1730,17 @@ contains
       p%log_H     = log_H_in
       p%log_kappB = log_kappB_in
       p%kappCMB   = kappCMB_in
+      if (present(Cpol_in) .and. present(falign_in)) then
+         p%Cpol   = Cpol_in
+         p%falign = falign_in
+      end if
    end subroutine set_pop
 
 
    ! Build the HD23 astrodust model into m. Channels: AD_S1, AD_S2, PAH
    ! (PAH = neutral + cation populations summed into one channel).
-   subroutine build_astrodust(m, qtable_path, sizedist_path, NT_in, T_lo, T_hi, status)
+   subroutine build_astrodust(m, qtable_path, sizedist_path, NT_in, T_lo, T_hi, status, &
+                              qpol_path, qpol_wave_path, qpol_aeff_path)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: qtable_path, sizedist_path
       integer,            intent(in)  :: NT_in
@@ -1635,12 +1751,24 @@ contains
       !   status = 1  Q-table load failed
       !   status = 2  size-distribution load failed
       integer, optional,  intent(out) :: status
+      ! Orientation-resolved DH21 table + grid axes for the polarized optics,
+      ! forwarded to sed_init. Omit to use the defaults; a table that cannot
+      ! be read leaves the model unpolarized without failing the build.
+      character(len=*), optional, intent(in) :: qpol_path, qpol_wave_path, &
+                                                qpol_aeff_path
+      character(len=512) :: pol_q, pol_w, pol_a
 
       if (present(status)) status = 0
 
+      pol_q = QPOL_Q_DEF;  if (present(qpol_path))      pol_q = qpol_path
+      pol_w = QPOL_W_DEF;  if (present(qpol_wave_path)) pol_w = qpol_wave_path
+      pol_a = QPOL_A_DEF;  if (present(qpol_aeff_path)) pol_a = qpol_aeff_path
+
       ! Astrodust/HD23 optics: Nc=417 (rho=2.0), D16 turbostratic graphite.
       nc_coeff = 417.0d0;  nc_integer = .false.;  qpah_use_d03_graphite = .false.
-      call sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status=status)  ! sets globals
+      call sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status=status, &
+                    qpol_path=trim(pol_q), qpol_wave_path=trim(pol_w), &
+                    qpol_aeff_path=trim(pol_a))  ! sets globals
       if (present(status)) then
          if (status /= 0) return
       end if
@@ -1659,8 +1787,12 @@ contains
       m%channel_name = [character(len=16):: 'AD', 'PAH']
 
       allocate(m%pops(3))
+      ! Only the astrodust grains are aligned. HD23 take the PAHs to be
+      ! unaligned, so the two PAH populations get no polarized optics and
+      ! contribute nothing to the polarized emission.
       call set_pop(m%pops(1), 'sil', 1, dn_ad, Cabs, kappB_first, H_first(:,:,2), &
-                   log_H_first(:,:,2), log_kappB_first, kappCMB)
+                   log_H_first(:,:,2), log_kappB_first, kappCMB, &
+                   Cpol_in=Cpol, falign_in=falign_ad)
       call set_pop(m%pops(2), 'pah', 2, dn_cneu, Cabs_cneu, kappB_cneu, H_pah_first, &
                    log_H_pah_first, log_kappB_cneu, kappCMB_cneu)
       call set_pop(m%pops(3), 'pah', 2, dn_cion, Cabs_cion, kappB_cion, H_pah_first, &
