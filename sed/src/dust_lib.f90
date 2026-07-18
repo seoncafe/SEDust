@@ -35,6 +35,18 @@ module dust_lib
    ! present a bad model is reported through it instead of stopping the
    ! process; when it is omitted such a model stops the run, as before.
    !
+   ! dust_emission also takes an optional lamI_pol (same shape and units as
+   ! lamI_total):
+   !   call dust_emission(m, J_lam, lamI_total [, lamI_chan] [, status] [, lamI_pol])
+   ! It returns the INTRINSIC polarized emission -- what a population of
+   ! perfectly aligned grains seen with their symmetry axes in the plane of
+   ! the sky would radiate -- summed over the populations that carry both
+   ! Cpol and falign. Populations without polarized optics (PAHs, and any
+   ! model built without them) contribute zero. The geometric sin^2(gamma)
+   ! projection and any turbulent depolarization are left to the radiative
+   ! transfer and are NOT applied here. Being optional, it leaves every
+   ! existing caller valid.
+   !
    ! dust_build_table and dust_emission_interp take the same optional final
    ! status argument (0 = success); when present a bad argument is reported
    ! through it instead of stopping the process; when omitted such a call stops

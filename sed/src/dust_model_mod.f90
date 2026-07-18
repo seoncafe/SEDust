@@ -15,6 +15,9 @@ module dust_model_mod
    !   T_first  [K]       temperature grid (NT)
    !   dn       [1/H]     number of grains per H atom in each size bin (NA)
    !   Cabs/Csca[cm^2]    absorption/scattering cross section (NLAM, NA)
+   !   Cpol     [cm^2]    polarized absorption cross section (NLAM, NA)
+   !   falign             alignment efficiency, 0 for a population that does
+   !                      not contribute to polarization (NA)
    !   kappB    [..]      Planck-integral table used by calc_P/calc_Teq (NT, NA)
    !   H        [erg]     grain enthalpy (NT, NA)
    !   kappCMB  [..]      CMB-pumped term for calc_P (NA)
@@ -32,6 +35,8 @@ module dust_model_mod
       real(wp), allocatable :: aeff(:)              ! (NA) [um] effective-radius grid
       real(wp), allocatable :: dn(:)                ! (NA)
       real(wp), allocatable :: Cabs(:,:), Csca(:,:) ! (NLAM, NA)
+      real(wp), allocatable :: Cpol(:,:)            ! (NLAM, NA) [cm^2] polarized absorption
+      real(wp), allocatable :: falign(:)            ! (NA) alignment efficiency
       real(wp), allocatable :: kappB(:,:), log_kappB(:,:)   ! (NT, NA)
       real(wp), allocatable :: H(:,:),     log_H(:,:)       ! (NT, NA)
       real(wp), allocatable :: kappCMB(:)           ! (NA)
@@ -82,6 +87,8 @@ contains
       if (allocated(p%dn))        deallocate(p%dn)
       if (allocated(p%Cabs))      deallocate(p%Cabs)
       if (allocated(p%Csca))      deallocate(p%Csca)
+      if (allocated(p%Cpol))      deallocate(p%Cpol)
+      if (allocated(p%falign))    deallocate(p%falign)
       if (allocated(p%kappB))     deallocate(p%kappB)
       if (allocated(p%log_kappB)) deallocate(p%log_kappB)
       if (allocated(p%H))         deallocate(p%H)

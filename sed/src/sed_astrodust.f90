@@ -684,9 +684,17 @@ contains
    ! look-ahead T-window narrowing based on the module variable
    ! stoch_method.
    ! =====================================================================
+   ! Polarized emission (optional): pass Cpol_pop, falign_pop and Jpol
+   ! together to get the intrinsic polarized emissivity alongside Jout. The
+   ! polarized accumulator is driven by exactly the same temperature weights
+   ! as Jout -- every site that adds Cabs*B(T) adds Cpol*f_align*B(T) in the
+   ! same breath -- so the P(T) solvers are untouched by this option.
+   ! What comes back is the INTRINSIC rate: the geometric sin^2(gamma)
+   ! projection and any turbulent depolarization belong to the radiative
+   ! transfer, not here.
    subroutine sed_grain_loop(npop, dn_pop, aeff_pop, Cabs_pop, kappB_pop, H_pop, &
                               log_H_pop, log_kappB_pop, kappCMB_pop, &
-                              J_lam, grain_type, Jout)
+                              J_lam, grain_type, Jout, Cpol_pop, falign_pop, Jpol)
       integer,          intent(in)  :: npop
       real(wp),         intent(in)  :: dn_pop(:)          ! (npop)
       real(wp),         intent(in)  :: aeff_pop(:)        ! (npop) [um] radii of this population
@@ -699,16 +707,22 @@ contains
       real(wp),         intent(in)  :: J_lam(:)           ! (NLAM)
       character(len=*), intent(in)  :: grain_type         ! 'sil' or 'pah'
       real(wp),         intent(out) :: Jout(:)            ! (NLAM)
+      real(wp), optional, intent(in)  :: Cpol_pop(:,:)    ! (NLAM, npop) [cm^2]
+      real(wp), optional, intent(in)  :: falign_pop(:)    ! (npop)
+      real(wp), optional, intent(out) :: Jpol(:)          ! (NLAM)
 
       integer  :: ir, ii, loc1, loc2, iguard, n_guard_resolve
       integer  :: n_stoch, n_equil_eeq, n_equil_fail
-      real(wp) :: Teq, EEQ, del, Tmin_n, Tmax_n, a_cm_qm
+      real(wp) :: Teq, EEQ, del, Tmin_n, Tmax_n, a_cm_qm, wpol
       real(wp), allocatable :: spec(:), P(:), lnP(:)
       real(wp), allocatable :: T(:), H(:), kappB(:)
-      real(wp), allocatable :: Jout_local(:), emission_qm(:)
-      logical :: Equil, Equil_prev, converged, qm_ok
+      real(wp), allocatable :: Jout_local(:), emission_qm(:), Jpol_local(:)
+      logical :: Equil, Equil_prev, converged, qm_ok, do_pol
 
       Jout = 0.0_wp
+      ! Polarization is opt-in: all three arguments must be supplied together.
+      do_pol = present(Cpol_pop) .and. present(falign_pop) .and. present(Jpol)
+      if (present(Jpol)) Jpol = 0.0_wp
 
       select case (trim(stoch_method))
 
@@ -720,13 +734,16 @@ contains
          !$omp parallel default(none) &
          !$omp&   shared(npop, dn_pop, Cabs_pop, kappB_pop, H_pop, &
          !$omp&          log_H_pop, log_kappB_pop, kappCMB_pop, J_lam, &
-         !$omp&          T_first, lam, Jout, NLAM, NT) &
-         !$omp&   private(ir, ii, Teq, EEQ, Equil, converged, &
-         !$omp&           spec, P, lnP, T, H, kappB, Jout_local) &
+         !$omp&          T_first, lam, Jout, NLAM, NT, &
+         !$omp&          do_pol, Cpol_pop, falign_pop, Jpol) &
+         !$omp&   private(ir, ii, Teq, EEQ, Equil, converged, wpol, &
+         !$omp&           spec, P, lnP, T, H, kappB, Jout_local, Jpol_local) &
          !$omp&   reduction(+:n_stoch, n_equil_eeq, n_equil_fail)
          allocate(spec(NLAM), P(NT), lnP(NT), T(NT), H(NT), kappB(NT))
-         allocate(Jout_local(NLAM))
+         allocate(Jout_local(NLAM), Jpol_local(NLAM))
          Jout_local = 0.0_wp
+         Jpol_local = 0.0_wp
+         wpol       = 0.0_wp
          !$omp do schedule(dynamic)
          do ir = 1, npop
             if (dn_pop(ir) <= 0.0_wp) cycle
@@ -752,14 +769,18 @@ contains
                end if
             end if
 
+            if (do_pol) wpol = dn_pop(ir) * falign_pop(ir)
+
             if (Equil) then
                call calc_bbody(Teq, lam, spec)
                Jout_local = Jout_local + dn_pop(ir) * Cabs_pop(:, ir) * spec
+               if (do_pol) Jpol_local = Jpol_local + wpol * Cpol_pop(:, ir) * spec
             else
                do ii = 1, NT
                   if (P(ii) > 0.0_wp) then
                      call calc_bbody(T(ii), lam, spec)
                      Jout_local = Jout_local + dn_pop(ir) * P(ii) * Cabs_pop(:, ir) * spec
+                     if (do_pol) Jpol_local = Jpol_local + wpol * P(ii) * Cpol_pop(:, ir) * spec
                   end if
                end do
             end if
@@ -767,8 +788,9 @@ contains
          !$omp end do
          !$omp critical
          Jout = Jout + Jout_local
+         if (do_pol) Jpol = Jpol + Jpol_local
          !$omp end critical
-         deallocate(spec, P, lnP, T, H, kappB, Jout_local)
+         deallocate(spec, P, lnP, T, H, kappB, Jout_local, Jpol_local)
          !$omp end parallel
          if (sed_verbose) write(*,'(a,i4,a,i4,a,i4,a)') &
             '   [Draine narrowing: stoch=', n_stoch, ' eeq_gate=', n_equil_eeq, &
@@ -791,6 +813,7 @@ contains
          ! A one-shot P(top) guard (re-solve with a raised top) backs up
          ! the analytic bound; it fires rarely.
          Equil_prev = .false.
+         wpol       = 0.0_wp
          n_stoch = 0; n_guard_resolve = 0
          allocate(spec(NLAM), P(NT), lnP(NT), T(NT), H(NT), kappB(NT))
          del   = log(T_first(NT) / T_first(1))
@@ -849,9 +872,12 @@ contains
                end if
             end if
 
+            if (do_pol) wpol = dn_pop(ir) * falign_pop(ir)
+
             if (Equil) then
                call calc_bbody(Teq, lam, spec)
                Jout = Jout + dn_pop(ir) * Cabs_pop(:, ir) * spec
+               if (do_pol) Jpol = Jpol + wpol * Cpol_pop(:, ir) * spec
             else
                do ii = 1, NT
                   if (P(ii) > 0.0_wp) then
@@ -862,6 +888,7 @@ contains
                         where (lam < HC_ERG_UM / H(ii)) spec = 0.0_wp
                      end if
                      Jout = Jout + dn_pop(ir) * P(ii) * Cabs_pop(:, ir) * spec
+                     if (do_pol) Jpol = Jpol + wpol * P(ii) * Cpol_pop(:, ir) * spec
                   end if
                end do
             end if
@@ -879,13 +906,16 @@ contains
          !$omp parallel default(none) &
          !$omp&   shared(npop, dn_pop, aeff_pop, Cabs_pop, kappB_pop, H_pop, &
          !$omp&          log_H_pop, log_kappB_pop, kappCMB_pop, J_lam, &
-         !$omp&          T_first, lam, grain_type, Jout, NLAM, NT) &
-         !$omp&   private(ir, ii, Teq, EEQ, Equil, converged, a_cm_qm, qm_ok, &
-         !$omp&           spec, P, lnP, T, H, kappB, Jout_local, emission_qm) &
+         !$omp&          T_first, lam, grain_type, Jout, NLAM, NT, &
+         !$omp&          do_pol, Cpol_pop, falign_pop, Jpol) &
+         !$omp&   private(ir, ii, Teq, EEQ, Equil, converged, a_cm_qm, qm_ok, wpol, &
+         !$omp&           spec, P, lnP, T, H, kappB, Jout_local, emission_qm, Jpol_local) &
          !$omp&   reduction(+:n_stoch, n_equil_eeq, n_equil_fail)
          allocate(spec(NLAM), P(NT), lnP(NT), T(NT), H(NT), kappB(NT))
-         allocate(Jout_local(NLAM), emission_qm(NLAM))
+         allocate(Jout_local(NLAM), emission_qm(NLAM), Jpol_local(NLAM))
          Jout_local = 0.0_wp
+         Jpol_local = 0.0_wp
+         wpol       = 0.0_wp
          !$omp do schedule(dynamic)
          do ir = 1, npop
             block
@@ -900,6 +930,8 @@ contains
                   Equil = .false.
                end if
 
+               if (do_pol) wpol = dn_pop(ir) * falign_pop(ir)
+
                if (.not. Equil) then
                   a_cm_qm = aeff_pop(ir) * UM2CM
                   call qm_solve_grain(NLAM, lam, Cabs_pop(:,ir), J_lam, &
@@ -912,6 +944,20 @@ contains
                         Jout_local(ii) = Jout_local(ii) + dn_pop(ir) * emission_qm(ii) / &
                                          (4.0_wp * PI * lam(ii) * 1.0e-3_wp)
                      end do
+                     ! qm_solve_grain returns the emitted spectrum with Cabs
+                     ! already folded in, so the polarized counterpart is the
+                     ! same spectrum rescaled by Cpol/Cabs. Wavelengths with
+                     ! zero Cabs emit nothing and contribute nothing.
+                     if (do_pol) then
+                        do ii = 1, NLAM
+                           if (Cabs_pop(ii, ir) > 0.0_wp) then
+                              Jpol_local(ii) = Jpol_local(ii) + &
+                                 wpol * emission_qm(ii) * &
+                                 (Cpol_pop(ii, ir) / Cabs_pop(ii, ir)) / &
+                                 (4.0_wp * PI * lam(ii) * 1.0e-3_wp)
+                           end if
+                        end do
+                     end if
                      n_stoch = n_stoch + 1
                   else
                      ! QM failed: fall back to GD for this grain only.
@@ -924,6 +970,8 @@ contains
                            if (P(ii) > 0.0_wp) then
                               call calc_bbody(T(ii), lam, spec)
                               Jout_local = Jout_local + dn_pop(ir) * P(ii) * Cabs_pop(:, ir) * spec
+                              if (do_pol) Jpol_local = Jpol_local + &
+                                 wpol * P(ii) * Cpol_pop(:, ir) * spec
                            end if
                         end do
                      else
@@ -936,14 +984,16 @@ contains
                if (Equil) then
                   call calc_bbody(Teq, lam, spec)
                   Jout_local = Jout_local + dn_pop(ir) * Cabs_pop(:, ir) * spec
+                  if (do_pol) Jpol_local = Jpol_local + wpol * Cpol_pop(:, ir) * spec
                end if
             end block
          end do
          !$omp end do
          !$omp critical
          Jout = Jout + Jout_local
+         if (do_pol) Jpol = Jpol + Jpol_local
          !$omp end critical
-         deallocate(spec, P, lnP, T, H, kappB, Jout_local)
+         deallocate(spec, P, lnP, T, H, kappB, Jout_local, Jpol_local)
          !$omp end parallel
          if (sed_verbose) write(*,'(a,i4,a,i4,a,i4,a)') &
             '   [QM solver: stoch=', n_stoch, ' eeq_gate=', n_equil_eeq, &
@@ -961,6 +1011,7 @@ contains
             call calc_Teq(lam, Cabs_pop(:, ir), J_lam, T_first, kappB_pop(:, ir), Teq)
             call calc_bbody(Teq, lam, spec)
             Jout = Jout + dn_pop(ir) * Cabs_pop(:, ir) * spec
+            if (do_pol) Jpol = Jpol + dn_pop(ir) * falign_pop(ir) * Cpol_pop(:, ir) * spec
             n_equil_eeq = n_equil_eeq + 1
          end do
          deallocate(spec)
@@ -2140,7 +2191,7 @@ contains
    ! convention. lamI_total(NLAM) is the summed SED; optional
    ! lamI_chan(NLAM, n_channel) returns the SED of each channel.
    ! REQUIRES: m is the most recently built model (its grids == the globals).
-   subroutine dust_emission(m, J_lam, lamI_total, lamI_chan, status)
+   subroutine dust_emission(m, J_lam, lamI_total, lamI_chan, status, lamI_pol)
       type(dust_model_t), intent(in)  :: m
       real(wp),           intent(in)  :: J_lam(:)              ! (NLAM)
       real(wp),           intent(out) :: lamI_total(:)         ! (NLAM)
@@ -2151,10 +2202,19 @@ contains
       !   status = 1  unknown stoch_method
       !   status = 2  'qm' selected but a population is missing its radii
       integer,  optional, intent(out) :: status
-      real(wp), allocatable :: Jout_pop(:), Jchan(:,:)
+      ! Optional INTRINSIC polarized emission, same shape and units as
+      ! lamI_total. Only populations carrying both Cpol and falign contribute;
+      ! anything else (PAHs, any model built without polarized optics) adds
+      ! zero. The geometric sin^2(gamma) projection onto the plane of the sky
+      ! and any turbulent depolarization are the radiative transfer's job and
+      ! are deliberately NOT applied here.
+      real(wp), optional, intent(out) :: lamI_pol(:)           ! (NLAM)
+      real(wp), allocatable :: Jout_pop(:), Jchan(:,:), Jpol_pop(:), Jpol_sum(:)
       integer :: ip, ic
+      logical :: want_pol, pop_pol
 
       if (present(status)) status = 0
+      want_pol = present(lamI_pol)
 
       ! Validate the model's chosen solver before doing any work.
       select case (trim(m%stoch_method))
@@ -2191,15 +2251,31 @@ contains
       if (trim(m%stoch_method) == 'qm') qm_verbose = m%verbose
 
       allocate(Jout_pop(m%NLAM), Jchan(m%NLAM, m%n_channel))
-      Jchan = 0.0_wp
+      allocate(Jpol_pop(m%NLAM), Jpol_sum(m%NLAM))
+      Jchan    = 0.0_wp
+      Jpol_sum = 0.0_wp
       do ip = 1, size(m%pops)
+         ! Ask for polarized emission only from a population that actually
+         ! carries polarized optics; the rest go down the untouched path.
+         pop_pol = want_pol .and. allocated(m%pops(ip)%Cpol) &
+                             .and. allocated(m%pops(ip)%falign)
          ! size count for each population (Zubko-like models have
          ! component-by-component grids)
-         call sed_grain_loop(size(m%pops(ip)%dn), m%pops(ip)%dn, m%pops(ip)%aeff, &
-                             m%pops(ip)%Cabs, &
-                             m%pops(ip)%kappB, m%pops(ip)%H, m%pops(ip)%log_H, &
-                             m%pops(ip)%log_kappB, m%pops(ip)%kappCMB, &
-                             J_lam, trim(m%pops(ip)%grain_type), Jout_pop)
+         if (pop_pol) then
+            call sed_grain_loop(size(m%pops(ip)%dn), m%pops(ip)%dn, m%pops(ip)%aeff, &
+                                m%pops(ip)%Cabs, &
+                                m%pops(ip)%kappB, m%pops(ip)%H, m%pops(ip)%log_H, &
+                                m%pops(ip)%log_kappB, m%pops(ip)%kappCMB, &
+                                J_lam, trim(m%pops(ip)%grain_type), Jout_pop, &
+                                m%pops(ip)%Cpol, m%pops(ip)%falign, Jpol_pop)
+            Jpol_sum = Jpol_sum + Jpol_pop
+         else
+            call sed_grain_loop(size(m%pops(ip)%dn), m%pops(ip)%dn, m%pops(ip)%aeff, &
+                                m%pops(ip)%Cabs, &
+                                m%pops(ip)%kappB, m%pops(ip)%H, m%pops(ip)%log_H, &
+                                m%pops(ip)%log_kappB, m%pops(ip)%kappCMB, &
+                                J_lam, trim(m%pops(ip)%grain_type), Jout_pop)
+         end if
          ic = m%pops(ip)%out_channel
          Jchan(:, ic) = Jchan(:, ic) + Jout_pop
       end do
@@ -2211,7 +2287,12 @@ contains
 
       lamI_total = sum(Jchan, dim=2)
       if (present(lamI_chan)) lamI_chan = Jchan
-      deallocate(Jout_pop, Jchan)
+      if (want_pol) then
+         ! Same unit conversion the total emission gets.
+         if (m%use_induced_emission) call apply_induced_factor(J_lam, Jpol_sum)
+         lamI_pol = m%lam * Jpol_sum * 1.0e-3_wp
+      end if
+      deallocate(Jout_pop, Jchan, Jpol_pop, Jpol_sum)
    end subroutine dust_emission
 
 
