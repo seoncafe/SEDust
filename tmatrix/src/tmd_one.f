@@ -1,12 +1,24 @@
 C***********************************************************************
 C
-C   SUBROUTINE TMD_ONE - single-size single-orientation-averaged T-matrix
+C   SUBROUTINE TMD_ONE / TMD_ONE_SCATMAT - single-size orientation-averaged
+C   T-matrix
 C
 C   Mechanical conversion of Mishchenko's tmd.lp.f main program into a
 C   callable subroutine. Returns Qext, Qsca, single-scattering albedo W,
 C   and asymmetry parameter <cos theta> for one (size, shape, refractive
 C   index, wavelength) point. The caller is expected to do its own loop
 C   over particle size and wavelength.
+C
+C   Two entry points:
+C     TMD_ONE     the original short argument list (Qext, Qsca, W, <cos>).
+C                 A thin wrapper around TMD_ONE_SCATMAT that discards the
+C                 scattering-matrix expansion coefficients.
+C     TMD_ONE_SCATMAT  the same calculation, additionally returning the six
+C                 generalized-spherical-function expansion coefficients
+C                 AL1..AL4, BE1, BE2 of the random-orientation scattering
+C                 matrix, and their truncation order LMAX.
+C
+C   Callers that only need cross sections keep using TMD_ONE unchanged.
 C
 C   The inner subroutines (CONST, VARY, TMATR0, TMATR, RSP*, BESS, RJB,
 C   RYB, CJB, TT, GSP, HOVENR, MATR, ...) below this wrapper are copied
@@ -26,13 +38,17 @@ C       internal Gaussian quadrature in radius (DO 500 INK = 1, NK,
 C       DISTRB, GAUSS, POWER) are removed; we evaluate one A = AXI per
 C       call.
 C     - All PRINT/WRITE diagnostic statements removed.
-C     - Final MATR call removed. The angular phase-function expansion
-C       coefficients are not returned; only Qext, Qsca, W, <cos> are.
+C     - Final MATR call removed. MATR prints the angular scattering
+C       matrix to stdout, which a library routine must not do. The
+C       expansion coefficients themselves ARE returned by TMD_ONE_SCATMAT;
+C       a caller that wants the angular matrix calls SCATMAT_FROM_MOMENTS (silent,
+C       array-returning variant of MATR, at the bottom of this file).
 C     - All STOP statements replaced with `IERR = <code>; RETURN`.
-C     - The HOVENR sanity check on the (normalized) phase-function
-C       coefficients is dropped (HOVENR operates on accumulated arrays
-C       that, with no size quadrature, are trivially equal to the GSP
-C       output and would only echo what GSP already returned).
+C     - The HOVENR sanity check is not applied here. HOVENR operates on
+C       accumulated (size-integrated) arrays; for a single size those are
+C       trivially equal to the GSP output. A caller that accumulates over
+C       a size distribution should call VDM_HOVENIER_TEST (silent, status-
+C       returning variant, at the bottom of this file) on the result.
 C
 C   Arguments (all REAL*8 unless noted):
 C     INPUT
@@ -53,6 +69,24 @@ C       QEXT   extinction efficiency, Cext / (pi * AXI**2)
 C       QSCA   scattering efficiency, Csca / (pi * AXI**2)
 C       WALB   single-scattering albedo, Csca / Cext
 C       ASYMM  asymmetry parameter <cos theta>
+C     OUTPUT, TMD_ONE_SCATMAT ONLY (all dimensioned NPL from tmd.par.f)
+C       AL1,AL2,AL3,AL4  expansion coefficients alpha_1..alpha_4
+C       BE1,BE2          expansion coefficients beta_1, beta_2
+C              of the random-orientation scattering matrix, in the
+C              Mishchenko / Hovenier convention:
+C                F11 = sum_l AL1(l+1) P_l(u)
+C                F22+F33 = sum_l (AL2+AL3)(l+1) P^l_{2,2}(u)
+C                F22-F33 = sum_l (AL2-AL3)(l+1) P^l_{2,-2}(u)
+C                F44 = sum_l AL4(l+1) P_l(u)
+C                F12 = sum_l BE1(l+1) P^l_{0,2}(u)
+C                F34 = sum_l BE2(l+1) P^l_{0,2}(u)
+C              with u = cos(scattering angle).  GSP normalizes so that
+C              AL1(1) = 1, i.e. (1/2) * integral_{-1}^{1} F11 du = 1.
+C              Element (1) of every array is the l = 0 term.
+C              Entries beyond LMAX+1 are zeroed on return.
+C       LMAX   INTEGER truncation order; the highest populated index is
+C              LMAX+1.  Zero when IERR /= 0.
+C     OUTPUT
 C       IERR   INTEGER status code:
 C                0 success
 C                1 INM1 >= NPN1: starting NMAX estimate exceeds storage
@@ -64,19 +98,20 @@ C                  convergence (local change from the original tmd.lp.f,
 C                  whose fall-through leaves IERR = 0)
 C
 C***********************************************************************
-      SUBROUTINE TMD_ONE(AXI, LAM, MRR, MRI, EPS, NP,
+      SUBROUTINE TMD_ONE_SCATMAT(AXI, LAM, MRR, MRI, EPS, NP,
      &                   DDELT, NDGS,
-     &                   QEXT, QSCA, WALB, ASYMM, IERR)
+     &                   QEXT, QSCA, WALB, ASYMM,
+     &                   AL1, AL2, AL3, AL4, BE1, BE2, LMAX, IERR)
       IMPLICIT REAL*8 (A-H,O-Z)
       INCLUDE 'tmd.par.f'
       REAL*8  AXI, LAM, MRR, MRI, EPS, DDELT
       REAL*8  QEXT, QSCA, WALB, ASYMM
-      INTEGER NP, NDGS, IERR
+      INTEGER NP, NDGS, LMAX, IERR
       REAL*8  X(NPNG2),W(NPNG2),S(NPNG2),SS(NPNG2),
      *        AN(NPN1),R(NPNG2),DR(NPNG2),
      *        DDR(NPNG2),DRR(NPNG2),DRI(NPNG2),ANN(NPN1,NPN1)
-      REAL*8  TR1(NPN2,NPN2),TI1(NPN2,NPN2),
-     &        AL1(NPL),AL2(NPL),AL3(NPL),AL4(NPL),BE1(NPL),BE2(NPL)
+      REAL*8  TR1(NPN2,NPN2),TI1(NPN2,NPN2)
+      REAL*8  AL1(NPL),AL2(NPL),AL3(NPL),AL4(NPL),BE1(NPL),BE2(NPL)
       REAL*4
      &     RT11(NPN6,NPN4,NPN4),RT12(NPN6,NPN4,NPN4),
      &     RT21(NPN6,NPN4,NPN4),RT22(NPN6,NPN4,NPN4),
@@ -92,6 +127,20 @@ C***********************************************************************
       QSCA  = 0D0
       WALB  = 0D0
       ASYMM = 0D0
+
+C  Clear the expansion coefficients up front so that an early error
+C  return leaves the caller with a well-defined (all-zero, LMAX = 0)
+C  result rather than uninitialized storage. GSP writes only elements
+C  1..LMAX+1, so this also guarantees the tail is zero on success.
+      LMAX = 0
+      DO 5 I = 1, NPL
+         AL1(I) = 0D0
+         AL2(I) = 0D0
+         AL3(I) = 0D0
+         AL4(I) = 0D0
+         BE1(I) = 0D0
+         BE2(I) = 0D0
+    5 CONTINUE
 
 C  NCHECK setup (unchanged from original main program).
       NCHECK = 0
@@ -289,6 +338,32 @@ C  LAM**2 (microns**2), so Q is dimensionless.
       QEXT = CEXT/(P*AXI*AXI)
       QSCA = CSCA/(P*AXI*AXI)
 
+      RETURN
+      END
+
+C***********************************************************************
+C
+C   SUBROUTINE TMD_ONE - cross-section-only entry point.
+C
+C   Retained so that callers which do not need the scattering matrix
+C   keep their original argument list. Identical numerics: the local
+C   coefficient arrays are filled by TMD_ONE_SCATMAT and then discarded.
+C
+C***********************************************************************
+      SUBROUTINE TMD_ONE(AXI, LAM, MRR, MRI, EPS, NP,
+     &                   DDELT, NDGS,
+     &                   QEXT, QSCA, WALB, ASYMM, IERR)
+      IMPLICIT REAL*8 (A-H,O-Z)
+      INCLUDE 'tmd.par.f'
+      REAL*8  AXI, LAM, MRR, MRI, EPS, DDELT
+      REAL*8  QEXT, QSCA, WALB, ASYMM
+      INTEGER NP, NDGS, IERR
+      REAL*8  AL1(NPL),AL2(NPL),AL3(NPL),AL4(NPL),BE1(NPL),BE2(NPL)
+      INTEGER LMAX
+
+      CALL TMD_ONE_SCATMAT(AXI, LAM, MRR, MRI, EPS, NP, DDELT, NDGS,
+     &                QEXT, QSCA, WALB, ASYMM,
+     &                AL1, AL2, AL3, AL4, BE1, BE2, LMAX, IERR)
       RETURN
       END
 
@@ -2256,5 +2331,160 @@ C        F34=F34/F11
   500 CONTINUE
       PRINT 1000 
  1004 FORMAT(' ',F6.2,6F11.4)
+      RETURN
+      END
+
+C****************************************************************
+
+C    SUBROUTINE SCATMAT_FROM_MOMENTS - silent, array-returning variant of MATR.
+
+C    Same angular expansion as MATR (identical recurrences, identical
+C    normalization), but the six scattering-matrix elements are written
+C    into caller-supplied arrays instead of being PRINTed. MATR itself is
+C    left untouched above.
+
+C    A1,...,B2 - expansion coefficients, dimensioned NPL
+C    LMAX      - number of coefficients minus 1
+C    NPNA      - number of scattering angles; angle i (i = 1..NPNA) is
+C                180*(I-1)/(NPNA-1) degrees, returned in THETA
+C    THETA     - scattering angle [degrees], dimension NPNA
+C    F11,...,F34 - scattering-matrix elements, dimension NPNA.
+C                Unnormalized in the same sense as MATR: F11 carries the
+C                normalization of A1 (F11 = 1 isotropic when A1(1) = 1),
+C                and F22, F33, F44, F12, F34 are NOT divided by F11.
+C                The degree of linear polarization for unpolarized
+C                incident light is -F12/F11.
+
+      SUBROUTINE SCATMAT_FROM_MOMENTS(A1,A2,A3,A4,B1,B2,LMAX,NPNA,
+     &                    THETA,F11,F22,F33,F44,F12,F34)
+      IMPLICIT REAL*8 (A-H,O-Z)
+      INCLUDE 'tmd.par.f'
+      REAL*8 A1(NPL),A2(NPL),A3(NPL),A4(NPL),B1(NPL),B2(NPL)
+      REAL*8 THETA(NPNA),F11(NPNA),F22(NPNA),F33(NPNA),F44(NPNA),
+     &       F12(NPNA),F34(NPNA)
+      INTEGER LMAX,NPNA
+      N=NPNA
+      DN=1D0/DFLOAT(N-1)
+      DA=DACOS(-1D0)*DN
+      DB=180D0*DN
+      L1MAX=LMAX+1
+      TB=-DB
+      TAA=-DA
+      D6=DSQRT(6D0)*0.25D0
+      DO 500 I1=1,N
+         TAA=TAA+DA
+         TB=TB+DB
+         U=DCOS(TAA)
+         FF11=0D0
+         F2=0D0
+         F3=0D0
+         FF44=0D0
+         FF12=0D0
+         FF34=0D0
+         P1=0D0
+         P2=0D0
+         P3=0D0
+         P4=0D0
+         PP1=1D0
+         PP2=0.25D0*(1D0+U)*(1D0+U)
+         PP3=0.25D0*(1D0-U)*(1D0-U)
+         PP4=D6*(U*U-1D0)
+         DO 400 L1=1,L1MAX
+            L=L1-1
+            DL=DFLOAT(L)
+            DL1=DFLOAT(L1)
+            FF11=FF11+A1(L1)*PP1
+            FF44=FF44+A4(L1)*PP1
+            IF(L.EQ.LMAX) GO TO 350
+            PL1=DFLOAT(2*L+1)
+            P=(PL1*U*PP1-DL*P1)/DL1
+            P1=PP1
+            PP1=P
+  350       IF(L.LT.2) GO TO 400
+            F2=F2+(A2(L1)+A3(L1))*PP2
+            F3=F3+(A2(L1)-A3(L1))*PP3
+            FF12=FF12+B1(L1)*PP4
+            FF34=FF34+B2(L1)*PP4
+            IF(L.EQ.LMAX) GO TO 400
+            PL2=DFLOAT(L*L1)*U
+            PL3=DFLOAT(L1*(L*L-4))
+            PL4=1D0/DFLOAT(L*(L1*L1-4))
+            P=(PL1*(PL2-4D0)*PP2-PL3*P2)*PL4
+            P2=PP2
+            PP2=P
+            P=(PL1*(PL2+4D0)*PP3-PL3*P3)*PL4
+            P3=PP3
+            PP3=P
+            P=(PL1*U*PP4-DSQRT(DFLOAT(L*L-4))*P4)/DSQRT(DFLOAT(L1*L1-4))
+            P4=PP4
+            PP4=P
+  400    CONTINUE
+         THETA(I1)=TB
+         F11(I1)=FF11
+         F22(I1)=(F2+F3)*0.5D0
+         F33(I1)=(F2-F3)*0.5D0
+         F44(I1)=FF44
+         F12(I1)=FF12
+         F34(I1)=FF34
+  500 CONTINUE
+      RETURN
+      END
+
+C****************************************************************
+
+C    SUBROUTINE VDM_HOVENIER_TEST - silent, status-returning variant of HOVENR.
+
+C    Same van der Mee & Hovenier necessary conditions as HOVENR, but the
+C    verdict is returned in KONTR instead of being PRINTed, and the
+C    result is accumulated over all L. (HOVENR resets KONTR at the top of
+C    its L loop, so its final message reflects only the last L; that is
+C    left as is above and fixed here.) LVIOL returns the first offending
+C    L, or -1 when every L passes.
+
+C    L1        - number of coefficients (LMAX+1)
+C    A1,...,B2 - expansion coefficients, dimension at least L1
+C    KONTR     - 1 test satisfied, 2 test violated
+C    LVIOL     - lowest L at which the test fails, -1 if none
+
+      SUBROUTINE VDM_HOVENIER_TEST(L1,A1,A2,A3,A4,B1,B2,KONTR,LVIOL)
+      IMPLICIT REAL*8 (A-H,O-Z)
+      REAL*8 A1(L1),A2(L1),A3(L1),A4(L1),B1(L1),B2(L1)
+      INTEGER L1,KONTR,LVIOL,KL
+      KONTR=1
+      LVIOL=-1
+      DO 100 L=1,L1
+         KL=1
+         LL=L-1
+         DL=DFLOAT(LL)*2D0+1D0
+         DDL=DL*0.48D0
+         AA1=A1(L)
+         AA2=A2(L)
+         AA3=A3(L)
+         AA4=A4(L)
+         BB1=B1(L)
+         BB2=B2(L)
+         IF(LL.GE.1.AND.DABS(AA1).GE.DL) KL=2
+         IF(DABS(AA2).GE.DL) KL=2
+         IF(DABS(AA3).GE.DL) KL=2
+         IF(DABS(AA4).GE.DL) KL=2
+         IF(DABS(BB1).GE.DDL) KL=2
+         IF(DABS(BB2).GE.DDL) KL=2
+         C=-0.1D0
+         DO 50 I=1,11
+            C=C+0.1D0
+            CC=C*C
+            C1=CC*BB2*BB2
+            C2=C*AA4
+            C3=C*AA3
+            IF((DL-C*AA1)*(DL-C*AA2)-CC*BB1*BB1.LE.-1D-4) KL=2
+            IF((DL-C2)*(DL-C3)+C1.LE.-1D-4) KL=2
+            IF((DL+C2)*(DL-C3)-C1.LE.-1D-4) KL=2
+            IF((DL-C2)*(DL+C3)-C1.LE.-1D-4) KL=2
+   50    CONTINUE
+         IF(KL.EQ.2) THEN
+            KONTR=2
+            IF(LVIOL.LT.0) LVIOL=LL
+         ENDIF
+  100 CONTINUE
       RETURN
       END

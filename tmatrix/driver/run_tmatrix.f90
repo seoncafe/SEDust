@@ -18,14 +18,14 @@ program run_tmatrix
    !
    ! flag legend:
    !    0    T-matrix converged
-   !   10    small-x fallback (BHMIE sphere)
-   !   20    large-x fallback (geometric optics)
+   !   10    small-x limit (Rayleigh dipole)
+   !   20    large-x limit (geometric optics)
    !   1..5  T-matrix returned IERR=1..5 (see tmd_one.f header; IERR=5 is
    !         the Gaussian-quadrature refinement loop failing to converge),
-   !         then we fell back to whichever side x is closer to:
-   !           IERR in 1..5 with x < 1.0    : redirected to small-x fallback
+   !         then the result was taken from whichever limit x is closer to:
+   !           IERR in 1..5 with x < 1.0    : redirected to the small-x limit
    !                                          (flag = IERR + 10)
-   !           IERR in 1..5 with x >= 1.0   : redirected to large-x fallback
+   !           IERR in 1..5 with x >= 1.0   : redirected to the large-x limit
    !                                          (flag = IERR + 20)
    !  100+  : failed physical-consistency check (see stderr).  The base flag
    !         is preserved in the low two digits; +100 marks a written row
@@ -36,7 +36,7 @@ program run_tmatrix
    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
    use constants, only: wp
    use read_index, only: load_index, interp_m
-   use fallback,   only: fallback_small_x, fallback_large_x
+   use asymptotic_optics, only: rayleigh_limit, geometric_optics_limit
    implicit none
 
    ! Reference parameters (HD23 best fit)
@@ -164,11 +164,11 @@ program run_tmatrix
          x = 2.0_wp * PI * a_eff(ja) / lambda(jw)
 
          if (x < X_SMALL) then
-            call fallback_small_x(a_eff(ja), lambda(jw), nr, ki, EPS_BA, qext, qsca, walb, asymm)
+            call rayleigh_limit(a_eff(ja), lambda(jw), nr, ki, EPS_BA, qext, qsca, walb, asymm)
             qabs = qext - qsca
             flag = 10
          else if (x > X_LARGE) then
-            call fallback_large_x(a_eff(ja), lambda(jw), nr, ki, qext, qsca, walb, asymm)
+            call geometric_optics_limit(a_eff(ja), lambda(jw), nr, ki, qext, qsca, walb, asymm)
             qabs = qext - qsca
             flag = 20
          else
@@ -176,10 +176,10 @@ program run_tmatrix
                          DDELT, NDGS, qext, qsca, walb, asymm, ierr_t)
             if (ierr_t /= 0) then
                if (x < 1.0_wp) then
-                  call fallback_small_x(a_eff(ja), lambda(jw), nr, ki, EPS_BA, qext, qsca, walb, asymm)
+                  call rayleigh_limit(a_eff(ja), lambda(jw), nr, ki, EPS_BA, qext, qsca, walb, asymm)
                   flag = ierr_t + 10
                else
-                  call fallback_large_x(a_eff(ja), lambda(jw), nr, ki, qext, qsca, walb, asymm)
+                  call geometric_optics_limit(a_eff(ja), lambda(jw), nr, ki, qext, qsca, walb, asymm)
                   flag = ierr_t + 20
                end if
             else
