@@ -395,6 +395,63 @@ the maximum polarized extinction, quoted before any geometric factor.}
 \label{tab:kextcols}
 \end{table}
 
+\subsection{Changing the alignment efficiency}\label{sec:pol:align}
+
+By default the alignment efficiency is the HD23 fit. Two setters, both
+re-exported by \code{dust\_lib}, replace it on a model that already exists.
+
+\begin{lstlisting}
+call dust_set_alignment(m, f_max, a_align, alpha_align [, status])
+call dust_set_alignment_profile(m, aeff_in, falign_in [, status])
+\end{lstlisting}
+
+The first installs the HD23 power-law rolloff
+\begin{equation}
+f_{\rm align}(a) \;=\; \frac{f_{\max}}{1 + (a_{\rm align}/a)^{\alpha_{\rm align}}},
+\label{eq:falignset}
+\end{equation}
+with $a_{\rm align}$ in \um. The second installs an arbitrary tabulated
+profile: the caller supplies $(\code{aeff\_in}\,[\um],\ \code{falign\_in})$
+pairs and each population's efficiency is interpolated from them onto its own
+radius grid, linearly in $\log a$ and clamped at the ends of the table. This
+is the route for prescriptions Eq.~(\ref{eq:falignset}) cannot express: a
+RAT-derived Rayleigh reduction factor $R(a)$, or the GRADE-POL exponential
+$f_{\max}[1 - \exp(-(0.5a/a_{\rm align})^3)]$.
+
+Both refill \code{falign} only for populations that carry polarized optics.
+PAHs, which HD23 take to be unaligned, are left untouched and keep
+contributing zero.
+
+\paragraph{No temperature solve is repeated.} This is the property worth
+knowing before designing a parameter study. The alignment efficiency enters as
+a weight in the size integral, \emph{outside} the temperature solution: it
+multiplies the polarized accumulator and never enters $P(T)$. Changing the
+alignment therefore does not invalidate any temperature distribution, and
+\code{lamI\_total} is bit-for-bit unchanged across a setter call. A scan over
+alignment parameters costs one \code{dust\_emission} call per point, not one
+model build.
+
+\paragraph{Negative efficiencies are allowed on purpose.}
+\code{dust\_set\_alignment\_profile} requires \code{falign\_in} to lie in
+$[-1, 1]$ and \emph{rejects} rather than clamps a value outside it, since
+$|f| \le 1$ is the physical bound on a Rayleigh reduction factor and a value
+beyond it is a caller error that silent clamping would hide. Negative values
+inside the range are accepted: a grain with slow internal relaxation has
+$Q_X = -0.1$, a negative reduction factor that flips the polarization
+direction by $90^\circ$. That is the accepted origin of polarization parallel
+to $\mathbf{B}$ at millimeter wavelengths and perpendicular to it in the
+submillimeter, and clamping at zero would silently delete it.
+\code{dust\_set\_alignment} keeps $f_{\max}$ in $[0, 1]$, the power law having
+no such sign freedom.
+
+With \code{status} present a bad argument sets it nonzero and returns; without
+it, the run stops. The codes are 1, 2, 3 in the order the arguments are listed
+above for \code{dust\_set\_alignment} ($a_{\rm align} \le 0$,
+$\alpha_{\rm align} \le 0$, $f_{\max}$ outside $[0,1]$), and for
+\code{dust\_set\_alignment\_profile} 1 for mismatched or too-short arrays,
+2 for an \code{aeff\_in} that is not positive and strictly increasing, and
+3 for a \code{falign\_in} value outside $[-1, 1]$.
+
 \subsection{Division of labor}\label{sec:pol:division}
 
 Table~\ref{tab:poldivision} is the part to get right. SEDust stops at the

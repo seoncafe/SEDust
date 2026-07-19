@@ -68,6 +68,9 @@ cd ../mc && make && ./main_mc_sed.x run_sed.nml
 
 # regenerating the T-matrix Q table (optional; the table ships with SEDust)
 cd ../tmatrix && make && ./run_tmatrix.x test   # then ./run_tmatrix.x for the full sweep
+
+# scattering matrix of randomly oriented grains (five optical bands ship with SEDust)
+./run_scatmat.x 0.55                            # one wavelength; ./run_scatmat.x all for the grid
 ```
 
 Outputs are plain ASCII `.dat` files written to each subdirectory's `output/`.
@@ -119,11 +122,24 @@ The computed polarized extinction reproduces the released
 `polarized_extinction.dat` to a median of 0.03%. The polarized emission
 fraction reaches 17.2% at 154 um and 19.2% at 850 um.
 
+The alignment efficiency `f_align(a)` can be replaced on an existing model
+with `dust_set_alignment` (the HD23 power law) or `dust_set_alignment_profile`
+(an arbitrary tabulated profile, for a RAT-derived reduction factor). Both are
+size weights applied outside the temperature solution, so neither re-solves
+`P(T)` and neither changes `lamI_total`.
+
+For randomly oriented grains the full scattering (Mueller) matrix is also
+computed, by `tmatrix/run_scatmat.x`, and stored for five optical bands
+(approximately UBVRI) as 181 scattering angles by the six independent elements
+`F11 F22 F33 F44 F12 F34`. Run `./run_scatmat.x all` for the full wavelength
+grid if more bands are needed.
+
 Circular polarization is not available, because the released table carries no
-phase lag, and scattering by aligned grains is not modelled. Neither limits
-far-infrared or submillimeter polarized emission, where scattering is
-negligible. The PAH component is treated as unaligned, and the DL07 and Zubko
-models have no polarized optics.
+phase lag, and scattering by *aligned* grains is not modeled — the matrix
+above is the random-orientation one. Neither limits far-infrared or
+submillimeter polarized emission, where scattering is negligible. The PAH
+component is treated as unaligned, and the DL07 and Zubko models have no
+polarized optics.
 
 ## Documentation
 
@@ -156,4 +172,4 @@ Rebuild any of them with `pdflatex <name>.tex` (run twice for cross-references).
 
 ---
 
-Last updated: 2026-07-19 10:25
+Last updated: 2026-07-19 11:09 KST

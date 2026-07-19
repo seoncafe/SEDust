@@ -268,7 +268,7 @@ contains
       real(wp),                intent(out) :: lamI_total(:)      ! (NLAM)
       real(wp), optional,      intent(out) :: lamI_chan(:,:)     ! (NLAM, n_channel)
       ! Optional error report (0 = success); see the module header for codes.
-      ! Validation is scalar/size-only to keep this on the per-cell hot path.
+      ! Validation is scalar/size-only to keep this on the hot path.
       integer, optional,       intent(out) :: status
       real(wp) :: ly(tab%NU)
       real(wp) :: lr, lUq

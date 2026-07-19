@@ -182,8 +182,10 @@ File / entity & Responsibility \\
 The reader. Decompresses, parses the three quantity blocks, validates
 (monotone axes, finite values, no trailing data), forms
 Eqs.~(\ref{eq:qpol})--(\ref{eq:qran}), and supplies \code{falign\_hd23(a)},
-Eq.~(\ref{eq:falign}). Publishes \code{qpol\_ext}, \code{qpol\_abs},
-\code{qran\_*} and the raw \code{qext\_j}/\code{qabs\_j}/\code{qsca\_j}. \\[2pt]
+Eq.~(\ref{eq:falign}). Publishes \code{qpol\_ext}, \code{qpol\_abs} and
+\code{qran\_*}; the orientation-resolved \code{qext\_j}/\code{qabs\_j}/%
+\code{qsca\_j} are \code{private} and are deallocated once the combinations
+have been formed. \\[2pt]
 \code{sed\_astrodust.f90}: \code{build\_Cpol} &
 Interpolates $Q_{\rm pol}$ from the 169-node table axis onto the
 size-distribution grid in $\log a$, exactly as \Cabs\ and $C_{\rm sca}$ are,
@@ -353,7 +355,10 @@ it is numerically irrelevant. Restricting to $a \le 0.5\um$, which covers
 At $a \ll \lambda$ both averages approach the same Rayleigh limit, which is why
 the far infrared is well behaved.
 
-\paragraph{Verdict.} The mixture is harmless for polarized \emph{emission},
+\paragraph{Verdict: deliberately deferred in this release.} The mixture is
+left in place for v1.20, as a decision rather than an oversight. The reasoning
+is recorded here so that it is not rediscovered later. The mixture is harmless
+for polarized \emph{emission},
 which is a far-infrared phenomenon. It is \textbf{not} defensible for
 polarized \emph{extinction} in the ultraviolet or the optical, and column 8
 spans the whole wavelength grid. The \code{Cpol\_ext} output of
@@ -366,6 +371,15 @@ outputs and has to be done as a separate, deliberately validated step rather
 than folded into this one. The size of the change is not an argument for
 leaving it: the correctness argument is that two channels of one calculation
 should not use two different orientation averages.
+
+What was decided for this release is only \emph{when}, not \emph{whether}.
+The planned use of these optics --- redoing Seon (2018) in the $V$ band, with
+one or two further optical bands possible --- lies entirely in the range where
+the disagreement is $0.080\%$ or below, while unifying the convention would
+change \Cabs\ and break the byte-identical regression baseline that the rest
+of v1.20 was validated against. Spending that baseline buys nothing inside the
+present scope. It has to be spent before any ultraviolet polarized extinction
+is quoted, and that is the trigger for doing the work.
 
 \subsection{\falign\ is the fit, not the release column}
 
@@ -437,9 +451,9 @@ created. A path not ending in \code{.gz} is opened directly.
 \paragraph{The bug this had.} Shell redirection creates the target file
 \emph{before} \code{gzip} runs, so when decompression failed the early return
 left a zero-length \code{q\_jori\_scratch.dat} behind in the user's working
-directory. The failure path now calls \code{cleanup\_scratch} before bailing
-out, like every other error exit. The general shape of the bug, an error path
-that skips the cleanup the success path performs, is worth watching for in any
+directory. The failure path now calls \code{discard\_scratch\_copy} before
+bailing out, like every other error exit. The general shape of the bug, an error
+path that skips the removal the success path performs, is worth watching for in any
 future edit to this reader: it has eight separate early returns.
 
 %====================================================================
@@ -545,6 +559,27 @@ consumer side. The data volume is $\lambda \times \theta \times
 \text{orientation} \times 16$ components, which is the reason this has not been
 attempted.
 
+\paragraph{The random-orientation scattering matrix does exist, in five optical
+bands.} This is a different object from the previous paragraph and should not be
+confused with it. Dropping the alignment, a randomly oriented spheroid with a
+plane of symmetry has six independent scattering-matrix elements rather than
+sixteen, and those \emph{are} computed in the tree: \code{tmatrix/driver/run\_scatmat.f90} restores Mishchenko's \code{MATR} expansion, accumulates
+the single-size matrices over the HD23 size distribution with $C_{\rm sca}\,{\rm
+d}n/n_{\rm H}$ weighting, and writes
+\code{tmatrix/output/scatmat\_astrodust\_P0.20\_Fe0.00\_1.400.dat}: one block per
+wavelength, 181 rows at $\theta = 0, 1, \ldots, 180^\circ$, with columns
+$F_{11}, F_{22}, F_{33}, F_{44}, F_{12}, F_{34}$. It answers what an unaligned
+grain population scatters; it does not answer the aligned question above.
+
+The stored wavelengths are $0.36$, $0.44$, $0.55$, $0.64$ and $0.79\um$, roughly
+\textit{UBVRI}. That set was chosen, and the full sweep deliberately not run, because
+the planned use is the $V$ band first with one or two further optical bands
+possible, and neither the far infrared nor the ultraviolet is in scope. The
+whole 1129-point grid costs about 1.7 hours and would be spent almost entirely
+on wavelengths nothing is waiting for. Extending is cheap and needs no code
+change: \code{./run\_scatmat.x all} does the full grid, or a list of
+wavelengths does a subset, at about $5.5\,$s per wavelength.
+
 \paragraph{Far infrared needs neither.} In that regime the albedo is
 essentially zero, so the transfer requires only the extinction matrix and the
 emission vector, both fully determined by what is exported. The HAWC+ 154\um\
@@ -568,23 +603,33 @@ Item & Size \\
 \midrule
 compressed file          & 4.1\,MB \\
 scratch file when expanded & 17.2\,MB \\
-raw arrays \code{qext\_j}, \code{qabs\_j}, \code{qsca\_j} & 13.7\,MB resident \\
-derived \code{qpol\_*}, \code{qran\_*} & 7.6\,MB resident \\
+raw arrays \code{qext\_j}, \code{qabs\_j}, \code{qsca\_j} & 13.7\,MB, transient \\
+derived \code{qpol\_*}, \code{qran\_*} & 7.6\,MB, kept \\
+resident after \code{sed\_init} & 7.6\,MB \\
 time                     & about 1\,s of the 3.1\,s model build \\
 \bottomrule
 \end{tabular}
-\caption{Cost of loading the orientation-resolved table.}
+\caption{Cost of loading the orientation-resolved table. The
+orientation-resolved arrays exist only between the read and the formation
+of the derived combinations.}
 \label{tab:cost}
 \end{table}
 
-The cheapest improvement, if this ever matters, is to release
-\code{qext\_j}, \code{qabs\_j} and \code{qsca\_j} once the combinations of
-Eqs.~(\ref{eq:qpol})--(\ref{eq:qran}) have been formed. Nothing downstream of
-\code{build\_Cpol} reads them, and dropping them removes 13.7\,MB, about
-two-thirds of the resident total. They are currently kept public because
-\code{calc\_polext.f90} and ad-hoc checking programs read the orientation
-blocks directly; a release step would have to be opt-in or come after those
-consumers are served.
+The orientation-resolved arrays \code{qext\_j}, \code{qabs\_j} and
+\code{qsca\_j} are deallocated as soon as the combinations of
+Eqs.~(\ref{eq:qpol})--(\ref{eq:qran}) have been formed. They are intermediate
+quantities: nothing downstream of \code{build\_Cpol} reads them, and every
+later step uses the five derived arrays only. Releasing them removes
+13.7\,MB, about two-thirds of what the table would otherwise hold, and leaves
+7.6\,MB resident for the rest of the run. The three arrays are \code{private}
+to \code{q\_table\_jori}, so no consumer can depend on their surviving the
+build.
+
+Measured on \code{main\_astrodust.x}, the maximum resident set size falls from
+51232\,kB to 40088\,kB, a reduction of about 10.9\,MB. The peak does not fall by the full 13.7\,MB because it
+is a high-water mark: once the orientation-resolved arrays are gone, the
+later SED solution stages set the peak instead. The steady-state occupancy
+just after \code{sed\_init} does drop by the full 13.7\,MB.
 
 %====================================================================
 \section{Reproducing the numbers}

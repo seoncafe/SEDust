@@ -42,7 +42,6 @@ module q_table_jori_mod
    private
    public :: load_q_table_jori, falign_hd23, falign_powerlaw
    public :: nj_lam, nj_aeff, lam_j, aeff_j
-   public :: qext_j, qabs_j, qsca_j
    public :: qpol_ext, qpol_abs, qran_ext, qran_abs, qran_sca
    public :: A_ALIGN, ALPHA_ALIGN, FMAX_ALIGN
 
@@ -61,6 +60,8 @@ module q_table_jori_mod
 
    integer  :: nj_lam = 0, nj_aeff = 0
    real(wp), allocatable :: lam_j(:), aeff_j(:)                ! grid axes [um]
+   ! Orientation-resolved Q, read from the table and kept only until the
+   ! combinations below are formed (see load_q_table_jori).
    real(wp), allocatable :: qext_j(:,:,:), qabs_j(:,:,:), qsca_j(:,:,:)  ! (NLAM, NA, 3)
    real(wp), allocatable :: qpol_ext(:,:), qpol_abs(:,:)       ! (NLAM, NA)
    real(wp), allocatable :: qran_ext(:,:), qran_abs(:,:), qran_sca(:,:)
@@ -169,7 +170,7 @@ contains
             ! The redirection creates the target before gzip can fail, so
             ! remove the empty file rather than leave it in the caller's
             ! working directory.
-            call cleanup_scratch(.true., trim(read_path))
+            call discard_scratch_copy(.true., trim(read_path))
             call bail('gzip -dc failed on '//trim(q_file))
             return
          end if
@@ -180,7 +181,7 @@ contains
       ! ---- read the table --------------------------------------------
       open(newunit=u, file=trim(read_path), status='old', action='read', iostat=ios)
       if (ios /= 0) then
-         call cleanup_scratch(gz, trim(read_path))
+         call discard_scratch_copy(gz, trim(read_path))
          call bail('cannot open '//trim(read_path))
          return
       end if
@@ -188,7 +189,7 @@ contains
       do i = 1, NHEAD
          read(u,'(a)',iostat=ios) line
          if (ios /= 0) then
-            close(u);  call cleanup_scratch(gz, trim(read_path))
+            close(u);  call discard_scratch_copy(gz, trim(read_path))
             call bail('unexpected EOF in header')
             return
          end if
@@ -201,13 +202,13 @@ contains
             do jw = 1, nj_lam
                read(u,*,iostat=ios) row(1:nj_aeff)
                if (ios /= 0) then
-                  close(u);  call cleanup_scratch(gz, trim(read_path))
+                  close(u);  call discard_scratch_copy(gz, trim(read_path))
                   call bail('read error in Q block')
                   return
                end if
                do ja = 1, nj_aeff
                   if (.not. ieee_is_finite(row(ja))) then
-                     close(u);  call cleanup_scratch(gz, trim(read_path))
+                     close(u);  call discard_scratch_copy(gz, trim(read_path))
                      call bail('non-finite Q value')
                      return
                   end if
@@ -224,12 +225,12 @@ contains
       ! Reject a file that carries more than the expected payload.
       read(u,*,iostat=ios) xextra
       if (ios == 0) then
-         close(u);  call cleanup_scratch(gz, trim(read_path))
+         close(u);  call discard_scratch_copy(gz, trim(read_path))
          call bail('file has more data than the declared grid')
          return
       end if
       close(u)
-      call cleanup_scratch(gz, trim(read_path))
+      call discard_scratch_copy(gz, trim(read_path))
 
       ! ---- derived combinations --------------------------------------
       qpol_ext = 0.5_wp * (qext_j(:,:,3) - qext_j(:,:,2))
@@ -237,6 +238,13 @@ contains
       qran_ext = (qext_j(:,:,1) + qext_j(:,:,2) + qext_j(:,:,3)) / 3.0_wp
       qran_abs = (qabs_j(:,:,1) + qabs_j(:,:,2) + qabs_j(:,:,3)) / 3.0_wp
       qran_sca = (qsca_j(:,:,1) + qsca_j(:,:,2) + qsca_j(:,:,3)) / 3.0_wp
+
+      ! The three orientations enter the optics only through Q_pol and Q_ran,
+      ! so once those are formed the orientation-resolved table is spent and
+      ! its ~13.7 MB are returned here rather than at unload.
+      if (allocated(qext_j)) deallocate(qext_j)
+      if (allocated(qabs_j)) deallocate(qabs_j)
+      if (allocated(qsca_j)) deallocate(qsca_j)
 
       deallocate(row)
 
@@ -315,7 +323,7 @@ contains
    end subroutine gunzip_to
 
 
-   subroutine cleanup_scratch(gz, path)
+   subroutine discard_scratch_copy(gz, path)
       ! Remove the expanded copy, if we made one.
       logical,          intent(in) :: gz
       character(len=*), intent(in) :: path
@@ -323,6 +331,6 @@ contains
       if (.not. gz) return
       open(newunit=u, file=path, status='old', iostat=ios)
       if (ios == 0) close(u, status='delete')
-   end subroutine cleanup_scratch
+   end subroutine discard_scratch_copy
 
 end module q_table_jori_mod

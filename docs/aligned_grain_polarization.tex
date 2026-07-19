@@ -750,10 +750,11 @@ blocks (\S\ref{sec:optics}), and its correctness has been verified
 against the HD23 release. The \code{tmatrix/} directory links only
 \code{tmd\_one.f}, the random-orientation average driver; the
 fixed-orientation code \code{ampld.lp.f} is present but unused. As long
-as the astrodust model is the target, no T-matrix run is needed at all;
-that code becomes relevant only for exploring other axial ratios or
-compositions, or for the fixed-orientation amplitude matrix that circular
-polarization would require (\S\ref{sec:optics}): the released table
+as the astrodust model is the target, no T-matrix run is needed for the
+cross sections; a run is needed only for the scattering matrix
+(\S\ref{sec:optical}, now done for five optical bands), for exploring
+other axial ratios or compositions, or for the fixed-orientation
+amplitude matrix that circular polarization would require (\S\ref{sec:optics}): the released table
 carries $Q_{\rm ext}$, $Q_{\rm abs}$ and $Q_{\rm sca}$ only, so \Ccirc\
 cannot be built from it.
 
@@ -1171,12 +1172,13 @@ grows stronger rather than weaker.
 
 Table~\ref{tab:stages} assigns stages~3 and~4 to MoCafe, which is
 correct as far as transport is concerned but incomplete as a plan.
-Those stages consume optical quantities that SEDust does not yet
+Those stages consume optical quantities that SEDust did not originally
 produce, and in one case that no released file contains. Stage~1
-delivered \Cpol\ and \code{Cpol\_ext}, which are sufficient for
-polarized emission and for dichroic extinction, and nothing else.
-Table~\ref{tab:optical} lists what is still missing on the supply side,
-with the priority each item carries for the single-wavelength update.
+delivered \Cpol\ and \code{Cpol\_ext}, sufficient for polarized emission
+and for dichroic extinction; the random-orientation scattering matrix
+has since been added for five optical bands. Table~\ref{tab:optical}
+lists the supply side item by item, with the priority each carries for
+the single-wavelength update.
 
 \begin{table}[!ht]
 \centering
@@ -1190,11 +1192,11 @@ single-wavelength ($V$ band) goal, not against a full wavelength grid.}
 Ingredient & Supplier & Priority & Status, and why optical needs it \\
 \midrule
 $Z(\theta)$ at $V$, random orientation &
-  SEDust & high &
-  \code{MATR} call removed from \code{tmd\_one.f}. Scattering dominates
-  the optical opacity, so the phase matrix sets the scattered
-  polarization; in the far infrared the albedo is near zero and $Z$
-  never enters. \\
+  SEDust & \textbf{done} &
+  Computed by \code{run\_scatmat.x} and stored for five optical bands,
+  \textit{UBVRI}. Scattering dominates the optical opacity, so the phase matrix
+  sets the scattered polarization; in the far infrared the albedo is
+  near zero and $Z$ never enters. \\
 \falign\ functional form &
   either & high &
   HD23 fit assumed. Optical polarization is carried by grains near
@@ -1217,25 +1219,51 @@ Averaging convention &
   Mixed, exact average for \Cabs\ vs.\ MPFA for \Cpol. The disagreement
   is $0.080\%$ median across the optical, so it does not bind on a
   programme confined to optical bands. It becomes an obstacle in the
-  ultraviolet, where the median is $0.21\%$ and the maximum $9.53\%$. \\
+  ultraviolet, where the median is $0.21\%$ and the maximum $9.53\%$.
+  Deliberately deferred in v1.20; see the paragraph below. \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-\paragraph{Scattering matrix, random orientation (needed).} The T-matrix
-driver in the tree, \code{tmatrix/src/tmd\_one.f}, was derived from
-Mishchenko's \code{tmd.lp.f} by wrapping the implicit main program as a
-subroutine. In the process the final \code{MATR} call was removed and
-the angular expansion coefficients were dropped from the returned
-quantities; the header comment at lines 29--30 records this, and the
-argument list ends at \code{QEXT, QSCA, WALB, ASYMM, IERR}. The inner
-\code{MATR} routine itself is still present in the same file. Restoring
-the call and returning the expansion coefficients recovers
-$Z(\theta)$ for randomly oriented spheroids at moderate effort. For the
-single-wavelength goal only the $V$ band is required, so what has to be
-computed and stored is one $\theta$ grid over the size distribution, not
-a wavelength-resolved table. That alone already improves on the 2018
-model, whose phase matrix was spherical Mie.
+\paragraph{Scattering matrix, random orientation (available).} This item
+is done. The T-matrix driver in the tree, \code{tmatrix/src/tmd\_one.f},
+was originally derived from Mishchenko's \code{tmd.lp.f} by wrapping the
+implicit main program as a subroutine, and in the process the final
+\code{MATR} call was removed and the angular expansion coefficients were
+dropped from the returned quantities. The \code{MATR} routine itself
+remained in the file, and the call has since been restored through the
+entry point \code{TMD\_ONE\_SCATMAT}.
+
+\code{tmatrix/driver/run\_scatmat.f90} uses it to accumulate the
+single-size matrices over the HD23 astrodust size distribution with
+$C_{\rm sca}\,{\rm d}n/n_{\rm H}$ weighting and to expand the result onto
+a scattering-angle grid. The output is
+\code{tmatrix/output/scatmat\_astrodust\_P0.20\_Fe0.00\_1.400.dat}: one
+block per wavelength, $181$ rows at $\theta = 0, 1, \ldots, 180^\circ$,
+with the six independent elements a randomly oriented particle with a
+plane of symmetry possesses, in the column order $F_{11}, F_{22},
+F_{33}, F_{44}, F_{12}, F_{34}$. The normalization is Mishchenko's,
+$\tfrac{1}{2}\int_{-1}^{+1} F_{11}\,{\rm d}\cos\theta = 1$, so absolute
+units follow by multiplying by the $C_{\rm sca}$ quoted in each block
+header. This already improves on the 2018 model, whose phase matrix was
+spherical Mie.
+
+Five wavelengths are stored, $0.36$, $0.44$, $0.55$, $0.64$ and
+$0.79\um$, approximately \textit{UBVRI}. That covers the scope of the update as
+planned --- the $V$ band first, with one or two more optical bands
+possible, and no far-infrared or ultraviolet use foreseen. The full
+1129-point sweep costs about 1.7 hours and would produce mostly
+wavelengths outside that scope, so it was not run. It requires no code
+change should the scope widen: \code{./run\_scatmat.x all} computes the
+whole grid, or an explicit list of wavelengths a subset, at about
+$5.5\,$s per wavelength.
+
+What remains missing is the \emph{aligned} scattering matrix, and
+\Ccirc; both are treated in the two paragraphs below. The distinction
+matters: the random-orientation matrix answers how an unaligned grain
+population scatters, which is what a first optical model needs for the
+scattering source term, but it carries no information about the
+orientation of the grains with respect to $\mathbf{B}$.
 
 \paragraph{The cutoff shape is the physics specific to the optical
 (needed).} Eq.~(\ref{eq:falign}) is a fitted function, and
@@ -1291,6 +1319,16 @@ regression of the existing SEDs; that is an engineering consequence to
 plan around, not a reason to leave two conventions in one model
 permanently.
 
+For v1.20 the decision was taken explicitly to defer it. The scope of
+the update lies wholly inside the range where the disagreement is
+$0.080\%$ or less, and unifying the convention would spend the
+regression baseline against which everything else in the release was
+validated, in exchange for accuracy nothing in the current plan needs.
+The deferral is a statement about ordering, not about correctness: two
+orientation averages in one model is still wrong, and the first
+ultraviolet polarized-extinction result is the point at which it must be
+fixed rather than postponed again.
+
 \subsection{Recommended order}
 
 For the update as scoped, one band first and possibly two or three
@@ -1302,10 +1340,11 @@ optical bands after, the realistic sequence is:
       stage~1 already produces.
 \item Test the sensitivity to the \falign\ functional form, step versus
       smooth.
-\item Restore the random-orientation scattering matrix in
-      \code{tmd\_one.f}, for which the \code{MATR} call is enough. One
-      band suffices to begin with, and adding a second or third costs
-      another run rather than another method.
+\item Bring the random-orientation scattering matrix into the transfer.
+      The supply side of this step is complete: \code{run\_scatmat.x}
+      already provides $Z(\theta)$ in five optical bands, and widening
+      that set costs another run rather than another method. What
+      remains is consuming it.
 \item Only then the aligned scattering matrix, \Ccirc, the averaging
       convention, and any extension beyond the optical.
 \end{enumerate}

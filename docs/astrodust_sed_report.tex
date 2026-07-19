@@ -144,7 +144,7 @@ verbatim:
 \end{itemize}
 
 The two-track structure is propagated through the rest of the
-pipeline: astrodust uses the T-matrix Q tables and full MPFA machinery,
+pipeline: astrodust uses the T-matrix Q tables and the full MPFA,
 PAH uses the DL07 cross sections (Sect.~\ref{sec:pah}). The
 present section is the astrodust track. The PAH track lives in
 Sect.~\ref{sec:pah}.
@@ -238,7 +238,7 @@ To evaluate eq.~\ref{eq:tau} our pipeline (\texttt{sed/tau\_check.x})
 loads the full Q table, interpolates \Qabs\ and \Qext\ in
 $\log a$ from the 169-point DH21 grid onto the 167-point size-distribution
 grid, sums, and interpolates onto the HD23 release wavelength grid
-(\texttt{wav.dat}, 1000 points). The same machinery is run for the
+(\texttt{wav.dat}, 1000 points). The same calculation is run for the
 scattering channel against \texttt{scattering.dat}.
 
 The maximum $|$relative residual$|$ across the entire grid is
@@ -509,7 +509,7 @@ and a single static $T$ grid spanning the full $[2.7, 5000]$~K range
 cannot resolve it. DL07 Fig.~4 illustrates this directly: $P(T)$ for a
 \SI{100}{\angstrom} grain at $U = 1$ drops by more than twelve orders
 of magnitude over less than a factor of two in $T$. A coarse or
-mis-centred grid simply returns numerical zeros across the entire
+mis-centered grid simply returns numerical zeros across the entire
 range, mimicking ``no stochastic contribution'' when in reality the
 grain is sharply peaked at $\Teq$.
 
@@ -973,7 +973,7 @@ Intergalactic Medium}, 2011, Table~12.1). The CMB component was
 also updated from $2.9$\,K to the Mather-et-al.\ value $2.725$\,K.
 Both corrections were added behind a toggle
 (\texttt{use\_mathis\_corrected}, default \texttt{.true.} in
-\texttt{radfield.f90}) so the historical original-Mathis behaviour
+\texttt{radfield.f90}) so the historical original-Mathis behavior
 can be reproduced as \texttt{./main\_astrodust.x mathis\_orig} which
 prefixes outputs with \texttt{morig\_}.
 
@@ -1173,7 +1173,7 @@ correction for $N_{\rm atom} < 10^4$, as recommended by HD23 since PAH
 is carbonaceous.
 
 A new function \texttt{sed\_solve\_pah(J\_lam, lamI\_lam\_out)} solves
-the single-cell PAH SED with the same dynamic-T machinery. The combined
+the single-cell PAH SED with the same dynamic-T solver. The combined
 total (Ad + PAH) is compared against HD23
 \texttt{model\_irem.dat} in \autoref{fig:sed_total}.
 
