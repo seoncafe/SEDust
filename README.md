@@ -29,7 +29,8 @@ to the host instead of stopping the process.
 SEDust/
   sed/          the SED solver: cross sections, enthalpy, P(T), emission
     src/        library modules + drivers
-    rt_example/ minimal example of linking libsedust.a into an RT code
+    rt_example/ examples of linking libsedust.a into an RT code, one
+                minimal and one showing the polarized quantities
   mc/           Draine & Anderson (1985) Monte Carlo solver (independent check)
   tmatrix/      Mishchenko T-matrix engine + driver; writes the Q table
   data/         dielectric functions, the HD23 public release tables,
@@ -172,4 +173,4 @@ Rebuild any of them with `pdflatex <name>.tex` (run twice for cross-references).
 
 ---
 
-Last updated: 2026-07-19 11:09 KST
+Last updated: 2026-07-19 11:17 KST
