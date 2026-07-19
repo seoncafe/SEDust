@@ -31,7 +31,8 @@ module sed_astrodust_mod
                                     qt_qext=>qext, qt_qabs=>qabs, qt_qsca=>qsca
    use q_table_jori_mod,      only: load_q_table_jori, falign_hd23, &
                                     qj_n_lam=>nj_lam, qj_lam=>lam_j, &
-                                    qj_aeff=>aeff_j, qj_qpol_abs=>qpol_abs
+                                    qj_aeff=>aeff_j, qj_qpol_abs=>qpol_abs, &
+                                    qj_qpol_ext=>qpol_ext
    use size_dist_mod,         only: load_size_dist, sd_n=>n_size, &
                                     sd_aeff=>a_dist, sd_dn=>dn_ad, &
                                     sd_dn_pah=>dn_pah, sd_fion=>f_ion
@@ -61,7 +62,7 @@ module sed_astrodust_mod
    public :: Cabs, Csca, Cabs_pah, kappB_first, kappB_pah_first
    ! Polarized absorption cross section and alignment efficiency of the
    ! astrodust population (zero when the orientation-resolved table is absent).
-   public :: Cpol, falign_ad
+   public :: Cpol, Cpol_ext, falign_ad
    ! Charge-resolved PAH cross sections and number densities (neutral/cation),
    ! exposed so the MC SED builder can reproduce the same charge blend as
    ! the production sed_solve_pah (it loops both charge states).
@@ -131,7 +132,15 @@ module sed_astrodust_mod
    ! efficiency. Both are zero when the orientation-resolved table cannot be
    ! read, which makes the polarized emission vanish while everything else
    ! stays intact. See build_Cpol.
+   ! NOTE ON NAMES: Cpol is the polarized ABSORPTION cross section, the one
+   ! that drives the polarized emission. Cpol_ext is its EXTINCTION twin, the
+   ! one that drives dichroic (polarized) extinction. They are built the same
+   ! way from the same table and differ only in which Q the difference is
+   ! taken from (Q_abs vs Q_ext). Cpol keeps its short name because the
+   ! emission path (grain_pop_t%Cpol, set_pop, sed_grain_loop) is written
+   ! around it.
    real(wp), allocatable :: Cpol(:,:)           ! [cm^2] (NLAM, NA)
+   real(wp), allocatable :: Cpol_ext(:,:)       ! [cm^2] (NLAM, NA)
    real(wp), allocatable :: falign_ad(:)        ! (NA)
    real(wp), allocatable :: kappB_first(:,:)    ! integral C_abs * B_lam dlam (NT, NA), wide grid
    real(wp), allocatable :: H_first(:,:,:)      ! enthalpy U(T, a, stage) (NT, NA, 2), wide grid
@@ -260,8 +269,8 @@ contains
                                           dn_pah, Cabs_pah, kappB_pah_first, &
                                           H_pah_first, kappCMB_pah, &
                                           log_H_pah_first, log_kappB_pah_first)
-      if (allocated(Cpol))     deallocate(Cpol, falign_ad)
-      allocate(Cpol(NLAM, NA), falign_ad(NA))
+      if (allocated(Cpol))     deallocate(Cpol, Cpol_ext, falign_ad)
+      allocate(Cpol(NLAM, NA), Cpol_ext(NLAM, NA), falign_ad(NA))
       allocate(lam(NLAM), aeff(NA), T_first(NT), dn_ad(NA))
       allocate(Cabs(NLAM, NA), Csca(NLAM, NA), kappB_first(NT, NA), &
                H_first(NT, NA, NSTAGE), kappCMB(NA))
@@ -552,7 +561,7 @@ contains
             log_H_pah_first, log_kappB_pah_first)
       ! DL07 has no polarized optics; drop anything a previous astrodust
       ! init left behind rather than leave stale arrays on the wrong grid.
-      if (allocated(Cpol)) deallocate(Cpol, falign_ad)
+      if (allocated(Cpol)) deallocate(Cpol, Cpol_ext, falign_ad)
       allocate(lam(NLAM), aeff(NA), T_first(NT), dn_ad(NA))
       allocate(Cabs(NLAM, NA), Csca(NLAM, NA), kappB_first(NT, NA), &
                H_first(NT, NA, NSTAGE), kappCMB(NA))
@@ -1542,11 +1551,17 @@ contains
 
 
    subroutine build_Cpol(q_file, wave_file, aeff_file)
-      ! Fill Cpol(NLAM, NA) and falign_ad(NA) from the orientation-resolved
-      ! DH21 spheroid table:
+      ! Fill Cpol(NLAM, NA), Cpol_ext(NLAM, NA) and falign_ad(NA) from the
+      ! orientation-resolved DH21 spheroid table:
       !
       !   Q_pol,abs = 0.5 * (Q_abs(k perp a, E perp a) - Q_abs(k perp a, E || a))
       !   C_pol     = Q_pol,abs * pi * a_eff^2
+      !   Q_pol,ext = 0.5 * (Q_ext(k perp a, E perp a) - Q_ext(k perp a, E || a))
+      !   C_pol_ext = Q_pol,ext * pi * a_eff^2
+      !
+      ! C_pol drives the polarized emission; C_pol_ext drives the dichroic
+      ! (polarized) extinction a radiative transfer host needs for the
+      ! extinction matrix.
       !
       ! i.e. the absorption difference a perfectly aligned grain with its
       ! symmetry axis in the plane of the sky presents to the two linear
@@ -1572,6 +1587,7 @@ contains
       logical  :: rok
 
       Cpol      = 0.0_wp
+      Cpol_ext  = 0.0_wp
       falign_ad = 0.0_wp
 
       call load_q_table_jori(q_file, wave_file, aeff_file, ok=rok)
@@ -1601,8 +1617,10 @@ contains
       ! grid), so interpolate in log(a) exactly as Cabs/Csca are.
       do ja = 1, NA
          call interp_q_grid(log(aeff(ja)), qj_aeff, qj_qpol_abs, Cpol(:, ja))
-         Cpol(:, ja)   = Cpol(:, ja) * PI * (aeff(ja) * UM2CM)**2
-         falign_ad(ja) = falign_hd23(aeff(ja))
+         call interp_q_grid(log(aeff(ja)), qj_aeff, qj_qpol_ext, Cpol_ext(:, ja))
+         Cpol(:, ja)     = Cpol(:, ja)     * PI * (aeff(ja) * UM2CM)**2
+         Cpol_ext(:, ja) = Cpol_ext(:, ja) * PI * (aeff(ja) * UM2CM)**2
+         falign_ad(ja)   = falign_hd23(aeff(ja))
       end do
    end subroutine build_Cpol
 

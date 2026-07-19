@@ -28,11 +28,21 @@ program calc_kext_astrodust
    !   albedo  = C_sca / C_ext
    !   <cos>   = ( sum_a dn_Ad Csca_Ad g_Ad ) / C_sca
    !
+   ! An eighth column carries the dichroic (polarized) extinction,
+   !   C_polext/H = sum_a dn_Ad * Cpol_ext(lambda,a) * f_align(a)
+   ! built from the orientation-resolved DH21 spheroid table. Only astrodust
+   ! contributes; HD23 take the PAHs to be unaligned (f_align = 0). This is
+   ! the MAXIMUM polarized extinction: it assumes every aligned grain has its
+   ! symmetry axis in the plane of the sky, so it carries no sin^2(gamma)
+   ! geometry factor and no turbulent depolarization. A radiative transfer
+   ! host must apply both itself.
+   !
    ! Output: ../data/kext_astrodust_MW.dat  (kext_albedo-style columns).
    !====================================================================
    use constants,         only: wp, pi
    use sed_astrodust_mod, only: sed_init, NLAM, NA, lam, aeff, dn_ad, dn_pah, &
-                                Cabs, Csca, Cabs_cneu, Cabs_cion, dn_cneu, dn_cion
+                                Cabs, Csca, Cabs_cneu, Cabs_cion, dn_cneu, dn_cion, &
+                                Cpol_ext, falign_ad
    use q_table_mod,       only: qt_g => gpar, qt_aeff => aeff_t, qt_na => n_aeff
    use enthalpy_astrodust_mod, only: RHO_AD     ! astrodust bulk density [g/cm^3] = 2.74
    implicit none
@@ -49,7 +59,8 @@ program calc_kext_astrodust
 
    real(wp), allocatable :: g_ad(:,:)             ! (NLAM,NA) asymmetry on size grid
    real(wp), allocatable :: Cext(:), Cabs_t(:), Csca_t(:), alb(:), gbar(:)
-   real(wp) :: cab_ad, csc_ad, cpah, gnum
+   real(wp), allocatable :: Cpext(:)             ! (NLAM) polarized extinction per H
+   real(wp) :: cab_ad, csc_ad, cpah, gnum, cpx
    integer  :: jw, ja, u
 
    write(*,'(a)') ' calc_kext_astrodust: building optics via sed_init ...'
@@ -76,16 +87,20 @@ program calc_kext_astrodust
    end do
    write(*,'(a,es12.5,a)') '   M_dust/H = ', Mdust_H, ' g/H'
 
-   allocate(Cext(NLAM), Cabs_t(NLAM), Csca_t(NLAM), alb(NLAM), gbar(NLAM))
+   allocate(Cext(NLAM), Cabs_t(NLAM), Csca_t(NLAM), alb(NLAM), gbar(NLAM), &
+            Cpext(NLAM))
    do jw = 1, NLAM
       cab_ad = 0.0_wp;  csc_ad = 0.0_wp;  cpah = 0.0_wp;  gnum = 0.0_wp
+      cpx    = 0.0_wp
       do ja = 1, NA
          cab_ad = cab_ad + dn_ad(ja)   * Cabs(jw, ja)
          csc_ad = csc_ad + dn_ad(ja)   * Csca(jw, ja)
          gnum   = gnum   + dn_ad(ja)   * Csca(jw, ja) * g_ad(jw, ja)
+         cpx    = cpx    + dn_ad(ja)   * Cpol_ext(jw, ja) * falign_ad(ja)
          cpah   = cpah   + dn_cneu(ja) * Cabs_cneu(jw, ja) &
                          + dn_cion(ja) * Cabs_cion(jw, ja)
       end do
+      Cpext(jw)  = cpx
       Cabs_t(jw) = cab_ad + cpah          ! astrodust + PAH absorption
       Csca_t(jw) = csc_ad                 ! astrodust scattering (PAH ~ 0)
       Cext(jw)   = Cabs_t(jw) + Csca_t(jw)
@@ -110,14 +125,26 @@ program calc_kext_astrodust
    write(u,'(a,es13.6,a)') '# Dust mass per H, M_dust/N_H = ', Mdust_H, &
         ' g/H  (rho_Ad=2.74, rho_PAH=2.0 g/cm^3; K_abs = C_abs/H / this).'
    write(u,'(a)') '#'
+   write(u,'(a)') '# Column 8, C_polext/H, is the dichroic (polarized) extinction'
+   write(u,'(a)') '#   sum_a dn_Ad(a) * C_pol,ext(lambda,a) * f_align(a), with'
+   write(u,'(a)') '#   C_pol,ext = 0.5*(Q_ext(E perp a) - Q_ext(E || a)) * pi a^2 at'
+   write(u,'(a)') '#   k perp a, from the orientation-resolved DH21 spheroid table.'
+   write(u,'(a)') '#   PAHs are unaligned (f_align = 0) and do not contribute.'
+   write(u,'(a)') '#   This is the MAXIMUM polarized extinction: it assumes the'
+   write(u,'(a)') '#   symmetry axis of every aligned grain lies in the plane of the'
+   write(u,'(a)') '#   sky, i.e. it is quoted BEFORE the sin^2(gamma) geometry factor'
+   write(u,'(a)') '#   and before any turbulent depolarization. A radiative transfer'
+   write(u,'(a)') '#   host must apply both. Codes that read only the first seven'
+   write(u,'(a)') '#   columns are unaffected.'
+   write(u,'(a)') '#'
    write(u,'(a)') '#   lambda      albedo      <cos>      C_ext/H        C_abs/H' // &
-                  '        C_sca/H         K_abs'
+                  '        C_sca/H         K_abs         C_polext/H'
    write(u,'(a)') '#  (micron)                            (cm^2/H)       (cm^2/H)' // &
-                  '       (cm^2/H)       (cm^2/g)'
+                  '       (cm^2/H)       (cm^2/g)       (cm^2/H)'
    do jw = 1, NLAM
-      write(u,'(es13.5e3,2(1x,f10.6),4(1x,es15.7e3))') &
+      write(u,'(es13.5e3,2(1x,f10.6),5(1x,es15.7e3))') &
          lam(jw), alb(jw), gbar(jw), Cext(jw), Cabs_t(jw), Csca_t(jw), &
-         Cabs_t(jw)/Mdust_H
+         Cabs_t(jw)/Mdust_H, Cpext(jw)
    end do
    close(u)
    write(*,'(a,a)') ' wrote ', F_OUT
