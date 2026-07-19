@@ -40,7 +40,7 @@ module q_table_jori_mod
    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
    implicit none
    private
-   public :: load_q_table_jori, falign_hd23
+   public :: load_q_table_jori, falign_hd23, falign_powerlaw
    public :: nj_lam, nj_aeff, lam_j, aeff_j
    public :: qext_j, qabs_j, qsca_j
    public :: qpol_ext, qpol_abs, qran_ext, qran_abs, qran_sca
@@ -78,12 +78,28 @@ contains
    pure function falign_hd23(a) result(f)
       real(wp), intent(in) :: a
       real(wp)             :: f
+      f = falign_powerlaw(a, FMAX_ALIGN, A_ALIGN, ALPHA_ALIGN)
+   end function falign_hd23
+
+
+   ! The same power-law rolloff with the three parameters left free,
+   !
+   !   f_align(a) = f_max / (1 + (a_align/a)**alpha_align),
+   !
+   ! so that a host can impose an alignment state other than the HD23 fit --
+   ! a different critical radius a_align where the efficiency reaches
+   ! f_max/2, a different sharpness alpha_align, or an overall reduction
+   ! f_max < 1 standing for imperfect alignment. a is the effective radius
+   ! [um]; f = 0 for a non-positive radius.
+   pure function falign_powerlaw(a, f_max, a_align, alpha_align) result(f)
+      real(wp), intent(in) :: a, f_max, a_align, alpha_align
+      real(wp)             :: f
       if (a <= 0.0_wp) then
          f = 0.0_wp
       else
-         f = FMAX_ALIGN / (1.0_wp + (A_ALIGN / a)**ALPHA_ALIGN)
+         f = f_max / (1.0_wp + (a_align / a)**alpha_align)
       end if
-   end function falign_hd23
+   end function falign_powerlaw
 
 
    subroutine load_q_table_jori(q_file, wave_file, aeff_file, ok)

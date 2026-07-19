@@ -65,6 +65,54 @@ module dust_lib
    ! status is 0 on success and 1 if an output array is not of size m%NLAM;
    ! when it is omitted such a call stops the run.
    !
+   ! GRAIN ALIGNMENT. Both the polarized emission (lamI_pol) and the dichroic
+   ! extinction (Cpol_ext) are weighted by an alignment efficiency
+   ! f_align(a_eff), which build_astrodust initializes to the Hensley & Draine
+   ! (2023) Table 1 fit. A host that wants a cell-dependent alignment state
+   ! overrides it, either as that power law with its own parameters
+   !     call dust_set_alignment(m, f_max, a_align, alpha_align [, status])
+   !     f_align(a) = f_max / (1 + (a_align/a)**alpha_align)
+   ! or as an arbitrary tabulated profile, interpolated in log(a) onto each
+   ! population's radius grid and clamped at the ends of the table
+   !     call dust_set_alignment_profile(m, aeff_in, falign_in [, status])
+   ! for prescriptions that power law cannot express (a RAT-derived Rayleigh
+   ! reduction factor, the GRADE-POL exponential). Both leave every population
+   ! without polarized optics -- the PAHs, which HD23 take to be unaligned --
+   ! untouched and contributing zero.
+   !
+   ! Calling neither leaves the HD23 alignment in place, so an existing host
+   ! sees no change. The current state is readable off the model as
+   ! m%align_fmax, m%align_a [um], m%align_alpha and m%align_tabulated; the
+   ! three scalars describe the loaded efficiency only while align_tabulated
+   ! is .false. They are reported, not applied -- assigning to them does not
+   ! re-fill f_align; only the two setters do.
+   !
+   ! Alignment is a size WEIGHT and enters nowhere in the energy balance, so
+   ! resetting it does not invalidate any P(T) solution and does not require a
+   ! re-solve: it is one function evaluation on the size grid, and the total
+   ! unpolarized emission is bit-for-bit unchanged. A single setter feeds both
+   ! dust_emission's lamI_pol and dust_extinction's Cpol_ext, which therefore
+   ! cannot fall out of step.
+   !
+   ! Division of labor, as for lamI_pol and Cpol_ext throughout: SEDust does
+   ! the size-distribution integral and the alignment weight; the sin^2(gamma)
+   ! projection onto the plane of the sky, any turbulent depolarization
+   ! F_turb, and the position angle are the host's job.
+   !
+   ! status codes (0 = success; when omitted a bad argument stops the run):
+   !   dust_set_alignment:          1 a_align <= 0
+   !                                2 alpha_align <= 0
+   !                                3 f_max outside [0, 1]
+   !   dust_set_alignment_profile:  1 aeff_in/falign_in size mismatch or < 2 points
+   !                                2 aeff_in not positive and strictly increasing
+   !                                3 a falign_in value outside [-1, 1]
+   ! A tabulated efficiency outside [-1, 1] is rejected rather than clamped:
+   ! |f| <= 1 is the physical bound, so exceeding it is a caller error.
+   ! NEGATIVE values are accepted on purpose -- a grain in the wrong internal
+   ! alignment state has a negative Rayleigh reduction factor, flipping the
+   ! polarization direction by 90 degrees, and clamping at zero would delete
+   ! that effect.
+   !
    ! dust_build_table and dust_emission_interp take the same optional final
    ! status argument (0 = success); when present a bad argument is reported
    ! through it instead of stopping the process; when omitted such a call stops
@@ -100,13 +148,15 @@ module dust_lib
    use sed_astrodust_mod, only: dust_model_t, &
                                 build_astrodust, build_dl07, build_zubko, build_from_files, &
                                 dust_emission, dust_emission_single_teq, &
-                                dust_extinction
+                                dust_extinction, &
+                                dust_set_alignment, dust_set_alignment_profile
    implicit none
    private
 
    ! Re-exported model API
    public :: dust_model_t, build_astrodust, build_dl07, build_zubko, build_from_files
    public :: dust_emission, dust_emission_single_teq, dust_extinction
+   public :: dust_set_alignment, dust_set_alignment_profile
    ! Table API
    public :: dust_emis_table_t, dust_build_table, dust_emission_interp, dust_free_table
    ! Convenience accessors

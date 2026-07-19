@@ -47,7 +47,8 @@ module sed_astrodust_mod
    use grain_dist_mod,        only: grain_dist_dl07, gd_apply_d03_reduction
    use q_silicate_mod,        only: q_silicate_abs
    use pah_ioniz_mod,         only: pah_ionfrac
-   use dust_model_mod,        only: dust_model_t, grain_pop_t, free_dust_model
+   use dust_model_mod,        only: dust_model_t, grain_pop_t, free_dust_model, &
+                                    dust_set_alignment, dust_set_alignment_profile
    use zubko_io,              only: zda_comp_t, read_zda_config, zda_gofa, &
                                     read_zubko_optics, read_zubko_calor, &
                                     read_dnda_table, ZDA_MAXCOMP
@@ -58,6 +59,7 @@ module sed_astrodust_mod
    ! Model-agnostic library API (path B: wraps the untouched solver core).
    public :: dust_model_t, build_astrodust, build_dl07, build_zubko, dust_emission
    public :: build_from_files, dust_emission_single_teq, dust_extinction
+   public :: dust_set_alignment, dust_set_alignment_profile
    public :: NLAM, NA, NT, lam, aeff, T_first, dn_ad, dn_pah, initialized
    ! Exposed so that external drivers can cross-check the optics:
    public :: Cabs, Csca, Cabs_pah, kappB_first, kappB_pah_first
