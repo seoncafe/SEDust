@@ -1,0 +1,1704 @@
+\documentclass{my_memo}
+
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{listings}
+\sloppy
+
+% The my_memo class sits close to the 16 math-family limit (mathrsfs +
+% amssymb + kotex + explicit \DeclareMathAlphabet for \mathbf/\mathit/
+% \mathbit).  Route \mathbf through \boldsymbol so no new family is
+% allocated.
+\let\mathbf\boldsymbol
+
+\lstset{
+  language=Fortran,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!60!black},
+  commentstyle=\color{green!40!black},
+  stringstyle=\color{red!60!black},
+  columns=fullflexible,
+  breaklines=true,
+  frame=single,
+  framesep=4pt,
+  showstringspaces=false,
+  numbers=none
+}
+\lstdefinestyle{cpp}{language=C++,keywordstyle=\color{blue!60!black}}
+\lstdefinestyle{sh}{language=bash,keywordstyle=\color{black},basicstyle=\ttfamily\small}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\um}{\ensuremath{\,\mu\mathrm{m}}}
+\newcommand{\Cext}{\ensuremath{C_{\rm ext}}}
+\newcommand{\Cabs}{\ensuremath{C_{\rm abs}}}
+\newcommand{\Cpol}{\ensuremath{C_{\rm pol}}}
+\newcommand{\Ccirc}{\ensuremath{C_{\rm circ}}}
+\newcommand{\Qabs}{\ensuremath{Q_{\rm abs}}}
+\newcommand{\lamIpol}{\ensuremath{(\lambda I_\lambda)_{\rm pol}}}
+\newcommand{\aalign}{\ensuremath{a_{\rm align}}}
+\newcommand{\adisr}{\ensuremath{a_{\rm disr}}}
+\newcommand{\falign}{\ensuremath{f_{\rm align}}}
+\newcommand{\fhighJ}{\ensuremath{f_{\rm high\text{-}J}}}
+\newcommand{\Av}{\ensuremath{A_V}}
+
+\title{Polarization by Aligned Grains: What SEDust and MoCafe Would Need}
+\author{Kwang-il Seon}
+\date{2026 July 18}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This memo audits what it would take to replace the empirical dichroic
+polarization treatment of Seon (2018, ApJ 862, 87) with genuine
+aligned-grain physics in the current SEDust\,$+$\,MoCafe stack. The 2018
+model is dissected first: its \emph{scattering} polarization was already
+exact (full numerical Mie Mueller matrix with Stokes tracing), but its
+\emph{dichroic} polarization was an add-on fitting formula with no
+alignment physics, no wavelength dependence, and additive rather than
+multiplicative accumulation of Stokes $Q$ and $U$. The three ingredients
+that would be needed instead are then examined in turn: polarized cross
+sections, an alignment prescription, and a polarized transfer solver. The
+central practical finding is that the first of these is already in hand.
+The file \code{q\_DH21Ad\_P0.20\_Fe0.00\_1.400.dat.gz} stores three
+separate orientation blocks rather than an orientation average, so
+$\Cpol$ can be built today without any new T-matrix computation; values
+derived from it reproduce the Hensley \& Draine (2023) released
+\code{polarized\_extinction.dat} to four significant figures. A staged
+plan follows, in which stage~1 (SEDust cross sections and an emission
+accumulator) is a few days of low-risk work, stage~2 already permits a
+quantitative comparison against the SOFIA/HAWC+ 154\um\ maps of NGC~891,
+and only stage~4 (self-consistent alignment) requires the invasive change
+of a vectorial radiation-field pass. Validation targets and the points
+that remain unverified are listed explicitly.
+\end{abstract}
+
+\tableofcontents
+
+%====================================================================
+\section{Motivation: anatomy of the 2018 model}
+\label{sec:motivation}
+
+The question this memo answers is narrow: if Seon (2018, ApJ 862, 87;
+\code{2018ApJ...862...87S}), ``Polarization as a Probe of Thick Dust
+Disks in Edge-on Galaxies: Application to NGC~891'', were redone now,
+what would have to be built? Answering it requires an exact statement of
+what that model did and did not contain. The description below is taken
+from arXiv:1806.06101v1.
+
+\subsection{What was already correct: scattering polarization}
+
+The scattering half of the 2018 calculation was not an approximation.
+Spherical grains were treated with the full numerical Mie Mueller matrix,
+retaining all four independent elements $S_{11}$, $S_{12}$, $S_{33}$,
+$S_{34}$; photons carried a Stokes vector; the scattering and peel-off
+bookkeeping followed the algorithm of Peest et al.\ (2017, A\&A 601,
+A92; \code{2017A\&A...601A..92P}); and the implementation was verified
+against the polarized scattering benchmark of Bianchi, Ferrara \& Giovanardi
+(1996, ApJ 465, 127; \code{1996ApJ...465..127B}). No Henyey--Greenstein
+or Rayleigh proxy was used for the phase matrix. That part of the code
+needs no revision.
+
+\subsection{What was empirical: dichroic polarization}
+
+The dichroic half descends from the prescriptions of Wood (1997, ApJ 477,
+L25; \code{1997ApJ...477L..25W}) and Wood \& Jones (1997, AJ 114, 1405;
+\code{1997AJ....114.1405W}). Seon (2018) adopted the Whittet et al.\
+(2008, ApJ 674, 304; \code{2008ApJ...674..304W}) empirical relation
+$P_K/\tau_K \approx 5.08\,\tau_V^{-0.52}$ and converted it to
+\begin{equation}
+  P_V \;=\; 2.7\,\tau_V^{0.48} \quad [\%],
+  \label{eq:whittet}
+\end{equation}
+then, at every interaction site, added a polarized fraction
+$P_V\sin^2\theta$ oriented parallel to the local magnetic field
+projected on the sky, with $\theta$ the angle between the field and the
+photon direction. The author's own summary in that paper is unambiguous:
+``we assumed spherical dust grains when calculating the Mueller matrix
+and adopted an empirical approach to take into account the dichroic
+polarization effect.''
+
+The internal tension is worth stating plainly. Under a strictly spherical
+grain assumption the dichroic cross-section difference vanishes
+identically, so the dichroic term was necessarily grafted on from
+outside the optical model rather than derived from it.
+
+\subsection{What was absent: alignment physics}
+
+Radiative torque (RAT) alignment appears in the 2018 paper only as
+introductory background. Neither the Rayleigh reduction factor $R$ nor an
+alignment size threshold \aalign\ enters the calculation anywhere. All
+alignment efficiency is absorbed into the single exponent $0.48$ and the
+normalization of Eq.~(\ref{eq:whittet}), which are Milky Way averages.
+That is a double-counting hazard as well as a physics gap: the Whittet
+relation already folds in turbulent depolarization along real Galactic
+sight lines, plus a mean alignment efficiency and a mean grain
+composition, and the model then imposes its own explicit field geometry
+on top of that same quantity.
+
+The magnetic field was treated as two separate deterministic runs, purely
+toroidal and purely vertical, compared against each other. There was no
+turbulent component and no field-strength parameter. Crucially, the field
+in that model sets only the polarization position angle and the $\sin^2\theta$
+projection factor; it has no influence on alignment efficiency, because
+no alignment efficiency is computed.
+
+The dust model was MRN with Draine \& Lee (1984, ApJ 285, 89;
+\code{1984ApJ...285...89D}) and Draine (2003, ApJ 598, 1017;
+\code{2003ApJ...598.1017D}) silicate and graphite optical constants, with
+PAHs excluded. The choice matters more than it looks: the maximum
+single-scattering polarization is $36\%$ for that mixture but $24\%$ for
+a WD01 mixture, a factor of $1.5$. Only the $V$ band was computed;
+far-infrared and submillimeter polarized \emph{emission} was not a topic
+of the paper at all.
+
+\subsection{The implementation that survives in the tree}
+
+The transport code was MoCafe with forced first scattering and
+peeling-off. Dichroism was not applied by solving an extinction matrix;
+polarization was simply incremented at each interaction site. Two
+consequences follow directly: dichroic extinction never feeds back into
+the optical depth, and birefringence (the $Q,U \leftrightarrow V$
+conversion) is absent entirely.
+
+The actual code is still present at
+\code{\textasciitilde/MoCafe/Galaxy\_pol/dichroic.f90}. Lines 75--89 read:
+
+\begin{lstlisting}
+  select case(par%dichroic_method)
+     case (2)
+        pol = par%pol_dichroic * tau**(3.0_wp/4.0_wp)
+     case (3)
+        pol = par%pol_dichroic * tau**(0.48_wp)
+     case (1)
+        pol = par%pol_dichroic * tau**(0.48_wp) * sint**2
+     case default
+        pol = par%pol_dichroic * tau**(3.0_wp/4.0_wp) * sint**2
+  end select
+  T1    = cos2p * pol
+  T2    = sin2p * pol
+  photon%Q = photon%Q + T1
+  photon%U = photon%U + T2
+\end{lstlisting}
+
+with the default amplitude \code{pol\_dichroic = 0.013} set in
+\code{Galaxy\_pol/define.f90:210}. Two distinct physical defects are
+visible here.
+
+\paragraph{(i) The $\tau$ dependence is a fit, and the wavelength
+dependence is missing.} The correct form for a uniform slab of aligned
+grains is set by the polarized optical depth
+$\Delta\tau = n_d \Cpol s$, giving
+\begin{equation}
+  p \;=\; \tanh(\Delta\tau),
+  \label{eq:tanh}
+\end{equation}
+which reduces to $p \simeq \Delta\tau$ only in the optically thin limit.
+Neither $\tau^{0.75}$ nor $\tau^{0.48}$ is that function. More seriously,
+$\Cpol$ carries the entire wavelength dependence of dichroism, and it is
+absent from the expression above: this formulation cannot reproduce a
+Serkowski curve even in principle, because it has no $\lambda$ argument.
+
+\paragraph{(ii) The accumulation is additive where the physics is
+multiplicative.} The extinction matrix mixes $I$ into $Q$, so the correct
+operation is a matrix exponential acting on the Stokes vector.
+Incrementing $Q$ and $U$ by a fixed amount at each site agrees with that
+only while $\tau \ll 1$; the two diverge once $\tau \gtrsim 1$, which is
+precisely the regime a thick edge-on disk model is built to probe.
+
+%====================================================================
+\section{What has changed since 2018}
+\label{sec:since2018}
+
+\paragraph{Observations.} NGC~891 now has far-infrared polarimetry.
+SOFIA/HAWC+ observed it at 154\um\ (Jones et al.\ 2020, AJ 160, 167;
+\code{2020AJ....160..167J}), and a deeper analysis was published by Kim
+et al.\ (2023, AJ 165, 223; \code{2023AJ....165..223K}). The conclusion
+of the latter is directly in tension with the 2018 setup: the low
+polarization fraction observed in the disk, together with its narrow
+dispersion, requires many turbulent decorrelation cells along each line
+of sight. A smooth, purely toroidal or purely vertical field cannot
+produce that combination. Any redo therefore needs a turbulent field
+component as a first-class ingredient, not an afterthought.
+
+\paragraph{Methodology.} Two papers have since addressed exactly the
+technical obstacles the 2018 implementation stepped around. Baes et al.\
+(2019, A\&A 630, A61; \code{2019A\&A...630A..61B}) analyzed the
+optical-depth problem in a dichroic medium, i.e.\ how to sample path
+lengths when the extinction coefficient depends on the polarization state
+being transported. Peest et al.\ (2023, A\&A 673, A112;
+\code{2023A\&A...673A.112P}) provided a full 3D Monte Carlo radiative
+transfer framework for aligned spheroidal grains, together with analytic
+benchmarks. Both are directly usable.
+
+%====================================================================
+\section{Polarized optical properties}
+\label{sec:optics}
+
+\subsection{The minimum required set}
+
+Three cross sections beyond the scalar ones are needed:
+$\Cext^{\parallel}$ and $\Cext^{\perp}$ for dichroic extinction,
+$\Cabs^{\parallel}$ and $\Cabs^{\perp}$ for polarized thermal emission,
+and $\Ccirc$ for birefringence (the phase retardation that converts
+linear into circular polarization). In practice these collapse into the
+combinations $\Cext$, $\Cpol$, $\Ccirc$ defined below.
+
+\subsection{Modified picket fence approximation}
+
+The modified picket fence approximation (MPFA) of Draine \& Hensley
+(2021b, ApJ 919, 65; \code{2021ApJ...919...65D}, Eqs.~11--17) reduces the
+orientation dependence to two reference orientations. For an oblate
+spheroid with symmetry axis $\hat a$, writing $\Theta$ for the angle
+between the electric field and $\hat a$,
+\begin{equation}
+  C_E(\Theta) \;\simeq\; \cos^2\Theta\,C_E(0) + \sin^2\Theta\,C_E(90),
+  \label{eq:mpfa}
+\end{equation}
+and identically for the magnetic-field-referenced $C_H$. Hensley \&
+Draine (2023, ApJ 948, 55; hereafter HD23, \code{2023ApJ...948...55H})
+then write the random-orientation and polarized cross sections as
+\begin{align}
+  C_{\rm ran} &= \tfrac13\left[C_E(0) + C_E(90) + C_H(90)\right],
+    \label{eq:cran} \\
+  C_{\rm pol}^{\rm oblate} &= \tfrac12\left[C_H(90) - C_E(90)\right],
+    \label{eq:cpol}
+\end{align}
+their Eqs.~2 and 3 respectively. The accuracy of Eq.~(\ref{eq:mpfa}) is
+excellent for $2\pi a/\lambda \lesssim 1$ and degrades to roughly $10\%$
+near $a \sim \lambda$, but after integration over a realistic size
+distribution the residual error is a few percent (DH21b).
+
+\subsection{Partial alignment and the Rayleigh reduction factor}
+
+Partial alignment enters through a single scalar, the Rayleigh reduction
+factor
+\begin{equation}
+  R \;\equiv\; \tfrac32\langle\cos^2\beta\rangle - \tfrac12,
+  \label{eq:Rdef}
+\end{equation}
+which is the same quantity HD23 call \falign. With $\theta$ the angle
+between the magnetic field and the line of sight, the partially aligned
+cross sections are
+\begin{align}
+  Q_{\rm abs}(\theta) &= \langle Q\rangle
+     + R\,(Q_\parallel - Q_\perp)\left(\tfrac13 - \tfrac{\sin^2\theta}{2}\right),
+     \label{eq:qabs} \\
+  Q_{\rm abs,pol}(\theta) &= -\,R\,(Q_\parallel - Q_\perp)\,
+     \tfrac{\sin^2\theta}{2}.
+     \label{eq:qabspol}
+\end{align}
+
+The structural point for implementation is that the entire $\theta$
+dependence factorizes into the single function $\sin^2\theta$. Only two
+wavelength-by-size tables need to be stored, the orientation-averaged one
+and the polarized one; the geometry factor is applied at run time in the
+transport loop. No angular dimension is added to the tables.
+
+The corresponding observables are given by HD23 Eq.~6 for polarized
+extinction and HD23 Eq.~11 for polarized emission, the latter including
+the integral $\int dT\,(dP/dT)$ over the stochastic temperature
+distribution.
+
+\subsection{Sign convention}
+
+For an oblate spheroid $\hat a$ is the \emph{short} axis, and alignment
+places $\hat a \parallel B$. Transmitted starlight is therefore polarized
+parallel to the plane-of-sky field $B_{\rm sky}$, while thermal emission
+is polarized perpendicular to it. Getting this backwards produces a
+$90^\circ$ error that is easy to miss in an all-sky map and impossible to
+miss in a comparison against HAWC+ vectors.
+
+\subsection{The asset already in the tree}
+
+The single most useful finding of this audit is that no new T-matrix
+computation is required to get started. The file
+\code{astrodust/data/dielectric/q\_DH21Ad\_P0.20\_Fe0.00\_1.400.dat.gz}
+is not an orientation average. It contains three separate orientation
+blocks for each of $Q_{\rm ext}$, $Q_{\rm abs}$, $Q_{\rm sca}$, on the
+native $169$ sizes $\times$ $1129$ wavelengths grid. Its header states
+verbatim:
+
+\begin{lstlisting}[style=sh]
+3 orientations: jori=1: k || a;; jori=2: k perp a, E || a;
+                jori=3: k perp a, E perp a
+\end{lstlisting}
+
+so Eqs.~(\ref{eq:cran}) and (\ref{eq:cpol}) can be evaluated directly
+from it.
+
+This has been verified numerically, not merely asserted. Values built
+from this table reproduce the HD23 released
+\code{polarized\_extinction.dat} at $0.55$\um\ to four significant
+figures (ratio $1.0000$), and a fit of the alignment function to the same
+data returns $\aalign = 0.07492$\um, $\alpha = 1.799$, $f_{\max} = 1.0$,
+identical to HD23 Table~1.
+
+\subsection{Index convention traps}
+
+The orientation index ordering is not consistent across Draine's own
+distributions, and this is a live source of silent sign errors. Draine \&
+Fraisse (2009, ApJ 696, 1; \code{2009ApJ...696....1D}) use one ordering;
+the astrodust table uses another. Table~\ref{tab:jori} gives the mapping.
+
+\begin{table}[!ht]
+\centering
+\caption{Orientation index conventions. The same three physical
+orientations are numbered differently in two files from the same source.}
+\label{tab:jori}
+\begin{tabular}{lccc}
+\toprule
+Source & $k \perp a,\ E \parallel a$ & $k \perp a,\ E \perp a$ & $k \parallel a$ \\
+\midrule
+DF09 (\code{2009ApJ...696....1D}) & $j = 1$ & $j = 2$ & $j = 3$ \\
+\code{q\_DH21Ad\_*}               & \code{jori} $= 2$ & \code{jori} $= 3$ & \code{jori} $= 1$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A third convention exists in the same tree: in
+\code{qlib\_gra\_D16MGemt\_1.400}, \code{jori = 1} is the
+\emph{random-orientation average}, not $k \parallel a$. This is
+documented in the code at
+\code{astrodust/sed/src/q\_graphite\_d16.f90:23--26}. Any reader routine
+must therefore dispatch on the file identity, never on the index alone.
+
+\subsection{HD23 alignment assumptions}
+
+For reference, the alignment model adopted by HD23 is: oblate spheroids
+with $b/a = 1.4$, porosity $0.20$, and
+\begin{equation}
+  \falign(a) \;=\; \frac{f_{\max}}{1 + (\aalign/a)^{\alpha}},
+  \qquad
+  \aalign = 0.0749\um,\quad \alpha = 1.80,\quad f_{\max} = 1.0,
+  \label{eq:falign}
+\end{equation}
+with zero polarized contribution from PAHs. The axial ratio $b/a = 1.4$
+is not a free aesthetic choice: it is the minimum departure from
+sphericity that the observed starlight polarization efficiency integral
+of DH21b will tolerate.
+
+%====================================================================
+\section{What alignment theory hands to radiative transfer}
+\label{sec:alignment}
+
+\subsection{The interface is one number}
+
+Alignment theory, however elaborate, delivers exactly one scalar per
+grain radius to the transfer solver: $R(a)$. It factorizes into internal
+alignment (the angle $\beta$ between the short axis $\hat a_1$ and the
+angular momentum $J$) and external alignment (the angle $\xi$ between $J$
+and $B$),
+\begin{equation}
+  R \;=\; \left\langle
+    \frac{3\cos^2\beta - 1}{2}\cdot\frac{3\cos^2\xi - 1}{2}
+  \right\rangle,
+  \label{eq:Rprod}
+\end{equation}
+following Hoang et al.\ (2024, ApJ 965, 183; \code{2024ApJ...965..183H},
+Eq.~5). The practical reduced form used in that same paper (their Eq.~12)
+is a two-state model,
+\begin{equation}
+  R = \begin{cases}
+    0, & a < \aalign, \\[2pt]
+    \fhighJ\,Q_X^{\rm high\text{-}J}
+      + (1-\fhighJ)\,Q_X^{\rm low\text{-}J}, & a \geq \aalign,
+  \end{cases}
+  \qquad
+  Q_X^{\rm high\text{-}J} = 1,\quad Q_X^{\rm low\text{-}J} \simeq 0.3.
+  \label{eq:Rreduced}
+\end{equation}
+
+\subsection{The analytic alignment radius}
+
+The reference analytic chain for \aalign\ is Hoang, Tram \& Lee (2021,
+ApJ 908, 218; \code{2021ApJ...908..218H}). The RAT efficiency is
+approximated by
+\begin{equation}
+  \bar Q_\Gamma \simeq
+  \begin{cases}
+    8\,(\bar\lambda/a)^{-3}, & a \lesssim \bar\lambda/2.7, \\
+    0.4, & a \gtrsim \bar\lambda/2.7,
+  \end{cases}
+  \label{eq:qgamma}
+\end{equation}
+the infrared rotational damping coefficient by
+\begin{equation}
+  F_{\rm IR} \simeq 0.038\,U^{2/3}\,a_{-5}^{-1}\,n_3^{-1}\,T_1^{-1/2},
+  \label{eq:fir}
+\end{equation}
+and the suprathermal rotation condition $\omega_{\rm RAT} = 3\,\omega_T$
+then yields
+\begin{equation}
+  \aalign \simeq 0.055\,\hat\rho^{-1/7}
+  \left(\frac{n_3 T_1}{\gamma_{-1} U}\right)^{2/7}
+  \left(\frac{\bar\lambda}{1.2\um}\right)^{4/7}
+  (1 + F_{\rm IR})^{2/7}\ \um .
+  \label{eq:aalign}
+\end{equation}
+Inside a cloud the local field is reddened and attenuated, which is
+captured by
+\begin{equation}
+  U = \frac{U_0}{1 + 0.42\,\Av^{1.22}},
+  \qquad
+  \bar\lambda = \bar\lambda_0\left(1 + 0.27\,\Av^{0.76}\right),
+  \qquad
+  \bar\lambda_0 = 1.3\um .
+  \label{eq:avdep}
+\end{equation}
+
+\subsection{Rotational disruption}
+
+Rotational disruption (RATD) removes large grains whose spin stress
+exceeds the tensile strength $S_{\max}$. The important structural point
+is that disruption defines a \emph{band}, not a cutoff: there is an upper
+bound $a_{\rm disr,max}$ as well as \adisr, because sufficiently large
+grains again spin too slowly to be disrupted. Implementing RATD as a
+simple truncation of the size distribution is wrong.
+
+\subsection{Magnetically enhanced alignment and its 2025 revision}
+\label{sec:mrat}
+
+Magnetically enhanced RAT alignment (MRAT) is parameterized by the
+magnetic relaxation ratio $\delta_{\rm mag}$. Giang et al.\ (2023) adopt
+a step function, $\fhighJ = 0.25$, $0.5$, $1$ for $\delta_m < 1$,
+$1$--$10$, and $>10$ respectively. That last branch is the one to be
+careful with.
+
+Hoang (2025, ApJ 994, 115) revises the criterion to
+\begin{equation}
+  \delta_{\rm mag,cri} \;=\; (1 + F_{\rm IR})\,
+  \frac{2 - q^{\max}}{q^{\max}},
+  \label{eq:deltacri}
+\end{equation}
+showing that the familiar ``$\delta_m > 10$ implies perfect alignment''
+rule was the special case $F_{\rm IR} \ll 1$. For $U \sim 10^3$ one has
+$F_{\rm IR} \sim 60$, so the required $\delta_{\rm mag}$ rises by roughly
+the same factor. Any implementation that keeps the 2016-era step function
+will therefore overestimate alignment in strong radiation fields, exactly
+where the polarized emission is brightest. The same paper finds that the
+attainable maximum of \fhighJ\ is about $0.45$ for superparamagnetic
+grains and about $0.22$ for ordinary paramagnetic grains, so the value
+$1.0$ used by POLARIS is optimistic. It also proposes the environment
+classifier $U/(n_1 T_2)$: values $\leq 1$ are collision-dominated, values
+$>1$ are radiation-dominated, in which case the slow-rotation branch has
+$f^{\rm slow}_{\rm high\text{-}J} = 0$.
+
+Note the division of labor between these references: the authoritative
+closed-form expressions for \aalign\ and \adisr\ remain those of Hoang et
+al.\ (2021). Hoang (2025) does not supply new closed forms; it recasts
+the problem in a dimensionless parameter space.
+
+\subsection{Angle convention}
+
+In this literature $\gamma$ denotes the angle between the \emph{mean
+magnetic field and the line of sight}, not a plane-of-sky angle.
+Polarization is maximal at $\gamma = 90^\circ$. Mixing this up with a
+position angle is a common and quiet error.
+
+\subsection{Which axis do grains align with?}
+\label{sec:krat}
+
+Everything above assumes the alignment axis is $\mathbf{B}$. That holds only
+while Larmor precession is the fastest precession the grain undergoes.
+Lazarian \& Hoang (2019, \code{2019ApJ...883..122L}) set the comparison out
+explicitly. A grain with a Barnett magnetic moment precesses about
+$\mathbf{B}$ on a timescale (their Eq.~4)
+%
+\begin{equation}
+t_{\rm L} \;=\; \frac{4\pi}{5}\frac{g_e\mu_B}{\hbar}\,
+   \rho_s\,s^{-2/3}\,a_{\rm eff}^{2}\,B^{-1}\chi(0)^{-1}
+   \;\approx\; 1.3\;\hat\rho\;\hat s^{-2/3}\,a_{-5}^{2}\,
+   \hat B^{-1}\hat\chi^{-1}\ \ {\rm yr},
+\label{eq:tlarmor}
+\end{equation}
+%
+with $\hat B = B/5\,\mu$G and $\hat\chi = \chi(0)/10^{-4}$. Anisotropic
+radiation drives a competing precession about $\mathbf{k}$ (their
+Eqs.~12--14),
+%
+\begin{equation}
+t_{\rm rad,p} = \frac{2\pi}{\Omega_p},\qquad
+\Omega_p = \frac{\bar u_{\rm rad}\,\bar\lambda\,a_{\rm eff}^{2}}
+                {I_\parallel\,\omega}\,\gamma\,|\bar Q_\Gamma|,
+\label{eq:tradp}
+\end{equation}
+%
+\begin{equation}
+t_{\rm rad,p} \approx 1.1\times10^{2}\;
+  \hat\rho^{1/2}\hat s^{-1/3} a_{-5}^{1/2}\hat T_d^{1/2}
+  \left(\frac{u_{\rm rad}}{u_{\rm ISRF}}\right)^{-1}
+  \left(\frac{\bar\lambda}{1.2\,\mu\mathrm{m}}\right)^{-1}
+  \left(\frac{\gamma|\bar Q_\Gamma|}{0.01}\right)^{-1}\ \ {\rm yr}.
+\label{eq:tradp2}
+\end{equation}
+%
+The criterion is simply which is shorter: if $t_{\rm rad,p} < t_{\rm L}$,
+``the radiation direction rather than that of magnetic field becomes the axis
+of alignment'' and the grain is in the k-RAT regime rather than B-RAT.
+
+Two consequences matter for the present purpose. First, the paper's own
+estimate is that both the radiative and the mechanical precession rates ``are
+significantly smaller than the rate of Larmor precession,'' which ``ensures
+that over most of the volume of the interstellar medium the alignment is
+happening in respect to magnetic field.'' For a galaxy-scale model such as
+NGC~891 the B-RAT assumption is therefore safe, and Eq.~(\ref{eq:tlarmor})
+versus Eq.~(\ref{eq:tradp2}) can be evaluated as a diagnostic rather than
+carried as a branch in the solver. The regime to watch is the immediate
+vicinity of bright sources, where $u_{\rm rad}/u_{\rm ISRF}$ is large enough
+to push $t_{\rm rad,p}$ below $t_{\rm L}$.
+
+Second, $t_{\rm L} \propto \chi(0)^{-1}$, so iron inclusions that raise the
+susceptibility also push the transition further away: the same magnetic
+enhancement that produces efficient MRAT alignment
+(\S\ref{sec:mrat}) simultaneously protects the B-RAT assumption. Conversely,
+detecting a k-RAT signature would constrain $\chi(0)$, which is the
+observational program that paper proposes.
+
+Note also that Eq.~(\ref{eq:tradp2}) uses
+$|\bar Q_\Gamma| \approx 2.3(\lambda/a_{\rm eff})^{-3}$ for
+$\lambda > 1.8 a_{\rm eff}$ and $0.4$ otherwise, whose coefficient and
+transition point differ from the parameterization quoted in
+Eq.~(\ref{eq:qgamma}). The two are alternative fits to the same DDA results
+and agree to within tens of percent; use one consistently rather than mixing
+them.
+
+\subsection{The polarization hole}
+
+The mechanism is a chain of three steps, each of which the formulas above
+already contain: increasing \Av\ lowers $U$ (Eq.~\ref{eq:avdep}), lower
+$U$ raises \aalign\ (Eq.~\ref{eq:aalign}), and once \aalign\ exceeds the
+largest grain present, alignment vanishes and polarized emission goes to
+zero. The complete-loss condition scales as
+$A_{V,\max} \simeq 24.7\,(\cdots)$, evaluating to roughly $15.9$, $6.9$,
+and $3.0$ mag for $n_{\rm H} = 10^4$, $10^5$, $10^6\ {\rm cm}^{-3}$ with
+$a_{\max} = 0.25$\um. Grain growth pushes the transition to larger \Av,
+which is why the observed depth of the hole is a joint constraint on
+alignment and on growth rather than on either alone.
+
+%====================================================================
+\section{Polarized transfer and its implementation}
+\label{sec:rt}
+
+\subsection{The Stokes transfer equation}
+
+The transfer of the Stokes vector through an aligned medium is governed
+by a $4\times4$ extinction matrix. In the form given by POLARIS~I
+(Reissl, Wolf \& Brauer 2016, A\&A 593, A87;
+\code{2016A\&A...593A..87R}, their Eq.~7),
+\begin{equation}
+  \frac{d}{ds}
+  \begin{pmatrix} I \\ Q \\ U \\ V \end{pmatrix}
+  = -\,n_d
+  \begin{pmatrix}
+    \Cext & \Cpol\cos2\varphi & \Cpol\sin2\varphi & 0 \\
+    \Cpol\cos2\varphi & \Cext & 0 & \Ccirc\sin2\varphi \\
+    \Cpol\sin2\varphi & 0 & \Cext & -\Ccirc\cos2\varphi \\
+    0 & -\Ccirc\sin2\varphi & \Ccirc\cos2\varphi & \Cext
+  \end{pmatrix}
+  \begin{pmatrix} I \\ Q \\ U \\ V \end{pmatrix}
+  + j,
+  \label{eq:transfer}
+\end{equation}
+where $\varphi$ is the position angle of the projected field and
+$j$ is the polarized emissivity.
+
+\paragraph{Typographical error in the published matrix.} The printed
+$(4,4)$ element in that paper is $\Cpol$; the correct entry is $\Cext$,
+as written in Eq.~(\ref{eq:transfer}) above. The reasoning is structural:
+$V$ must suffer the same total extinction as $I$, $Q$, $U$, and only
+$\Ccirc$, appearing antisymmetrically, may rotate $U$ into $V$. The
+POLARIS source code implements it correctly, so this is an error in the
+paper rather than in the code.
+
+\subsection{How POLARIS assembles the matrix}
+
+The assembly happens in \code{DustMixture.cpp::calcEmissivityExt}, whose
+non-zero off-diagonal assignments are:
+
+\begin{lstlisting}[style=cpp]
+K[0][1] = K[1][0] =  Cpol  * cos2phi;
+K[0][2] = K[2][0] =  Cpol  * sin2phi;
+K[1][3] =            Ccirc * sin2phi;
+K[2][3] =           -Ccirc * cos2phi;
+K[3][1] =           -Ccirc * sin2phi;
+K[3][2] =            Ccirc * cos2phi;
+\end{lstlisting}
+
+The cross sections themselves absorb the alignment factor in
+\code{DustComponent.cpp::calcCrossSections}, as
+\begin{align}
+  \Cpol  &= \tfrac12\,R\,(\Cext^{\perp} - \Cext^{\parallel})\,\sin^2\theta,
+    \label{eq:cpolR} \\
+  C_{\rm pabs} &= \tfrac12\,R\,(\Cabs^{\perp} - \Cabs^{\parallel})\,\sin^2\theta.
+    \label{eq:cpabsR}
+\end{align}
+A single scalar $R$ thus scales the dichroic and the birefringent
+amplitudes simultaneously, which is the concrete expression of the
+statement in \S\ref{sec:alignment} that the alignment interface is one
+number.
+
+\subsection{Prefer the closed-form solution to adaptive integration}
+
+If the density and the alignment direction are constant within a cell,
+$\exp(-Kns)$ has a closed form (Peest et al.\ 2023,
+\code{2023A\&A...673A.112P}): $I$ and $Q$ evolve through
+$\cosh$ and $\sinh$ of $\Cpol\,n s$, $U$ and $V$ through $\cos$ and
+$\sin$ of $\Ccirc\,n s$, with an overall factor $e^{-\Cext n s}$. POLARIS
+instead integrates Eq.~(\ref{eq:transfer}) with an adaptive
+Runge--Kutta--Fehlberg 4(5) scheme, applying the error test to each of
+the four Stokes components with $\epsilon_{\rm err} = 10^{-8}$. For a
+cell-based grid the closed form is strictly better: it is exact, it is
+cheaper, and it removes a tolerance parameter. Peest et al.\ (2023) also
+publish analytic benchmark problems, which their MCpol implementation
+reproduces to within $0.1\%$; those benchmarks should be adopted as
+regression tests.
+
+\subsection{The three-pass structure and what it buys}
+
+POLARIS runs three passes, and the division of labor is the single most
+useful architectural lesson available:
+
+\begin{enumerate}
+\item Monte Carlo thermal equilibrium, with alignment ignored.
+\item Monte Carlo radiation field, storing a \emph{vector}
+      $u_\lambda$ and the anisotropy measure
+      $\gamma_\lambda = |\sum u_i| / \sum|u_i|$.
+\item Observables: alignment switched on, Stokes transfer along rays.
+\end{enumerate}
+
+During the Monte Carlo passes the alignment is deliberately randomized
+(\code{DustMixture.cpp:652--656}). The consequence is worth stating
+explicitly, because it removes what looks like the largest obstacle:
+\emph{polarized observables do not require the Monte Carlo transport
+itself to be polarized}. What is given up is the feedback of dichroic
+extinction on the radiation field, which is an approximation but a
+controlled one.
+
+\subsection{The radiation field must be vectorial}
+\label{sec:vecfield}
+
+RAT torque depends on the anisotropy of the local radiation field, so a
+scalar mean intensity is insufficient: alignment simply cannot be
+computed from $J_\lambda$ alone. What is required per cell and
+wavelength is the vector sum as well as the scalar one,
+%
+\begin{equation}
+\bar u_\lambda = \sum_i |\vec u_{\lambda,i}|,\qquad
+\gamma_\lambda = \frac{\left|\sum_i \vec u_{\lambda,i}\right|}
+                        {\sum_i |\vec u_{\lambda,i}|} \in [0,1],
+\label{eq:gammalam}
+\end{equation}
+%
+with $\gamma_\lambda$ the anisotropy degree that enters the torque. This has a hard corollary. The modified
+random walk (MRW) destroys directional information by construction and
+therefore cannot be used in the pass that feeds alignment. It remains
+available in the thermal pass.
+
+\subsection{Torque efficiency tables are not needed}
+
+A pleasant surprise: POLARIS's \code{calcAlignedRadii} has the tabulated
+route (\code{getQrat}) commented out and uses the power-law approximation
+of Eq.~(\ref{eq:qgamma}) instead. Equivalent results are therefore
+obtainable without computing or storing a T-matrix torque-efficiency
+table, which removes what would otherwise be a substantial Phase-A style
+computation.
+
+\subsection{Stochastic heating and polarization}
+\label{sec:stoch}
+
+POLARIS supports the combination, using the Camps et al.\ (2015)
+formulation, and the structure is simple: the temperature probability
+weighting $P(T)$ multiplies $I$ and $Q,U$ identically. Two consequences
+follow. Within a single grain size the polarization fraction is
+\emph{independent} of $P(T)$; the temperature distribution affects the net
+polarization only through the relative weighting of different sizes.
+
+Physically the two populations barely overlap in any case. Alignment sets
+in near $\aalign \simeq 0.075$\um, whereas stochastic heating dominates
+for $a \lesssim 0.01$--$0.05$\um. The observational counterpart is the
+non-detection of polarization in the 3.4\um\ C--H feature, $0.06\% \pm
+0.13\%$ (Chiar et al.\ 2006, ApJ 651, 268; \code{2006ApJ...651..268C}),
+consistent with the HD23 assumption of zero polarized PAH emission.
+
+Nevertheless the correct treatment is essentially free here, and that is
+an argument specific to this code base. SEDust already solves $P(T)$;
+carrying the polarized emission through the same integral costs one
+additional accumulator. It is worth noting that the Hoang group papers
+all use equilibrium temperatures only; Tram et al.\ (2025, GRADE-POL)
+states explicitly that the temperature distribution was discarded. Doing
+it properly would be a genuine, if modest, improvement over the reference
+implementations.
+
+%====================================================================
+\section{Current state of the codes}
+\label{sec:codes}
+
+\subsection{SEDust}
+
+\emph{Status note (2026 July 19): stage~1 of Table~\ref{tab:stages} is
+implemented and verified. The paragraphs below are kept in the past tense
+where they describe the starting point, and the achieved state is
+summarized at the end of this subsection. \S\ref{sec:worklist} likewise
+records what was actually done.}
+
+SEDust was in better shape than expected. The polarized cross-section
+table \code{q\_DH21Ad} was already present with all three orientation
+blocks (\S\ref{sec:optics}), and its correctness has been verified
+against the HD23 release. The \code{tmatrix/} directory links only
+\code{tmd\_one.f}, the random-orientation average driver; the
+fixed-orientation code \code{ampld.lp.f} is present but unused. As long
+as the astrodust model is the target, no T-matrix run is needed at all;
+that code becomes relevant only for exploring other axial ratios or
+compositions, or for the fixed-orientation amplitude matrix that circular
+polarization would require (\S\ref{sec:optics}): the released table
+carries $Q_{\rm ext}$, $Q_{\rm abs}$ and $Q_{\rm sca}$ only, so \Ccirc\
+cannot be built from it.
+
+The structural entry point was \code{grain\_pop\_t} in
+\code{sed/src/dust\_model\_mod.f90}: adding a \code{Cpol(NLAM,NA)}
+component there propagates naturally through the existing population
+loop. On the emission side, one polarized accumulator alongside the
+existing one in \code{sed\_astrodust.f90} completed the change.
+
+\paragraph{What SEDust now provides.} The orientation-resolved reader is
+\code{sed/src/q\_table\_jori.f90}. \code{sed\_init} builds two polarized
+cross sections on the size-distribution grid, \code{Cpol} (polarized
+absorption, which drives the polarized emission) and \code{Cpol\_ext}
+(polarized extinction, which drives the dichroic term of the extinction
+matrix), together with $\falign(a)$ from the HD23 fit. Three exports
+follow:
+\begin{itemize}
+\item \code{dust\_emission} takes an optional \code{lamI\_pol} of the
+      same shape and units as \code{lamI\_total}, returning the
+      \emph{intrinsic} polarized emission;
+\item \code{../data/kext\_astrodust\_MW.dat} carries the polarized
+      extinction per H as an eighth column, appended so that readers of
+      the first seven columns are unaffected;
+\item \code{calc\_polext.x} regenerates the comparison against the
+      released \code{polarized\_extinction.dat}.
+\end{itemize}
+The reproduction is a median $|{\rm ours/ref}-1|$ of $0.0296\%$ over the
+992 points with $\lambda \ge 0.11\um$, and the intrinsic polarization
+fraction of the emission is $19.15\%$ at $850\um$ and $17.15\%$ at
+$154\um$. The calling interface is specified in the SEDust user manual;
+\code{docs/mocafe\_polarization\_handoff.md} records the decisions taken
+while building this and the limits of the released data.
+
+\subsection{MoCafe v2.00}
+
+MoCafe already carries the polarization state. \code{photon\_type} has
+\code{I,Q,U,V} (\code{define.f90:117}), there is a \code{use\_stokes}
+switch (line 213), and \code{scatter\_dust\_stokes} interpolates
+$S_{11}$, $S_{12}$, $S_{33}$, $S_{34}$. SEDust is embedded through
+\code{dustemis\_mod}, and the code passes the Camps et al.\ (2015) SHG
+benchmark. The task is already on record: the roadmap contains
+\code{[TODO, L] Polarized thermal emission from aligned grains.
+Long-term.}
+
+Four things are missing:
+\begin{enumerate}
+\item No magnetic field exists anywhere (a source-wide grep returns zero
+      hits). This is the largest single gap.
+\item Extinction is scalar: \code{tau = rhokap * length}.
+\item \code{jtally\_mod} accumulates a \emph{scalar} $J_\lambda$ only,
+      and must be vectorized before any self-consistent alignment
+      calculation is possible.
+\item There is no polarized emission source term.
+\end{enumerate}
+
+\subsection{Reference sources in the tree}
+
+Two POLARIS checkouts are available for reference:
+\code{Grain/POLARIS/} (branch \code{master-basic}, commit
+\code{03280f5}) and \code{Grain/NewPOLARIS/} (branch \code{main}, commit
+\code{e508e89}; tag \code{v1} = \code{a4fcb4d} corresponds to Zenodo
+\code{10.5281/zenodo.14199014}, the published version, with \code{main}
+ahead only in the README).
+
+NewPOLARIS is the MRAT and RATD extension of Giang, Hoang \& Kim (2023).
+It is \emph{not} merged upstream and was forked from an older layout
+(\code{Dust.cpp}/\code{Dust.h}), so a direct diff against the baseline is
+not possible; only the physics can be ported. What it adds: the
+\code{ALIG\_MRAT}, \code{ALIG\_kRAT}, \code{ALIG\_INELASTIC} flags; the
+keywords \code{<number\_cluster>}, \code{<volume\_filling\_cluster>},
+\code{<iron\_fraction>}, \code{<change\_f\_highJ>}, \code{<inelascity>},
+\code{<disrupt> RATD}; and grid fields holding critical radii for each
+cell (\code{GRIDadisr}, \code{GRIDamaxJB\_Lar},
+\code{GRIDadg\_lower/upper}), which moves the expensive physics into a
+preprocessing step. The stock POLARIS has no MRAT, and its
+\code{ALIG\_KRAT} is a dead flag: it is connected to neither the parser
+nor any physics path.
+
+%====================================================================
+\section{Staged proposal}
+\label{sec:stages}
+
+\begin{table}[!ht]
+\centering
+\caption{Proposed stages, with the status as of 2026 July 19. Stage~2 is
+the point at which quantitative comparison against SOFIA/HAWC+ becomes
+possible; stage~1 no longer blocks it.}
+\label{tab:stages}
+\begin{tabularx}{\textwidth}{c l c c X}
+\toprule
+Stage & Scope & Effort & Status & Content \\
+\midrule
+1 & SEDust cross sections & days, low risk & done &
+  \code{Cpol}, \code{Cpol\_ext} and \falign\ built in \code{sed\_init};
+  polarized emission accumulator in \code{sed\_grain\_loop}; optional
+  \code{lamI\_pol} on \code{dust\_emission}; polarized extinction
+  exported as column~8 of \code{kext\_astrodust\_MW.dat}. Released
+  \code{polarized\_extinction.dat} reproduced to a median of
+  $0.0296\%$; intrinsic polarization fraction $19.15\%$ at $850\um$. \\
+2 & MoCafe ray tracing & moderate & next &
+  Polarized emission in ray tracing and peel-off, using the Peest
+  closed form. Needs no scattering matrix: the far-infrared albedo is
+  near zero. \\
+3 & MoCafe forward MC & moderate & open &
+  Dichroic extinction; keep scalar $\tau$ for path sampling and correct
+  by weight. Column~8 supplies \Cpol. \\
+4 & Self-consistent alignment & large & open &
+  Vectorial radiation-field pass; MRW disabled; memory $\times 4$. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Stage 1 (done).} \code{Cpol}, \code{Cpol\_ext} and \falign\
+are built in SEDust, with a single polarized emission accumulator
+alongside the existing one. Nothing in the solver core changed, and the
+three astrodust SEDs plus the DL07 SED regress byte-identically. The
+first validation step, reproducing the released
+\code{polarized\_extinction.dat}, passes at a median of $0.0296\%$. The
+remaining checks, $p_{\rm submm}$ against Planck, $R_{S/V}$, and the
+Serkowski parameters $\lambda_{\max}$ and $K$, are now possible from
+column~8 of \code{kext\_astrodust\_MW.dat} and remain to be done.
+
+\paragraph{Stage 2.} Polarized emission in the MoCafe ray tracing and
+peel-off paths, integrated with the closed-form solution of
+\S\ref{sec:rt}. This is the milestone worth aiming at first: it already
+allows a quantitative comparison with the HAWC+ 154\um\ maps, which did
+not exist in 2018.
+
+\paragraph{Stage 3.} Dichroic extinction in the forward Monte Carlo. The
+recommended approach keeps the scalar $\tau$ for path-length sampling and
+applies a weight correction, which sidesteps the circularity analyzed by
+Baes et al.\ (2019). At this stage the empirical \code{dichroic.f90}
+formula is replaced by Eq.~(\ref{eq:tanh}) with a wavelength-dependent
+$\Cpol$.
+
+\paragraph{Stage 4.} Alignment computed internally. This requires the
+vectorial radiation-field pass, forbids MRW in that pass, and raises the
+radiation-field memory by a factor of four. Until then the sensible
+choice is the SKIRT approach: treat $\falign(a)$ as an input function,
+with the HD23 fit of Eq.~(\ref{eq:falign}) as the default.
+
+%====================================================================
+\section{What the update actually touches}
+\label{sec:worklist}
+
+The stages above are stated in physical terms. This section translates
+them into the specific data structures and routines that would change,
+based on the state of the two trees as of 2026 July. Line numbers are
+given where they pin down a unique insertion point; they will drift.
+
+\subsection{SEDust, stage 1 (implemented)}
+
+\emph{This subsection was written as a plan and is kept for the reasoning
+it records. What was actually built follows each paragraph in italics.
+The resulting calling interface is specified in the SEDust user manual.}
+
+\paragraph{Read the polarized cross sections.} The existing loader
+\code{load\_q\_table} (\code{sed/src/q\_table.f90}) reads the flat table
+produced by \code{run\_tmatrix}, whose columns are
+\code{lambda a\_eff Qext Qabs Qsca albedo g flag}. The HD21 file has a
+different shape: three orientation blocks, each
+$1129 \times 169$, written as
+\code{((Q(jw,jr,jori),jw=0,1128),jr=0,168),jori=1,3} for each of
+$Q_{\rm ext}$, $Q_{\rm abs}$, $Q_{\rm sca}$ in turn. Two options exist:
+add a second reader for the HD21 layout, or extend the existing table
+format with a \code{jori} column and regenerate. The first is faster to
+get running; the second keeps one reader for both the shipped table and
+any future T-matrix computation, and is the better end state. Whichever
+is chosen, form
+%
+\begin{equation}
+Q_{\rm pol}^{\rm abs}(\lambda,a)
+  = \tfrac{1}{2}\left[Q_{\rm abs}^{(jori=3)} - Q_{\rm abs}^{(jori=2)}\right],
+\qquad
+Q_{\rm pol}^{\rm ext} \ \hbox{likewise from } Q_{\rm ext},
+\label{eq:qpolfromjori}
+\end{equation}
+%
+and watch the index convention of Table~\ref{tab:jori}.
+
+\emph{Done as the first option: \code{sed/src/q\_table\_jori.f90} is a
+second reader for the HD21 layout, leaving \code{q\_table.f90}
+untouched. It decompresses the shipped \code{.gz} through \code{gzip
+-dc} into a scratch copy, and exposes \code{qpol\_ext}, \code{qpol\_abs},
+the random-orientation combinations \code{qran\_*}, the grids
+\code{lam\_j}, \code{aeff\_j}, and \code{falign\_hd23(a)}.}
+
+\paragraph{Carry it on the population.} \code{grain\_pop\_t}
+(\code{sed/src/dust\_model\_mod.f90}) currently holds \code{aeff},
+\code{dn}, \code{Cabs}, \code{Csca}, \code{kappB}, \code{H} and
+\code{kappCMB}. Add
+%
+\begin{lstlisting}[language=Fortran]
+real(wp), allocatable :: Cpol(:,:)   ! (NLAM, NA)  polarized absorption
+real(wp), allocatable :: falign(:)   ! (NA)        alignment efficiency
+\end{lstlisting}
+%
+and free them in \code{free\_pop} alongside the rest. Filling
+\code{falign} from Eq.~(\ref{eq:falign}) needs only \code{aeff}, which
+the population already carries after the earlier fix that added it.
+
+\emph{Done, with \code{set\_pop} taking \code{Cpol} and \code{falign} as
+optional arguments so that populations without polarized optics simply
+leave them unallocated. The module-level arrays behind them are
+\code{Cpol} and \code{Cpol\_ext}; the short name stays on the absorption
+one because the emission path is written around it.}
+
+\paragraph{Accumulate the polarized emission.} The emission loop in
+\code{sed\_grain\_loop} (\code{sed/src/sed\_astrodust.f90}) has four
+accumulation sites, at roughly lines 757, 762, 926 and 938, of the form
+%
+\begin{lstlisting}[language=Fortran]
+Jout_local = Jout_local + dn_pop(ir) * P(ii) * Cabs_pop(:,ir) * spec
+\end{lstlisting}
+%
+Each gains a companion line that differs only in the cross section and
+the alignment weight:
+%
+\begin{lstlisting}[language=Fortran]
+Jpol_local = Jpol_local + dn_pop(ir) * P(ii) * Cpol_pop(:,ir) &
+                                     * falign_pop(ir) * spec
+\end{lstlisting}
+%
+This is the point made in \S\ref{sec:stoch}: because the temperature
+weight multiplies both accumulators identically, the exact $P(T)$
+treatment comes for free, and there is no reason to approximate the
+polarized emission with an equilibrium temperature. The two sites at 757
+and 938 are the equilibrium branches and need the same companion.
+
+\emph{Done at every accumulation site, guarded by a single \code{do\_pol}
+flag that is true only when the caller asked for the polarized output and
+the population carries both arrays.}
+
+\paragraph{Widen the public interface.} \code{dust\_emission}
+(\code{sed/src/sed\_astrodust.f90:2143}) currently returns
+\code{lamI\_total} and optionally \code{lamI\_chan}. Add an optional
+\code{lamI\_pol} of the same shape as \code{lamI\_total}. Making it
+optional keeps every existing caller valid, which matters because
+MoCafe links this as a library; the same discipline was used for the
+\code{status} argument. Re-export through \code{dust\_lib}.
+
+\emph{Done. The signature is now}
+\code{dust\_emission(m, J\_lam, lamI\_total [, lamI\_chan] [, status]
+[, lamI\_pol])}\emph{. The polarized \emph{extinction} took a different
+route: rather than a second library accessor, it is written as column~8
+of \code{../data/kext\_astrodust\_MW.dat}, because that file is already
+how a host consumes extinction and \code{dust\_lib} exposes no
+extinction surface for an accessor to sit beside.}
+
+Note that what leaves SEDust is the \emph{intrinsic} polarized
+emissivity, that is, the quantity before the geometric factor
+$\sin^2\gamma$ and before any turbulent reduction. Those depend on the
+local field direction and belong to the RT side. Keeping the split here
+is what allows a single pair of tables to serve all viewing geometries.
+
+\paragraph{Verify before going further.} Reproduce
+\code{data/release/polarized\_extinction.dat} by combining
+Eq.~(\ref{eq:cpol}) with the alignment fit of Eq.~(\ref{eq:falign})
+and integrating over the size distribution. This exercises the orientation indexing, the sign
+convention, the $\falign$ fit and the size integration in one shot. It
+has already been shown to work at 0.55\um; extending the check across
+the full wavelength grid is the natural first commit. Only then are the
+$p_{\rm submm}$, $R_{S/V}$ and Serkowski comparisons of
+\S\ref{sec:validation} meaningful.
+
+\emph{Done by \code{calc\_polext.x}, which reproduces the release to a
+median of $0.0296\%$ and a maximum of $0.94\%$ over the 992 points with
+$\lambda \ge 0.11\um$ (the reference itself turns negative below that).
+Column~8 of the extinction table agrees with that program to the seven
+digits the ASCII format carries, so the two routes to the same quantity
+are consistent. The $p_{\rm submm}$, $R_{S/V}$ and Serkowski comparisons
+are still open.}
+
+\subsection{MoCafe, stage 2}
+
+\paragraph{A magnetic field has to exist.} No field of any kind appears
+in the current source. A minimal implementation adds a field direction
+for each cell, either from an analytic model or from an MHD snapshot,
+alongside the existing density. For NGC~891 the analytic route is the
+starting point, but the observational result of Kim et al.\ (2023) means
+a turbulent component is not optional: a smooth field cannot produce the
+low polarization fraction and narrow dispersion they report. In practice
+this means either resolving the turbulence on the grid or carrying a
+reduction factor $F_{\rm turb}$ per cell, as GRADE-POL does.
+
+\paragraph{Emissivity becomes a Stokes vector.}
+\code{compute\_dustemis} (\code{src/dustemis\_mod.f90}) currently
+obtains a scalar spectrum from \code{dust\_emission} or
+\code{dust\_emission\_interp} and stores one emissivity array per cell.
+With \code{lamI\_pol} available it stores, for each cell,
+%
+\begin{equation}
+j_I = \hbox{(as now)},\qquad
+\binom{j_Q}{j_U} = \lamIpol \, \sin^2\gamma \, F_{\rm turb}
+   \binom{\cos 2\varphi}{\sin 2\varphi},
+\label{eq:jstokes}
+\end{equation}
+%
+where $\gamma$ is the angle between the local field and the line of
+sight to the observer and $\varphi$ is the position angle of the
+field projected on the sky. Both follow from the field direction and the
+observer direction, so no new physics enters here.
+
+There is a structural consequence worth noting: $\gamma$ and $\varphi$
+depend on the viewing direction, so $j_Q$ and $j_U$ are not properties
+of the cell alone in the way $j_I$ is. For a single observer this is
+immaterial. For the all-sky output of \code{allsky\_mod} it means the
+angles must be evaluated per direction rather than cached per cell.
+
+\paragraph{Integrate the Stokes vector along the ray.} The ray-tracing
+and peel-off paths (\code{src/peelingoff\_mod.f90},
+\code{src/allsky\_mod.f90}) currently accumulate a scalar optical depth
+through \code{raytrace\_tau} and apply $e^{-\tau}$. Replace this, for
+the polarized output only, by the segment-by-segment application of the
+closed-form solution of \S\ref{sec:rt}: within a segment of constant
+density and field direction the Stokes vector transforms by
+$\cosh$ and $\sinh$ of $\Cpol n s$ in $(I,Q)$ and by $\cos$ and $\sin$
+of $C_{\rm circ} n s$ in $(U,V)$, all scaled by $e^{-\Cext n s}$, with a
+rotation into and out of the local field frame at each segment boundary.
+The existing segment walk already provides the geometry; what changes is
+what is done with each segment.
+
+At this point the model produces polarized emission maps that can be
+compared with the HAWC+ 154\um\ data directly. Nothing in the forward
+Monte Carlo has been touched.
+
+\subsection{MoCafe, stage 3}
+
+The forward Monte Carlo is where dichroism becomes awkward, because the
+optical depth that governs path sampling is no longer a scalar. The
+recommendation of \S\ref{sec:stages} is to keep sampling path lengths
+from the scalar $\Cext$ and to apply the polarization as a weight
+correction on the surviving packet, which preserves the sampling
+distribution and avoids the circularity that Baes et al.\ (2019)
+analyze. The physical cost is that dichroic extinction does not feed
+back on the radiation field; whether that matters can be measured by
+comparing stage-3 output with stage-2 output, which is a reason to build
+them in this order.
+
+This is also the point at which \code{Galaxy\_pol/dichroic.f90} would be
+retired. Its replacement is Eq.~(\ref{eq:tanh}) with $\Cpol$ from
+Eq.~(\ref{eq:qpolfromjori}), which restores the wavelength dependence
+that the empirical form cannot represent.
+
+\subsection{MoCafe, stage 4}
+
+Only here does the radiation-field tally change.
+\code{jtally\_mod} stores \code{jt\_sum(nlambda,ncell)}, a scalar mean
+intensity. Radiative torque alignment needs the direction of the
+radiation as well, so the tally becomes four numbers per cell and
+wavelength: the scalar sum and the three components of
+$\sum_i \vec{u}_{\lambda,i}$, from which the anisotropy degree
+$\gamma_\lambda$ of Eq.~(\ref{eq:gammalam}) follows. The memory note
+already in the roadmap, that \code{jt\_sum} is held privately per rank,
+becomes four times more pressing.
+
+Two further constraints come with it. The modified random walk cannot be
+used in this pass, since it destroys the directional information. And
+the alignment solve itself is a preprocessing step over cells, not an
+inner-loop cost: as NewPOLARIS shows, the sensible structure is to
+compute $a_{\rm align}$, $a_{\rm disr}$ and the magnetic radii once per
+cell, store them, and have the cross-section evaluation do nothing but
+compare grain size against stored radii.
+
+\subsection{Order of work and what each stage buys}
+
+Stage 1 is self-contained inside SEDust and verifiable against a
+published file. Stage 2 produces the first result that could not have
+been obtained in 2018, because the HAWC+ maps did not exist. Stage 3
+removes the empirical formula that is the weakest point of the 2018
+model. Stage 4 replaces the assumed $\falign(a)$ with computed
+alignment, and is the only stage that changes the Monte Carlo itself.
+
+A useful property of this ordering is that each stage is independently
+publishable and independently falsifiable: stage 1 against
+\code{polarized\_extinction.dat}, stage 2 against HAWC+, stage 3 against
+stage 2, and stage 4 against the fixed-$\falign$ result of stage 2.
+
+%====================================================================
+\section{What optical polarized RT additionally requires}
+\label{sec:optical}
+
+Everything up to this point is written with the far infrared in view,
+where the albedo is near zero and a scattering matrix can be skipped
+(\S\ref{sec:stages}, stage~2). Optical starlight polarization is the
+case the 2018 model actually addressed, and it needs strictly more.
+This section collects the additional requirements in one place, because
+they are currently scattered: the fixed-orientation amplitude code is
+mentioned in \S\ref{sec:codes}, \Ccirc\ in \S\ref{sec:optics} and
+\S\ref{sec:rt}, and the MPFA in \S\ref{sec:optics}.
+
+The immediate goal is to update Seon (2018), which worked at a single
+wavelength ($V$ band, \S\ref{sec:motivation}). Concretely, the target is
+to replace the empirical $P_V = 2.7\,\tau_V^{0.48}$ of
+Eq.~(\ref{eq:whittet}) by dichroism computed from cross sections. A
+plausible extension is one or two further optical bands, which is a
+different thing from a full wavelength grid: the far infrared is not in
+the present plan at all, and neither is the ultraviolet. The
+requirements below are ordered on that basis, and items that only bind
+once the ultraviolet or the far infrared enters are marked as such.
+Several requirements that look formidable when stated for a full
+wavelength grid stay modest across two or three optical bands, and the
+ordering exploits that.
+
+Two consequences of the wider optical scope are worth stating at the
+outset. A scattering matrix would be needed at each band rather than at
+one wavelength, which multiplies the computation but not the method: a
+handful of bands is still far from a grid. And once more than one band
+is available the wavelength dependence of the polarization becomes an
+observable in its own right, which is exactly what the empirical formula
+of Eq.~(\ref{eq:whittet}) cannot reproduce, so the case for replacing it
+grows stronger rather than weaker.
+
+\subsection{The stage table presupposes data that does not exist yet}
+
+Table~\ref{tab:stages} assigns stages~3 and~4 to MoCafe, which is
+correct as far as transport is concerned but incomplete as a plan.
+Those stages consume optical quantities that SEDust does not yet
+produce, and in one case that no released file contains. Stage~1
+delivered \Cpol\ and \code{Cpol\_ext}, which are sufficient for
+polarized emission and for dichroic extinction, and nothing else.
+Table~\ref{tab:optical} lists what is still missing on the supply side,
+with the priority each item carries for the single-wavelength update.
+
+\begin{table}[!ht]
+\centering
+\caption{Ingredients that far-infrared polarized transfer can do
+without and optical polarized transfer cannot. ``Supplier'' is the code
+that must produce the quantity; ``Priority'' is judged against the
+single-wavelength ($V$ band) goal, not against a full wavelength grid.}
+\label{tab:optical}
+\begin{tabularx}{\textwidth}{l l l X}
+\toprule
+Ingredient & Supplier & Priority & Status, and why optical needs it \\
+\midrule
+$Z(\theta)$ at $V$, random orientation &
+  SEDust & high &
+  \code{MATR} call removed from \code{tmd\_one.f}. Scattering dominates
+  the optical opacity, so the phase matrix sets the scattered
+  polarization; in the far infrared the albedo is near zero and $Z$
+  never enters. \\
+\falign\ functional form &
+  either & high &
+  HD23 fit assumed. Optical polarization is carried by grains near
+  $a \sim \aalign$, so the shape of the cutoff is a first-order effect,
+  and it is what sets how the polarization varies from band to band;
+  far-infrared polarization comes from grains well above it, where all
+  forms agree. \\
+$Z(\lambda,\theta)$, aligned orientation &
+  SEDust & later &
+  \code{ampld.lp.f} present but unused. Aligned spheroids scatter
+  anisotropically with respect to $\mathbf{B}$, which spherical Mie
+  cannot represent. \\
+\Ccirc &
+  SEDust & later &
+  Absent from the release. Birefringence converts $U$ into $V$; the
+  2018 model had none either, so this matters only once a circular
+  observable is in scope. \\
+Averaging convention &
+  SEDust & low &
+  Mixed, exact average for \Cabs\ vs.\ MPFA for \Cpol. The disagreement
+  is $0.080\%$ median across the optical, so it does not bind on a
+  programme confined to optical bands. It becomes an obstacle in the
+  ultraviolet, where the median is $0.21\%$ and the maximum $9.53\%$. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Scattering matrix, random orientation (needed).} The T-matrix
+driver in the tree, \code{tmatrix/src/tmd\_one.f}, was derived from
+Mishchenko's \code{tmd.lp.f} by wrapping the implicit main program as a
+subroutine. In the process the final \code{MATR} call was removed and
+the angular expansion coefficients were dropped from the returned
+quantities; the header comment at lines 29--30 records this, and the
+argument list ends at \code{QEXT, QSCA, WALB, ASYMM, IERR}. The inner
+\code{MATR} routine itself is still present in the same file. Restoring
+the call and returning the expansion coefficients recovers
+$Z(\theta)$ for randomly oriented spheroids at moderate effort. For the
+single-wavelength goal only the $V$ band is required, so what has to be
+computed and stored is one $\theta$ grid over the size distribution, not
+a wavelength-resolved table. That alone already improves on the 2018
+model, whose phase matrix was spherical Mie.
+
+\paragraph{The cutoff shape is the physics specific to the optical
+(needed).} Eq.~(\ref{eq:falign}) is a fitted function, and
+\S\ref{sec:stages} treats it as an input rather than a computed
+quantity. In the far infrared that is harmless, because the emission is
+dominated by grains several times larger than \aalign, where any
+reasonable form has saturated at $f_{\max}$. At $V$ the polarization is
+produced by grains of size comparable to the wavelength, which is the
+same size range as \aalign\ itself, so the result responds directly to
+whether the cutoff is a step or a smooth roll-off. The observational
+expression of this is that Serkowski's $\lambda_{\max}$ is set largely
+by the alignment size threshold rather than by the size distribution.
+Truong et al.\ (\code{2025ApJ...981...83T}) make the same point from the
+other side, noting that the step and smooth forms are distinguishable
+only in the optical. This item does not become easier at a single
+wavelength and keeps its priority.
+
+\paragraph{Scattering matrix, aligned orientation (later).} The full
+orientation-dependent amplitude matrix requires \code{ampld.lp.f}, which
+is present in \code{tmatrix/src/} but excluded from the build. Stated
+for a wavelength grid the cost is storage rather than algorithm, since
+the table acquires a wavelength, a scattering angle, an orientation and
+$16$ matrix elements. At a single wavelength the wavelength axis drops
+out and the table is far smaller, which is worth remembering before this
+item is dismissed as infeasible. There is no shortcut through published
+data: the HD21 release carries integrated $Q_{\rm ext}$, $Q_{\rm abs}$
+and $Q_{\rm sca}$ only, with no scattering matrix at any orientation.
+
+\paragraph{Birefringence comes free with the aligned calculation
+(later).} \Ccirc\ is likewise absent from the release, but it does not
+need a separate computation. In the forward-scattering amplitude the
+difference $S_{\theta\theta} - S_{\phi\phi}$ carries dichroism in its
+imaginary part and birefringence in its real part, so a fixed-orientation
+amplitude run yields \Cpol\ and \Ccirc\ from one output. Whoever does
+the aligned scattering matrix gets \Ccirc\ at no additional cost, which
+is why the two belong together whenever they are done. They can be
+deferred for now: the 2018 model had no birefringence either, and the
+observable being updated is linear polarization.
+
+\paragraph{The averaging conventions do not match, but not yet
+critically.} SEDust builds \Cabs\ from the exact orientation average of
+its own T-matrix route and \Cpol\ from the MPFA combination of
+Eq.~(\ref{eq:cpol}). The two conventions disagree by a median of
+$0.022\%$ in the far infrared and $0.080\%$ in the optical, and by a
+median of $0.21\%$ with a maximum of $9.53\%$ in the ultraviolet. Across
+the optical the $0.080\%$ figure is far below every other uncertainty in
+the problem, so this obstructs neither the single-band update nor an
+extension to two or three optical bands. It becomes an obstacle as soon
+as polarized extinction is quoted in the ultraviolet, where the
+polarization curve is measured. Note that
+resolving it changes \Cabs, and therefore breaks the byte-identical
+regression of the existing SEDs; that is an engineering consequence to
+plan around, not a reason to leave two conventions in one model
+permanently.
+
+\subsection{Recommended order}
+
+For the update as scoped, one band first and possibly two or three
+optical bands after, the realistic sequence is:
+
+\begin{enumerate}
+\item Compute the $V$-band dichroic cross section from physics and
+      retire the empirical formula, using the \code{Cpol\_ext} that
+      stage~1 already produces.
+\item Test the sensitivity to the \falign\ functional form, step versus
+      smooth.
+\item Restore the random-orientation scattering matrix in
+      \code{tmd\_one.f}, for which the \code{MATR} call is enough. One
+      band suffices to begin with, and adding a second or third costs
+      another run rather than another method.
+\item Only then the aligned scattering matrix, \Ccirc, the averaging
+      convention, and any extension beyond the optical.
+\end{enumerate}
+
+The point worth emphasizing is that step~1 on its own is already the
+substantive advance over Seon (2018): it replaces a fitted power law
+that has no wavelength argument and no alignment physics with a cross
+section computed from the grain model, which is exactly the defect
+identified in \S\ref{sec:motivation}. Step~1 needs no new T-matrix run,
+because \code{Cpol\_ext} exists and has been validated against the HD23
+release. Step~3 is placed after step~2 because it is the point at which
+the comparison against the release is partly lost, the release
+containing no scattering matrix; entering locally computed territory is
+better done once the cheaper questions have been answered.
+
+\subsection{What the Hoang group assumes}
+\label{sec:hoangvalues}
+
+Since the alignment inputs are assumptions rather than derived
+quantities, it is useful to record the values in current use by the
+group that produces most of this literature. Table~\ref{tab:hoang}
+collects them. Most of these carry over to a single-wavelength
+calculation unchanged: \fhighJ, $Q_X$, $Q_J$, the iron-inclusion
+parameters and $F_{\rm turb}$ are all wavelength-independent alignment
+parameters, so they enter the $V$-band Rayleigh reduction factor exactly
+as they enter a submillimeter one. Only the axial ratio and the \falign\
+shape have consequences that differ from band to band.
+
+\begin{table}[!ht]
+\centering
+\caption{Parameter values adopted in the Hoang-group modeling papers.
+Where a paper scans a parameter, the scanned range is given.}
+\label{tab:hoang}
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+Quantity & Value & Source and remark \\
+\midrule
+$Q_X^{\rm high\text{-}J}$, $Q_X^{\rm low\text{-}J}$ &
+  $1$, $\simeq 0.3$ &
+  \code{2024ApJ...965..183H} Eq.~12; standard case, suprathermal
+  rotation taken to give perfect internal alignment \\
+same, slow internal relaxation &
+  $0.15$, $0.05$ &
+  \code{2025A\&A...703A.192T}; wrong internal alignment enters as
+  $-0.1$ \\
+$Q_J$ (external alignment) &
+  $1$ in both states &
+  \code{2024ApJ...965..183H}; assumed perfect, so the whole reduction of
+  $R$ comes from internal alignment. Stated by the authors as optimistic \\
+\fhighJ &
+  $0.25$, $0.5$, $1.0$ &
+  \code{2023MNRAS.520.3788G} Eq.~31, a step function in
+  $\delta_{\rm mag}$; used as model labels for pure RAT, intermediate
+  and full MRAT. A footnote there gives $0.25$--$0.7$ for compact
+  irregular grains, making $1.0$ an upper scenario \\
+$f^{\rm fast}_{\rm high\text{-}J}$, attainable maximum &
+  $\sim 0.45$ (SPM), $\sim 0.22$ (PM) &
+  \code{2025ApJ...994..115H}; the value $1.0$ used by POLARIS is
+  therefore optimistic (\S\ref{sec:mrat}) \\
+$N_{\rm cl}$, iron atoms in a cluster &
+  $\sim 5$--$10^3$ &
+  \code{2025ApJ...980..105G}; reproducing ALMA data needs
+  $10^2$--$10^4$ together with $a \geq 10\um$ and inelastic relaxation \\
+$\phi_{\rm sp}$, cluster volume filling &
+  $0.1$ &
+  \code{2025ApJ...980..105G}, with the iron fraction $f_p$ \\
+Axial ratio &
+  $1.4$ default; $1.6$, $2.0$, $3.0$ scanned &
+  \code{2023ApJ...948...55H} for the default; reproducing Pipe-109
+  needs $1.4$ at low \Av\ and $2$--$3$ above $\Av = 14$
+  (\code{2025A\&A...703A.192T}) \\
+$F_{\rm turb}$ &
+  $0.98$--$0.91$ &
+  $F_{\rm turb} = \frac12[3\langle\cos^2\Delta\theta\rangle - 1]$;
+  Pipe-109 values, \code{2025A\&A...703A.192T} \\
+$u_{\rm MMP}$ &
+  $8.64\times10^{-13}$ erg cm$^{-3}$ &
+  normalization of $U = u_{\rm rad}/u_{\rm MMP}$ \\
+$T_d$ &
+  $16.4\,{\rm K}\,(a/0.1\um)^{-1/15}U^{1/6}$ &
+  equilibrium temperature only \\
+\falign\ shape &
+  step, or
+  $f_{\max}[1 - e^{-(0.5a/\aalign)^3}]$ &
+  step in POLARIS; the smooth form is \code{2020ApJ...896...44L}, used
+  by GRADE-POL on its semi-analytic path \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Four features of this table are worth drawing out, because each is a
+place where our own model can differ deliberately rather than by
+accident.
+
+\paragraph{Negative $Q_X$ is a physical statement, not a bookkeeping
+sign.} In the conservative slow-relaxation model the wrong internal
+alignment state carries $Q_X = -0.1$, and a negative Rayleigh reduction
+factor means the polarization direction flips by $90^\circ$. This is the
+origin of the observed pattern in which $P$ is parallel to $\mathbf{B}$
+at millimeter wavelengths and perpendicular to it in the submillimeter.
+An implementation that clamps $R$ to non-negative values will silently
+delete this effect.
+
+\paragraph{External alignment is assumed, not computed.} With $Q_J = 1$
+in both the low-$J$ and high-$J$ states, the entire departure of $R$
+from unity in these papers comes from internal alignment. The papers say
+so; it is an acknowledged optimistic approximation rather than a hidden
+one. It also means that quoted values of $R$ are upper bounds.
+
+\paragraph{The radiation field normalization is used loosely.} The group
+writes $U = u_{\rm rad}/u_{\rm MMP}$ with
+$u_{\rm MMP} = 8.64\times10^{-13}$ erg cm$^{-3}$ throughout, without
+distinguishing the $1.0\times10^{-13}$ and $1.65\times10^{-13}$ dilution
+factors of the Mathis field and without mentioning the CMB. A survey of
+eleven papers from the group found zero that make either distinction.
+For SEDust this is a place where the existing radiation-field handling
+is already more careful, and the difference should be stated rather than
+absorbed.
+
+\paragraph{The temperature treatment is equilibrium throughout.} No
+paper in that survey of eleven cites an astrodust heat capacity, and at
+least one (\code{2026ApJ..1005..195T}) uses astrodust cross sections
+together with a silicate-based temperature scaling. Tram et al.\ (2025)
+state explicitly that the temperature distribution was discarded. As
+noted in \S\ref{sec:stoch}, SEDust already solves $P(T)$, so the correct
+treatment costs one accumulator here and is a genuine improvement over
+the reference implementations.
+
+\subsection{A working prescription}
+
+Given those assumptions, the practical question is what to compute and
+in what order. The following is written against the current state of our
+own code rather than against POLARIS.
+
+\paragraph{1. Start with a fixed \falign.} Adopt the HD23 fit of
+Eq.~(\ref{eq:falign}) with $\aalign = 0.0749\um$, $\alpha = 1.80$,
+$f_{\max} = 1$, and do not compute $R$ at all. This is already
+implemented and verified (\S\ref{sec:codes}). The first optical step is
+then not to compute alignment but to swap in the smooth form of
+Table~\ref{tab:hoang} and measure how much the polarization curve moves.
+If it moves little, the assumed form is not the limiting uncertainty; if
+it moves a lot, that settles the priority.
+
+\paragraph{2. Replace the empirical dichroism at $V$.} Use
+\code{Cpol\_ext} in Eq.~(\ref{eq:tanh}) in place of
+Eq.~(\ref{eq:whittet}), with the alignment weight applied as in
+Eq.~(\ref{eq:cpolR}). This is the deliverable: the polarization is then
+set by the grain model and the field geometry rather than by a fitted
+exponent, and the accumulation becomes multiplicative as
+\S\ref{sec:motivation} requires. No new optical data is needed.
+
+\paragraph{3. Only then compute alignment.} Computing $R$ rather than
+assuming it needs the analytic chain of \S\ref{sec:alignment},
+Eqs.~(\ref{eq:aalign}) and (\ref{eq:avdep}), evaluated on the local
+radiation field, which in turn requires the vectorial tally of
+\S\ref{sec:vecfield}. \fhighJ\ follows from $\delta_{\rm mag}$, either
+through the step function of Giang et al.\ (2023) or the revised
+criterion of Eq.~(\ref{eq:deltacri}). This is stage~4 of
+Table~\ref{tab:stages} and should not be attempted before steps~1
+and~2 have shown what the fixed-\falign\ model cannot do.
+
+\paragraph{4. Climb the validation ladder in order.} Reproduce the
+released polarized extinction (done, \S\ref{sec:worklist}); then the
+Serkowski $\lambda_{\max}$ and $K$; then $p_V/E(B-V)$ against the
+$\geq 13\,\%$/mag requirement of \S\ref{sec:validation}, not the
+classical $9\,\%$/mag, which a model that under-polarizes will pass;
+then $R_{S/V}$; then the HAWC+ and Planck comparisons. The ordering
+matters because each rung uses only quantities the previous rungs have
+already validated.
+
+\subsection{A constraint that applies only to a multi-wavelength
+extension}
+
+One result deserves to be recorded here even though it is out of scope
+for the single-wavelength update, because it will be the first
+difficulty encountered as soon as the scope widens. The Pipe-109
+analysis found that no single $a_{\max}$ fits all bands:
+$0.19$--$0.25\um$ in $R$, $0.25$--$0.35\um$ in $H$, and $1$--$3\um$ at
+$850\um$, and that the axial ratio has to grow with \Av, from $1.4$ at
+low extinction to $2$--$3$ above $\Av = 14$
+(\code{2025A\&A...703A.192T}). Fitting optical, near-infrared and
+submillimeter polarization at once therefore strains the size
+distribution and the grain shape before it strains the alignment
+physics. Updating Seon (2018) at $V$ alone does not run into this: a
+single band constrains one combination of size distribution and shape,
+and no tension can arise between bands that are not being fitted. The
+constraint is listed so that it is not rediscovered as a surprise, and
+so that it is not mistaken for a present obstacle.
+
+\paragraph{An honest limit.} Following this prescription does not close
+the gap in polarization amplitude. Our intrinsic polarization fraction
+tops out at $19.15\%$ at $850\um$ against the Planck maximum of $22\%$
+(Table~\ref{tab:validation}). That shortfall is a property of the
+$b/a = 1.4$ oblate spheroid and will not be removed by better alignment
+physics or a better solver. It is the same pressure that leads the Hoang
+group to raise the axial ratio to $2$--$3$ when fitting real sight
+lines, and it belongs with the open shape question of
+\S\ref{sec:unverified}.
+
+%====================================================================
+\section{Validation targets}
+\label{sec:validation}
+
+\begin{table}[!ht]
+\centering
+\caption{Acceptance targets for a polarized dust model.}
+\label{tab:validation}
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+Quantity & Value & Source \\
+\midrule
+$\lambda_{\max}$ & $0.55$\um & \code{2009ApJ...696....1D} \\
+Serkowski $K$ & $-0.01 + 1.66\,\lambda_{\max}$ & \code{1992ApJ...386..562W} \\
+$p_{\max}$ at 353 GHz & $22.0^{+3.5}_{-1.4}\ \%$ & \code{2020A\&A...641A..12P} \\
+$R_{S/V}$ & $4.2 \pm 0.2$ & \code{2015A\&A...576A.106P} \\
+$R_{P/p}$ & $5.4 \pm 0.2$ MJy/sr & \code{2015A\&A...576A.106P} \\
+Polarization spectrum, 250\um--3\,mm & flat to $\lesssim 10\%$ & HD23 \\
+$p_V / E(B-V)$ & $\geq 13\ \%$/mag & \code{2020A\&A...641A..12P},
+  \code{2019A\&A...624L...8P} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Correction to the classical limit.} The last row deserves
+emphasis, because using the traditional value will let a bad model pass.
+The classical upper bound $p_V/E(B-V) \leq 9\ \%$/mag is obsolete; a
+model that under-polarizes will satisfy it comfortably. The post-Planck
+requirement is $\geq 13\ \%$/mag, and the HD23 target value is
+$0.13$/mag.
+
+\paragraph{Values already computed here.} Three numbers were obtained
+during this audit and are available as immediate checks:
+\begin{itemize}
+\item $Q_{\rm pol}/Q_{\rm abs} = 0.2790$ in the Rayleigh limit for
+      $b/a = 1.4$, independent of size and wavelength. This is a pure
+      geometry check and should be reproduced exactly.
+\item $p_{\rm submm} = 19.5\%$ with \falign\ applied, against the Planck
+      value of $22.0\%$.
+\item $R_{S/V} = 3.85$ under a single-temperature approximation, against
+      $4.2$ observed and $4.31$ as the HD23 target.
+\end{itemize}
+
+The third of these is the most informative, and it points to a natural
+first task. The $11\%$ shortfall in $R_{S/V}$ is controlled by the
+relative emission weighting across grain sizes, and that weighting is
+exactly what SEDust's $T(a)$ and $P(T)$ solution provides. Recomputing
+$R_{S/V}$ with the full temperature treatment rather than a single $T$ is
+therefore both a physics improvement and a sharp test of the new code
+path.
+
+%====================================================================
+\section{Unverified items}
+\label{sec:unverified}
+
+The following are stated as open, not as established. They are listed so
+that none of them is silently promoted to fact in later work.
+
+\begin{enumerate}
+\item \textbf{$F_{\rm IR}$ coefficient normalization.} Baseline POLARIS
+      uses \code{1.40e10} where NewPOLARIS uses \code{6.14e9}. Whether
+      this is a difference of unit system or a genuine disagreement was
+      not determined. Since $F_{\rm IR}$ enters both
+      Eq.~(\ref{eq:aalign}) and Eq.~(\ref{eq:deltacri}), the factor
+      matters and must be resolved before either is trusted.
+
+\item \textbf{Origin of the $R_{S/V}$ gap.} Whether $3.85$ versus $4.31$
+      is entirely attributable to the single-temperature approximation,
+      or partly to a difference in the definition of the ratio, is not
+      established.
+
+\item \textbf{Grain shape is an open choice, not a settled one.} Guillet
+      et al.\ (2018) favor prolate grains with $a/b = 3$ plus porosity,
+      while HD23 use a single-composition oblate spheroid with
+      $b/a = 1.4$. These are mutually incompatible solutions to
+      overlapping data, and adopting either is a modeling decision that
+      should be recorded as such.
+\end{enumerate}
+
+%====================================================================
+\section{References}
+
+\begin{itemize}\setlength{\itemsep}{2pt}
+
+\item Baes, M., et al.\ 2019, A\&A, 630, A61.
+      \code{2019A\&A...630A..61B}
+
+\item Bianchi, S., Ferrara, A., \& Giovanardi, C.\ 1996, ApJ, 465, 127.
+      \code{1996ApJ...465..127B}
+
+\item Camps, P., et al.\ 2015, A\&A, 580, A87.
+      \code{2015A\&A...580A..87C}
+
+\item Chiar, J.~E., et al.\ 2006, ApJ, 651, 268.
+      \code{2006ApJ...651..268C}
+
+\item Draine, B.~T.\ 2003, ApJ, 598, 1017.
+      \code{2003ApJ...598.1017D}
+
+\item Draine, B.~T., \& Fraisse, A.~A.\ 2009, ApJ, 696, 1 (DF09).
+      \code{2009ApJ...696....1D}
+
+\item Draine, B.~T., \& Hensley, B.~S.\ 2021a, ApJ, 909, 94 (DH21a).
+      \code{2021ApJ...909...94D}
+
+\item Draine, B.~T., \& Hensley, B.~S.\ 2021b, ApJ, 919, 65 (DH21b).
+      \code{2021ApJ...919...65D}
+
+\item Draine, B.~T., \& Lee, H.~M.\ 1984, ApJ, 285, 89.
+      \code{1984ApJ...285...89D}
+
+\item Draine, B.~T., \& Li, A.\ 2007, ApJ, 657, 810 (DL07).
+      \code{2007ApJ...657..810D}
+
+\item Giang, N.~C., et al.\ 2025, ApJ, 980, 105.
+      \code{2025ApJ...980..105G}
+
+\item Giang, N.~C., Hoang, T., \& Kim, J.-G.\ 2023, MNRAS, 520, 3788
+      (\code{2023MNRAS.520.3788G}). NewPOLARIS MRAT and RATD extension,
+      Zenodo \code{10.5281/zenodo.14199014}
+
+\item Guillet, V., et al.\ 2018, A\&A, 610, A16.
+      \code{2018A\&A...610A..16G}
+
+\item Hensley, B.~S., \& Draine, B.~T.\ 2023, ApJ, 948, 55 (HD23).
+      \code{2023ApJ...948...55H}
+
+\item Hoang, T.\ 2025, ApJ, 994, 115 (\code{2025ApJ...994..115H}).
+
+\item Hoang, T., et al.\ 2024, ApJ, 965, 183.
+      \code{2024ApJ...965..183H}
+
+\item Hoang, T., Tram, L.~N., \& Lee, H.\ 2021, ApJ, 908, 218.
+      \code{2021ApJ...908..218H}
+
+\item Jones, T.~J., et al.\ 2020, AJ, 160, 167.
+      \code{2020AJ....160..167J}
+
+\item Kim, J., et al.\ 2023, AJ, 165, 223.
+      \code{2023AJ....165..223K}
+
+\item Lazarian, A., \& Hoang, T.\ 2019, ApJ, 883, 122.
+      \code{2019ApJ...883..122L}
+
+\item Lee, H., et al.\ 2020, ApJ, 896, 44.
+      \code{2020ApJ...896...44L}
+
+\item Peest, C., Camps, P., Stalevski, M., Baes, M., \& Siebenmorgen, R.\
+      2017, A\&A, 601, A92. \code{2017A\&A...601A..92P}
+
+\item Peest, C., et al.\ 2023, A\&A, 673, A112.
+      \code{2023A\&A...673A.112P}
+
+\item Planck Collaboration Int.\ XXI 2015, A\&A, 576, A106.
+      \code{2015A\&A...576A.106P}
+
+\item Planck Collaboration 2019, A\&A, 624, L8.
+      \code{2019A\&A...624L...8P}
+
+\item Planck Collaboration 2020, A\&A, 641, A12.
+      \code{2020A\&A...641A..12P}
+
+\item Reissl, S., Wolf, S., \& Brauer, R.\ 2016, A\&A, 593, A87
+      (POLARIS~I). \code{2016A\&A...593A..87R}
+
+\item Seon, K.-I.\ 2018, ApJ, 862, 87. \code{2018ApJ...862...87S};
+      arXiv:1806.06101
+
+\item Serkowski, K., Mathewson, D.~S., \& Ford, V.~L.\ 1975, ApJ, 196,
+      261. \code{1975ApJ...196..261S}
+
+\item Tram, L.~N., Hoang, T., \& Lazarian, A.\ 2025, A\&A, 703, A192
+      (\code{2025A\&A...703A.192T}). GRADE-POL~I.
+
+\item Truong, B., et al.\ 2025, ApJ, 981, 83.
+      \code{2025ApJ...981...83T}
+
+\item Truong, B., et al.\ 2026, ApJ, 1005, 195.
+      \code{2026ApJ..1005..195T}
+
+\item Whittet, D.~C.~B., et al.\ 1992, ApJ, 386, 562.
+      \code{1992ApJ...386..562W}
+
+\item Whittet, D.~C.~B., et al.\ 2008, ApJ, 674, 304.
+      \code{2008ApJ...674..304W}
+
+\item Wood, K.\ 1997, ApJ, 477, L25. \code{1997ApJ...477L..25W}
+
+\item Wood, K., \& Jones, T.~J.\ 1997, AJ, 114, 1405.
+      \code{1997AJ....114.1405W}
+
+\item Zubko, V., Dwek, E., \& Arendt, R.~G.\ 2004, ApJS, 152, 211.
+      \code{2004ApJS..152..211Z}
+
+\end{itemize}
+
+\end{document}

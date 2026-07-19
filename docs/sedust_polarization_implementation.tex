@@ -1,0 +1,634 @@
+\documentclass{my_memo}
+
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{longtable}
+\sloppy
+
+\lstset{
+  language=Fortran,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!60!black},
+  commentstyle=\color{green!40!black},
+  stringstyle=\color{red!60!black},
+  columns=fullflexible,
+  breaklines=true,
+  frame=single,
+  framesep=4pt,
+  showstringspaces=false,
+  numbers=none
+}
+\lstdefinestyle{sh}{language=bash,keywordstyle=\color{black},basicstyle=\ttfamily\small}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\um}{\ensuremath{\,\mu\mathrm{m}}}
+\newcommand{\Cabs}{\ensuremath{C_{\rm abs}}}
+\newcommand{\Cpol}{\ensuremath{C_{\rm pol}}}
+\newcommand{\falign}{\ensuremath{f_{\rm align}}}
+
+\title{Polarization in SEDust: Implementation Notes}
+\author{Kwang-il Seon}
+\date{2026 July 19}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+These are maintenance notes for the polarization capability added to SEDust:
+where the polarized optics come from, how they are assembled, which
+implementation choices were made and why, and how far the numbers have been
+checked. The reader is assumed to be someone extending or repairing this code,
+not someone calling it. The calling interface is documented in
+\code{SEDust\_user\_manual.pdf}; the underlying physics is documented in
+\code{aligned\_grain\_polarization.pdf}. Neither is repeated here.
+\end{abstract}
+
+\tableofcontents
+
+%====================================================================
+\section{Scope, and what lives elsewhere}
+
+Three documents cover this work and they do not overlap
+(Table~\ref{tab:whichdoc}). This one answers only the question \emph{how was
+this built and why that way}. Where physics is needed to justify a coding
+choice, the relevant section of the theory report is cited rather than
+restated.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}p{0.46\textwidth}p{0.46\textwidth}@{}}
+\toprule
+Question & Document \\
+\midrule
+Why polarization at all; alignment theory; the polarized transfer equation;
+sign and index conventions; validation targets &
+\code{aligned\_grain\_polarization.pdf} (\S1--\S5, \S9--\S11) \\[2pt]
+How an RT code calls the library: signatures, units, what is already
+integrated &
+\code{SEDust\_user\_manual.pdf}, \S5 \\[2pt]
+How the code is built, why each choice was made, what was measured &
+this note \\
+\bottomrule
+\end{tabular}
+\caption{Division of the polarization documentation.}
+\label{tab:whichdoc}
+\end{table}
+
+%====================================================================
+\section{The data source}
+
+Everything polarized derives from one file, the orientation-resolved
+Draine \& Hensley (2021) astrodust spheroid table:
+\begin{lstlisting}[style=sh]
+data/dielectric/q_DH21Ad_P0.20_Fe0.00_1.400.dat.gz
+\end{lstlisting}
+(porosity $P=0.20$, iron fraction $f_{\rm Fe}=0$, axial ratio $b/a=1.400$).
+Its layout is not self-describing, so it is recorded here
+(Table~\ref{tab:filelayout}).
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+Property & Value \\
+\midrule
+header                & 12 lines, skipped \\
+payload order         & \code{((Q(jw,jr,jori), jw=0,1128), jr=0,168), jori=1,3} \\
+repeated              & three times: $Q_{\rm ext}$, then $Q_{\rm abs}$, then $Q_{\rm sca}$ \\
+one record on disk    & the 169 sizes of one $(jw,\,jori)$ pair \\
+records read          & $3~\text{quantities}\times3~\text{orientations}\times1129$ \\
+total values          & $3\times3\times1129\times169 = 1{,}717{,}209$ \\
+wavelength axis       & \code{data/dielectric/DH21\_wave}, 1129 nodes \\
+size axis             & \code{data/dielectric/DH21\_aeff}, 169 nodes \\
+axis file format      & two title lines, then the values free-format \\
+\bottomrule
+\end{tabular}
+\caption{Layout of the orientation-resolved $Q$ table. The wavelength and size
+axes are \emph{not} parsed out of the header; they come from the companion grid
+files, which list the nodes the table was computed on.}
+\label{tab:filelayout}
+\end{table}
+
+\paragraph{Orientation index.} The convention is the trap most likely to bite a
+future reader, and it is worth stating in full (Table~\ref{tab:jori}); see also
+\S3.6 of the theory report.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}cll@{}}
+\toprule
+\code{jori} & geometry & meaning \\
+\midrule
+1 & $\mathbf{k}\parallel\hat{a}$        & propagation along the symmetry axis \\
+2 & $\mathbf{k}\perp\hat{a}$, $\mathbf{E}\parallel\hat{a}$ & field along the symmetry axis \\
+3 & $\mathbf{k}\perp\hat{a}$, $\mathbf{E}\perp\hat{a}$     & field across the symmetry axis \\
+\bottomrule
+\end{tabular}
+\caption{Orientation index of the DH21 table. $\hat{a}$ is the spheroid
+symmetry axis.}
+\label{tab:jori}
+\end{table}
+
+%====================================================================
+\section{Derived quantities}
+
+For a grain whose symmetry axis lies in the plane of the sky and which is
+perfectly aligned, the polarization cross section is the difference the grain
+presents to the two linear polarizations, halved:
+\begin{equation}
+Q_{\rm pol} = \tfrac{1}{2}\left[\,Q(\code{jori}{=}3) - Q(\code{jori}{=}2)\,\right],
+\label{eq:qpol}
+\end{equation}
+formed separately from $Q_{\rm ext}$ and from $Q_{\rm abs}$, giving
+$Q_{\rm pol,ext}$ and $Q_{\rm pol,abs}$. The random-orientation average of the
+same table is the trace,
+\begin{equation}
+Q_{\rm ran} = \tfrac{1}{3}\left[\,Q_1 + Q_2 + Q_3\,\right],
+\label{eq:qran}
+\end{equation}
+which is the modified picket fence approximation (MPFA; \S3.2 of the theory
+report). Cross sections follow from
+\begin{equation}
+C = Q\,\pi a_{\rm eff}^{2},
+\end{equation}
+with $a_{\rm eff}$ converted to cm. The alignment efficiency is the
+Hensley \& Draine (2023) Table 1 fit,
+\begin{equation}
+\falign(a) = \frac{f_{\rm max}}{1 + (a_{\rm align}/a)^{\alpha}},
+\qquad
+a_{\rm align} = 0.0749\um,\;\;
+\alpha = 1.80,\;\;
+f_{\rm max} = 1.00 .
+\label{eq:falign}
+\end{equation}
+
+%====================================================================
+\section{Module map}
+
+Table~\ref{tab:modules} lists what each file is responsible for. Nothing else
+in the tree touches polarization.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}p{0.30\textwidth}p{0.63\textwidth}@{}}
+\toprule
+File / entity & Responsibility \\
+\midrule
+\code{sed/src/q\_table\_jori.f90} &
+The reader. Decompresses, parses the three quantity blocks, validates
+(monotone axes, finite values, no trailing data), forms
+Eqs.~(\ref{eq:qpol})--(\ref{eq:qran}), and supplies \code{falign\_hd23(a)},
+Eq.~(\ref{eq:falign}). Publishes \code{qpol\_ext}, \code{qpol\_abs},
+\code{qran\_*} and the raw \code{qext\_j}/\code{qabs\_j}/\code{qsca\_j}. \\[2pt]
+\code{sed\_astrodust.f90}: \code{build\_Cpol} &
+Interpolates $Q_{\rm pol}$ from the 169-node table axis onto the
+size-distribution grid in $\log a$, exactly as \Cabs\ and $C_{\rm sca}$ are,
+multiplies by $\pi a_{\rm eff}^2$, and fills \code{falign\_ad}. Checks that the
+polarized and $Q$ wavelength grids agree node for node. \\[2pt]
+\code{sed\_astrodust.f90}: \code{Cpol}, \code{Cpol\_ext}, \code{falign\_ad} &
+Module-level arrays, \code{(NLAM,NA)} and \code{(NA)}. \code{Cpol} is the
+\emph{absorption} one and drives polarized emission; \code{Cpol\_ext} is its
+extinction twin and drives dichroic extinction. \\[2pt]
+\code{dust\_model\_mod.f90}: \code{grain\_pop\_t} &
+Carries \code{Cpol(:,:)} and \code{falign(:)}. Both unallocated is how the
+solver recognizes an unpolarized population. Also carries the extinction-side
+\code{Cpol\_ext(:,:)} and \code{gsca(:,:)}, read only by
+\code{dust\_extinction}. \\[2pt]
+\code{sed\_astrodust.f90}: \code{set\_pop} &
+Optional \code{Cpol\_in}, \code{falign\_in}. Both must be supplied together;
+supplying neither leaves the population unpolarized. The extinction-side
+\code{Csca\_in}, \code{Cpol\_ext\_in} and \code{gsca\_in} are optional and
+independent; a population that omits them contributes zero to those terms of
+the size integral. \\[2pt]
+\code{sed\_astrodust.f90}: \code{sed\_grain\_loop} &
+Optional \code{Cpol\_pop}, \code{falign\_pop}, \code{Jpol}, again all three or
+none (\code{do\_pol}). Accumulates the polarized channel alongside \code{Jout}
+in every solver branch (\S\ref{sec:sites}). \\[2pt]
+\code{sed\_astrodust.f90}: \code{dust\_emission} &
+Optional \code{lamI\_pol}, last argument. Sums \code{Jpol} over the populations
+that carry polarized optics and applies the same unit convention as
+\code{lamI\_total}. \\[2pt]
+\code{sed\_astrodust.f90}: \code{dust\_extinction} &
+The extinction accessor. Integrates \Cabs, $C_{\rm sca}$, the
+scattering-weighted $\langle\cos\theta\rangle$ and
+$C_{\rm pol,ext}\,\falign$ over the size distribution of every population, and
+returns them per H atom on \code{m\%lam}. These are the same numbers column 8
+of the table carries, without the file (\S\ref{sec:whyaccessor}). \\[2pt]
+\code{sed/src/calc\_polext.f90} &
+Standalone check: computes the polarized extinction directly from
+\code{qpol\_ext} and the release size distribution, and compares against the
+published \code{polarized\_extinction.dat}. Independent of \code{sed\_init}. \\[2pt]
+\code{sed/src/calc\_kext\_astrodust.f90} &
+Writes column 8, \code{C\_polext/H}, of \code{data/kext\_astrodust\_MW.dat} as
+$\sum_a {\rm d}n_{\rm Ad}(a)\,C_{\rm pol,ext}(\lambda,a)\,\falign(a)$. \\
+\bottomrule
+\end{tabular}
+\caption{Responsibility of each file touched by the polarization update.}
+\label{tab:modules}
+\end{table}
+
+%====================================================================
+\section{Implementation decisions}
+
+This is the part worth reading again in six months.
+
+\subsection{The accumulation sites, and the two that hide}\label{sec:sites}
+
+\code{sed\_grain\_loop} branches on \code{stoch\_method} into four cases, and
+the polarized channel has to be accumulated wherever the total is. There are
+eight such statements (Table~\ref{tab:sites}). Missing any one of them produces
+a polarized spectrum that is silently too low rather than an error.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+branch & context & accumulates into & pattern \\
+\midrule
+\code{'draine'}    & equilibrium grain            & \code{Jpol\_local} & thread-local \\
+\code{'draine'}    & stochastic, sum over $P(T)$  & \code{Jpol\_local} & thread-local \\
+\code{'heuristic'} & equilibrium grain            & \code{Jpol}        & \textbf{direct} \\
+\code{'heuristic'} & stochastic, sum over $P(T)$  & \code{Jpol}        & \textbf{direct} \\
+\code{'qm'}        & QM solve, rescaled           & \code{Jpol\_local} & thread-local \\
+\code{'qm'}        & GD fallback after QM failure & \code{Jpol\_local} & thread-local \\
+\code{'qm'}        & equilibrium grain            & \code{Jpol\_local} & thread-local \\
+\code{'equil'}     & every grain                  & \code{Jpol}        & direct \\
+\bottomrule
+\end{tabular}
+\caption{Where the polarized emission is accumulated. The two boldface rows
+are the ones a search for the \code{Jout\_local} pattern does not find.}
+\label{tab:sites}
+\end{table}
+
+\paragraph{The lesson.} The \code{'draine'} and \code{'qm'} branches are
+OpenMP-parallel and accumulate into a thread-local \code{Jout\_local} that is
+reduced at the end. The \code{'heuristic'} branch is serial and accumulates
+into \code{Jout} directly. A survey of the accumulation sites conducted by
+searching for \code{Jout\_local} therefore returns only the parallel branches,
+and an initial pass over this code identified four sites on exactly that basis.
+Since \code{'heuristic'} is the \emph{default} solver, that omission would have
+made the polarized emission come back identically zero in the default
+configuration while every other solver looked correct. Any future change that
+adds a term to the emission sum must be checked against
+Table~\ref{tab:sites} branch by branch, not by pattern search.
+
+\subsection{Why the \code{'qm'} rescaling is exact}
+
+\code{qm\_solve\_grain} does not return a temperature distribution; it returns
+the emitted spectrum with \Cabs\ already folded in. The polarized counterpart
+is therefore obtained by rescaling:
+\begin{lstlisting}
+if (Cabs_pop(ii, ir) > 0.0_wp) then
+   Jpol_local(ii) = Jpol_local(ii) + &
+      wpol * emission_qm(ii) * (Cpol_pop(ii, ir) / Cabs_pop(ii, ir)) / &
+      (4.0_wp * PI * lam(ii) * 1.0e-3_wp)
+end if
+\end{lstlisting}
+This is not an approximation. The temperature distribution $P(T)$ is set by the
+\emph{heating}, which is governed by \Cabs\ and is unchanged by the question of
+which polarization is being read out. Only the emission readout changes, so
+\begin{equation}
+C_{\rm pol}\!\int\! P(T)\,B_\lambda(T)\,{\rm d}T
+=\frac{C_{\rm pol}}{C_{\rm abs}}\;
+ C_{\rm abs}\!\int\! P(T)\,B_\lambda(T)\,{\rm d}T
+=\frac{C_{\rm pol}}{C_{\rm abs}}\;\code{emission\_qm}
+\end{equation}
+holds identically, wavelength by wavelength. Wavelengths with zero \Cabs\ emit
+nothing and are skipped rather than divided by zero.
+
+\subsection{The $P(T)$ solver was not touched}
+
+No change was made to \code{calc\_P}, \code{narrow\_iterative}, or
+\code{qm\_solve\_grain}. This is deliberate and it is what makes stochastic
+heating automatically correct for polarization: at every site the same
+temperature weight multiplies both accumulators, one with
+${\rm d}n\,\Cabs$ and the other with ${\rm d}n\,\falign\,\Cpol$. The polarized
+spectrum is thus the same average over the same $P(T)$, and no separate
+stochastic treatment of the polarized channel is needed (see \S5.7 of the
+theory report for why this is the physically right structure).
+
+\subsection{Mixed orientation-average conventions}\label{sec:mixed}
+
+This is the one open physical wart, and it is documented rather than hidden.
+
+\Cabs\ in SEDust comes from our own T-matrix run, whose random-orientation
+average is computed exactly. \Cpol\ comes from the release table, whose
+available average is the $1/3$ trace, Eq.~(\ref{eq:qran}), i.e.\ the MPFA. The
+two are different approximations to the same quantity, and the code mixes them:
+\code{build\_Cpol} adds the polarized channel and deliberately does \emph{not}
+recompute \Cabs.
+
+Table~\ref{tab:mixed} gives the measured disagreement,
+$|Q_{\rm abs}^{\rm trace}/Q_{\rm abs}^{\rm exact}-1|$, on the shared
+$(\lambda, a_{\rm eff})$ grid.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lrr@{}}
+\toprule
+band & median & maximum \\
+\midrule
+far infrared ($\lambda > 30\um$)     & 0.022\% & 3.46\% \\
+\quad restricted to $a \le 0.5\um$   &         & 1.98\% \\
+mid infrared                         & 0.033\% &        \\
+near infrared                        & 0.038\% &        \\
+optical                              & 0.080\% &        \\
+ultraviolet                          & 0.21\%  & 9.53\% \\
+\bottomrule
+\end{tabular}
+\caption{Disagreement between the trace average and the exact
+orientation average of $Q_{\rm abs}$.}
+\label{tab:mixed}
+\end{table}
+
+\paragraph{Reading the far-infrared maximum.} The 3.46\% worst case occurs at
+$a = 4.2\um$, a size carrying ${\rm d}n/n_{\rm H} \sim 2.8\times10^{-36}$, so
+it is numerically irrelevant. Restricting to $a \le 0.5\um$, which covers
+99.999\% of the geometric cross section, the worst case drops to 1.98\%.
+At $a \ll \lambda$ both averages approach the same Rayleigh limit, which is why
+the far infrared is well behaved.
+
+\paragraph{Verdict.} The mixture is harmless for polarized \emph{emission},
+which is a far-infrared phenomenon. It is \textbf{not} defensible for
+polarized \emph{extinction} in the ultraviolet or the optical, and column 8
+spans the whole wavelength grid. The \code{Cpol\_ext} output of
+\code{dust\_extinction} is the same quantity by the same route and carries the
+same caveat unchanged. Anyone using either shortward of the near
+infrared must resolve this first. The clean resolution is to recompute \Cabs\
+on the MPFA convention so that both channels share one average. That changes
+the existing SEDs, so it breaks their byte-identity with the current reference
+outputs and has to be done as a separate, deliberately validated step rather
+than folded into this one. The size of the change is not an argument for
+leaving it: the correctness argument is that two channels of one calculation
+should not use two different orientation averages.
+
+\subsection{\falign\ is the fit, not the release column}
+
+\code{data/release/size\_distribution.dat} also ships an alignment column. It
+agrees with Eq.~(\ref{eq:falign}) to a median ratio of 1.0000 but differs by up
+to 0.32\% at the small end. The analytic form is the canonical one in SEDust
+because it is the published fit, because it is defined on any radius grid
+rather than only the tabulated one, and because it keeps the alignment model in
+a single place. Do not mix the two sources: a quantity computed half from one
+and half from the other is neither.
+
+\subsection{Names and surface area}
+
+\paragraph{\code{Cpol} was not renamed to \code{Cpol\_abs}.} The name appears at
+roughly 40 sites and is part of the public surface
+(\code{grain\_pop\_t\%Cpol}, the optional \code{set\_pop(..., Cpol\_in=...)}).
+A rename would touch every one of them for no functional gain. The declaration
+carries an explicit note instead: \code{Cpol} is the absorption one,
+\code{Cpol\_ext} its extinction twin.
+
+\paragraph{The polarized extinction was exported as a table column first.} A
+dedicated \code{dust\_cpol\_ext} accessor was considered at the time and
+rejected: \code{dust\_lib} was then an emission-facing API with no extinction
+surface at all, so such an accessor would have been the module's only
+extinction entry point, a worse inconsistency than the inconvenience it
+removed. The condition attached to that decision was that \code{Cpol\_ext}
+should join a full extinction API if one ever appeared. It has;
+see \S\ref{sec:whyaccessor}.
+
+\subsection{Why the accessor exists now}\label{sec:whyaccessor}
+
+The table-only export was right for a library that emitted and did not
+extinguish. Rebuilding a radiative transfer code on top of SEDust changed the
+premise: the host would have obtained its emission from a call and its opacity
+from a parsed text file, and that asymmetry is the whole problem. The file is
+also written on whatever wavelength grid the driver used, so a host on any
+other grid has to interpolate optics that the model could have evaluated
+exactly.
+
+\code{dust\_extinction} closes it. The model object already held everything
+required, so the accessor adds no physics and no new data source; it performs
+the same size integral the driver performs, over the populations already
+built. Two fields were added to \code{grain\_pop\_t} to make that possible:
+\code{Cpol\_ext}, previously a module array only, and \code{gsca}, the
+scattering asymmetry, which the emission path never needed and which
+\code{sed\_init} now interpolates onto the size grid beside \Cabs\ and
+$C_{\rm sca}$, from the same $Q$ table and by the same routine the driver used.
+Agreement with the table is at the precision the file is written with (a median
+relative deviation of $\sim7\times10^{-9}$ in each cross section), which is the
+expected result for one integral evaluated twice.
+
+The table remains, unchanged byte for byte, and remains the right route for a
+tool that wants the optics without linking the library.
+
+\subsection{Compression handling, and a scratch file that leaked}
+
+The table ships compressed and Fortran cannot read a deflate stream. Adding a
+zlib binding was rejected as too heavy for one file. The reader instead shells
+out once,
+\begin{lstlisting}
+call execute_command_line('gzip -dc "'//trim(gz_file)//'" > "'// &
+                          trim(out_file)//'"', exitstat=estat, cmdstat=cstat)
+\end{lstlisting}
+writes \code{q\_jori\_scratch.dat} in the working directory, reads it, and
+deletes it. A fresh clone works with no manual setup step, and neither a 17\,MB
+untracked sibling in \code{data/dielectric} nor a new build dependency is
+created. A path not ending in \code{.gz} is opened directly.
+
+\paragraph{The bug this had.} Shell redirection creates the target file
+\emph{before} \code{gzip} runs, so when decompression failed the early return
+left a zero-length \code{q\_jori\_scratch.dat} behind in the user's working
+directory. The failure path now calls \code{cleanup\_scratch} before bailing
+out, like every other error exit. The general shape of the bug, an error path
+that skips the cleanup the success path performs, is worth watching for in any
+future edit to this reader: it has eight separate early returns.
+
+%====================================================================
+\section{Verification}
+
+\subsection{Polarized extinction against the release}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+Check & Result \\
+\midrule
+Column 8 vs.\ released \code{polarized\_extinction.dat} &
+median 0.0296\%, max 0.9422\%, 992 points \\
+Column 8 vs.\ \code{calc\_polext.x} &
+agree to $7\times10^{-8}$ relative \\
+Columns 1--7 of \code{kext\_astrodust\_MW.dat} &
+byte-identical to the pre-change file \\
+\code{astrodust\_irem\_ours\_S1/S2/PAH.dat} &
+byte-identical \\
+\code{dl07\_sed\_ours\_mw31\_60.dat} &
+byte-identical \\
+Build & zero warnings \\
+\bottomrule
+\end{tabular}
+\caption{Verification of the polarized extinction path and regression of
+everything else.}
+\label{tab:verif}
+\end{table}
+
+The comparison against the release is restricted to $\lambda \ge 0.11\um$
+because the reference file turns negative below that. The 0.9422\% maximum
+deviation is not a systematic offset: it sits at $\lambda = 0.112\um$, right at
+the sign reversal of the polarized extinction, where the quantity passes
+through zero and a relative deviation is not a meaningful measure. Away from
+that point the agreement is at the level of the median.
+
+The $7\times10^{-8}$ figure is the precision the ASCII output format carries,
+so column 8 and \code{calc\_polext.x} agree as closely as the files allow.
+They are two independent routes to the same quantity: \code{calc\_polext.x}
+works straight from \code{qpol\_ext} and the release size distribution, while
+column 8 goes through \code{sed\_init}, the $\log a$ interpolation onto the SED
+size grid, and \code{build\_Cpol}.
+
+\subsection{Polarized emission}
+
+Intrinsic polarization fraction \code{lamI\_pol/lamI\_total} under a Mathis
+ISRF at $U = 1.585$:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lr@{}}
+\toprule
+$\lambda$ & fraction \\
+\midrule
+12\um                       & 0.00\% \\
+100\um                      & 13.67\% \\
+154\um                      & 17.15\% \\
+350\um                      & 18.79\% \\
+850\um                      & 19.15\% \\
+median over 300--3000\um    & 19.18\% \\
+\bottomrule
+\end{tabular}
+\caption{Intrinsic polarization fraction of the emitted spectrum, before any
+geometric factor.}
+\label{tab:polfrac}
+\end{table}
+
+The mid-infrared zero is correct rather than a failure: there the emission is
+dominated by stochastically heated PAHs, which HD23 take to be unaligned.
+
+\paragraph{19.15\% versus Planck's 22\% is a property of the model, not a bug.}
+Planck measures $p_{\rm max} = 22.0\,(+3.5,-1.4)\%$ at 353\,GHz. The 19.15\%
+here is the \emph{maximum} attainable value, obtained before any geometric
+factor, and every real line of sight reduces it, so the model as implemented
+cannot reach the observed maximum. This traces to the dust model itself: the
+axial ratio $b/a = 1.4$ is the minimum non-sphericity DH21b found the starlight
+polarization efficiency to require, and it was not tuned to maximize the
+submillimeter polarization fraction. Do not close the gap by adjusting
+\falign\ or the axial ratio without recognizing that as a change to the dust
+model, requiring its own revalidation against the extinction and emission
+constraints HD23 fit.
+
+%====================================================================
+\section{Limits and extension paths}
+
+These are limits of the published optics, not of the code.
+
+\paragraph{No circular polarization or birefringence.} The table header offers
+$Q_{\rm ext}$, $Q_{\rm abs}$ and $Q_{\rm sca}$ only, none of which is a phase
+retardation, so $C_{\rm circ}$ cannot be formed and must be set to zero.
+Obtaining it means computing the fixed-orientation amplitude matrix ourselves.
+\code{tmatrix/src/ampld.lp.f} exists in the tree for exactly this and is
+currently excluded from the build.
+
+\paragraph{No scattering matrix for aligned grains.} The release gives the
+integrated $Q_{\rm sca}$ with no angular information, so scattering by an
+aligned spheroid cannot be modeled from it. Reaching optical polarized transfer
+would require wavelength-resolved Mueller matrices, from \code{ampld.lp.f},
+DDSCAT, ADDA or CosTuuM, plus a matrix-based scattering treatment on the
+consumer side. The data volume is $\lambda \times \theta \times
+\text{orientation} \times 16$ components, which is the reason this has not been
+attempted.
+
+\paragraph{Far infrared needs neither.} In that regime the albedo is
+essentially zero, so the transfer requires only the extinction matrix and the
+emission vector, both fully determined by what is exported. The HAWC+ 154\um\
+comparison lies inside this regime, so the far-infrared milestone is reachable
+with the present data and should be attempted before any scattering work.
+
+\paragraph{Astrodust only.} DL07 and Zubko have no polarized optics.
+\code{build\_dl07} releases any polarized arrays left by a previous astrodust
+initialization, so \code{lamI\_pol} returns zeros rather than stale values.
+
+\subsection{Cost of \code{build\_Cpol}}
+
+Loading the orientation-resolved table is the most expensive part of model
+construction (Table~\ref{tab:cost}).
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+Item & Size \\
+\midrule
+compressed file          & 4.1\,MB \\
+scratch file when expanded & 17.2\,MB \\
+raw arrays \code{qext\_j}, \code{qabs\_j}, \code{qsca\_j} & 13.7\,MB resident \\
+derived \code{qpol\_*}, \code{qran\_*} & 7.6\,MB resident \\
+time                     & about 1\,s of the 3.1\,s model build \\
+\bottomrule
+\end{tabular}
+\caption{Cost of loading the orientation-resolved table.}
+\label{tab:cost}
+\end{table}
+
+The cheapest improvement, if this ever matters, is to release
+\code{qext\_j}, \code{qabs\_j} and \code{qsca\_j} once the combinations of
+Eqs.~(\ref{eq:qpol})--(\ref{eq:qran}) have been formed. Nothing downstream of
+\code{build\_Cpol} reads them, and dropping them removes 13.7\,MB, about
+two-thirds of the resident total. They are currently kept public because
+\code{calc\_polext.f90} and ad-hoc checking programs read the orientation
+blocks directly; a release step would have to be opt-in or come after those
+consumers are served.
+
+%====================================================================
+\section{Reproducing the numbers}
+
+From \code{SEDust/sed/}:
+\begin{lstlisting}[style=sh]
+make calc_polext.x           # standalone polarized-extinction check
+./calc_polext.x              # -> output/polarized_extinction_ours.dat
+                             #    lambda, ours, reference, ratio
+
+make calc_kext_astrodust.x   # full-pipeline extinction table
+./calc_kext_astrodust.x      # -> ../data/kext_astrodust_MW.dat, 8 columns
+
+make libsedust.a             # library, for the emission path
+\end{lstlisting}
+
+\code{calc\_polext.x} prints the median and maximum deviation against the
+release directly, restricted to $\lambda \ge 0.11\um$. Column 8 of the
+extinction table should reproduce it to the ASCII precision quoted in
+Table~\ref{tab:verif}; if the two disagree by more than that, the $\log a$
+interpolation in \code{build\_Cpol} or the size grid it interpolates onto is
+the place to look, since that is the only step separating the two routes.
+
+For the emission fractions of Table~\ref{tab:polfrac}, build a model with
+\code{build\_astrodust}, evaluate \code{J\_Mathis} at $U = 1.585$, and call
+\code{dust\_emission} with \code{lamI\_pol} requested; the example in \S5.4 of
+the user manual is the complete recipe.
+
+%====================================================================
+\section{References}
+
+\begin{itemize}
+\item Draine, B. T., \& Hensley, B. S. 2021b, ApJ, 919, 65 (DH21b).
+      \code{2021ApJ...919...65D}
+\item Hensley, B. S., \& Draine, B. T. 2023, ApJ, 948, 55 (HD23).
+      \code{2023ApJ...948...55H}
+\item Peest, C., et al.\ 2023, A\&A, 673, A112.
+      \code{2023A\&A...673A.112P}
+\item Planck Collaboration 2020, A\&A, 641, A12.
+      \code{2020A\&A...641A..12P}
+\item Reissl, S., Wolf, S., \& Brauer, R. 2016, A\&A, 593, A87 (POLARIS I).
+      \code{2016A\&A...593A..87R}
+\item Seon, K.-I. 2018, ApJ, 862, 87.
+      \code{2018ApJ...862...87S}
+\end{itemize}
+
+\end{document}
