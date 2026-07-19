@@ -16,6 +16,8 @@ module dust_model_mod
    !   dn       [1/H]     number of grains per H atom in each size bin (NA)
    !   Cabs/Csca[cm^2]    absorption/scattering cross section (NLAM, NA)
    !   Cpol     [cm^2]    polarized absorption cross section (NLAM, NA)
+   !   Cpol_ext [cm^2]    polarized extinction cross section (NLAM, NA)
+   !   gsca               scattering asymmetry <cos> (NLAM, NA)
    !   falign             alignment efficiency, 0 for a population that does
    !                      not contribute to polarization (NA)
    !   kappB    [..]      Planck-integral table used by calc_P/calc_Teq (NT, NA)
@@ -36,6 +38,11 @@ module dust_model_mod
       real(wp), allocatable :: dn(:)                ! (NA)
       real(wp), allocatable :: Cabs(:,:), Csca(:,:) ! (NLAM, NA)
       real(wp), allocatable :: Cpol(:,:)            ! (NLAM, NA) [cm^2] polarized absorption
+      ! Extinction-side optics, used by dust_extinction. Left unallocated for a
+      ! population that neither scatters nor polarizes (the PAHs), which is how
+      ! the size integral recognizes a zero contribution.
+      real(wp), allocatable :: Cpol_ext(:,:)        ! (NLAM, NA) [cm^2] polarized extinction
+      real(wp), allocatable :: gsca(:,:)            ! (NLAM, NA) scattering asymmetry <cos>
       real(wp), allocatable :: falign(:)            ! (NA) alignment efficiency
       real(wp), allocatable :: kappB(:,:), log_kappB(:,:)   ! (NT, NA)
       real(wp), allocatable :: H(:,:),     log_H(:,:)       ! (NT, NA)
@@ -88,6 +95,8 @@ contains
       if (allocated(p%Cabs))      deallocate(p%Cabs)
       if (allocated(p%Csca))      deallocate(p%Csca)
       if (allocated(p%Cpol))      deallocate(p%Cpol)
+      if (allocated(p%Cpol_ext))  deallocate(p%Cpol_ext)
+      if (allocated(p%gsca))      deallocate(p%gsca)
       if (allocated(p%falign))    deallocate(p%falign)
       if (allocated(p%kappB))     deallocate(p%kappB)
       if (allocated(p%log_kappB)) deallocate(p%log_kappB)

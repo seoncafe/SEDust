@@ -96,13 +96,16 @@ aligned spheroidal grains, from the orientation-resolved Draine & Hensley
 | Quantity | Where |
 |---|---|
 | polarized emission | optional `lamI_pol` argument of `dust_emission` |
-| polarized extinction | eighth column of `data/kext_astrodust_MW.dat` |
+| polarized extinction | optional `Cpol_ext` argument of `dust_extinction`, or the eighth column of `data/kext_astrodust_MW.dat` |
 
 Both are intrinsic values: the size integral and the alignment efficiency
 `f_align(a)` are already applied, while the viewing geometry (the angle
 between the field and the line of sight, and any turbulent depolarization)
 is left to the caller. Codes that read only the first seven columns of the
-extinction table are unaffected.
+extinction table are unaffected. `dust_extinction` and the table agree to the
+precision the file is written with, so a code that links the library can take
+its opacity from the call, on the model's own wavelength grid, and skip the
+file entirely.
 
 The computed polarized extinction reproduces the released
 `polarized_extinction.dat` to a median of 0.03%. The polarized emission

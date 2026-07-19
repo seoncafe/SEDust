@@ -47,6 +47,24 @@ module dust_lib
    ! transfer and are NOT applied here. Being optional, it leaves every
    ! existing caller valid.
    !
+   ! EXTINCTION. dust_extinction is the extinction counterpart of
+   ! dust_emission, so an RT host takes its opacity from the same model object
+   ! and on the same wavelength grid (m%lam) as its emission, rather than
+   ! parsing data/kext_astrodust_MW.dat and interpolating off that file's grid:
+   !   call dust_extinction(m, Cext, Cabs, Csca [, gbar] [, Cpol_ext] [, status])
+   ! All three required outputs are (m%NLAM) cross sections per H atom
+   ! [cm^2/H], integrated over the size distribution of every population:
+   ! Cext = Cabs + Csca. Optional gbar is the scattering-weighted asymmetry
+   ! <cos>, sum dn*Csca*g / sum dn*Csca, and is 0 at wavelengths where nothing
+   ! scatters. Optional Cpol_ext is the dichroic (polarized) extinction,
+   ! sum dn*Cpol_ext*f_align [cm^2/H]; the size integral and the alignment
+   ! weight are done here, but the sin^2(gamma) geometry factor and any
+   ! turbulent depolarization are left to the radiative transfer, exactly as
+   ! for lamI_pol. Populations without scattering or polarized optics (the
+   ! PAHs) contribute zero to those terms and enter through absorption only.
+   ! status is 0 on success and 1 if an output array is not of size m%NLAM;
+   ! when it is omitted such a call stops the run.
+   !
    ! dust_build_table and dust_emission_interp take the same optional final
    ! status argument (0 = success); when present a bad argument is reported
    ! through it instead of stopping the process; when omitted such a call stops
@@ -81,13 +99,14 @@ module dust_lib
    use mathlib,           only: locate
    use sed_astrodust_mod, only: dust_model_t, &
                                 build_astrodust, build_dl07, build_zubko, build_from_files, &
-                                dust_emission, dust_emission_single_teq
+                                dust_emission, dust_emission_single_teq, &
+                                dust_extinction
    implicit none
    private
 
    ! Re-exported model API
    public :: dust_model_t, build_astrodust, build_dl07, build_zubko, build_from_files
-   public :: dust_emission, dust_emission_single_teq
+   public :: dust_emission, dust_emission_single_teq, dust_extinction
    ! Table API
    public :: dust_emis_table_t, dust_build_table, dust_emission_interp, dust_free_table
    ! Convenience accessors
