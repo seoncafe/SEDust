@@ -1,6 +1,6 @@
 # SEDust
 
-Version 1.20 (in development; v1.00 is the last released state).
+Version 1.20.
 
 A self-contained library for the optical properties and thermal emission of
 interstellar dust: dielectric functions -> T-matrix / Mie cross sections ->
@@ -156,4 +156,4 @@ Rebuild any of them with `pdflatex <name>.tex` (run twice for cross-references).
 
 ---
 
-Last updated: 2026-07-19 10:20
+Last updated: 2026-07-19 10:25
