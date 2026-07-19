@@ -48,9 +48,12 @@ make                        # make_enthalpy.x  main_astrodust.x  main_dl07.x
 # the library, for embedding in an RT code
 make libsedust.a            # link with:  -L. -lsedust -I.
 
-# optical-property tables (extinction, albedo, <cos>, K_abs)
+# optical-property tables (extinction, albedo, <cos>, K_abs, polarized ext.)
 make calc_kext_astrodust.x && ./calc_kext_astrodust.x
 make calc_kext_dl07.x      && ./calc_kext_dl07.x
+
+# polarized extinction alone, checked against the HD23 release
+make calc_polext.x         && ./calc_polext.x
 
 # the Monte Carlo cross-check
 cd ../mc && make && ./main_mc_sed.x run_sed.nml
@@ -84,6 +87,33 @@ solvers, which is what makes it a useful check on them.
 Grains whose equilibrium enthalpy exceeds 150 eV are placed at `T_eq` and skip
 the stochastic solve; the gate propagates forward in grain size.
 
+## Polarization
+
+For the astrodust model SEDust also computes the polarized cross sections of
+aligned spheroidal grains, from the orientation-resolved Draine & Hensley
+(2021) table that ships in `data/dielectric/`. Two quantities are available:
+
+| Quantity | Where |
+|---|---|
+| polarized emission | optional `lamI_pol` argument of `dust_emission` |
+| polarized extinction | eighth column of `data/kext_astrodust_MW.dat` |
+
+Both are intrinsic values: the size integral and the alignment efficiency
+`f_align(a)` are already applied, while the viewing geometry (the angle
+between the field and the line of sight, and any turbulent depolarization)
+is left to the caller. Codes that read only the first seven columns of the
+extinction table are unaffected.
+
+The computed polarized extinction reproduces the released
+`polarized_extinction.dat` to a median of 0.03%. The polarized emission
+fraction reaches 17.2% at 154 um and 19.2% at 850 um.
+
+Circular polarization is not available, because the released table carries no
+phase lag, and scattering by aligned grains is not modelled. Neither limits
+far-infrared or submillimeter polarized emission, where scattering is
+negligible. The PAH component is treated as unaligned, and the DL07 and Zubko
+models have no polarized optics.
+
 ## Documentation
 
 - `docs/astrodust_sed_report.pdf` — the astrodust+PAH pipeline, its validation
@@ -92,6 +122,12 @@ the stochastic solve; the gate propagates forward in grain size.
   channels, solver options, and how to link it into an RT code.
 - `docs/mc_pT_report.pdf` — the Monte Carlo algorithm, its adaptive-grid
   engines, and its validation against the matrix solvers.
+- `docs/sedust_polarization_implementation.pdf` — how the polarized optics are
+  built: the orientation-resolved table, the derived cross sections, the
+  implementation decisions and their reasons, and the verification.
+- `docs/aligned_grain_polarization.pdf` — background on grain alignment and
+  polarized radiative transfer, and what a radiative-transfer code would need
+  in order to use the polarized optics.
 
 Rebuild any of them with `pdflatex <name>.tex` (run twice for cross-references).
 
@@ -109,4 +145,4 @@ Rebuild any of them with `pdflatex <name>.tex` (run twice for cross-references).
 
 ---
 
-Last updated: 2026-07-16 13:32
+Last updated: 2026-07-19 09:13
