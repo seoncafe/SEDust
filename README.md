@@ -1,8 +1,16 @@
 # SEDust
 
+Version 1.20 (in development; v1.00 is the last released state).
+
 A self-contained library for the optical properties and thermal emission of
 interstellar dust: dielectric functions -> T-matrix / Mie cross sections ->
 grain temperature distributions -> emergent infrared SED.
+
+SEDust owns the dust physics. A radiative-transfer code that links it is
+responsible for photon transport and geometry only: everything about the
+grains, from cross sections through temperature distributions to emission and
+polarization, is computed here and handed over as wavelength-resolved
+quantities per H atom.
 
 SEDust is **model-agnostic**. The HD23 astrodust+PAH model, the Draine & Li
 (2007) carbonaceous+silicate model, and the Zubko et al. (2004) BARE-GR-S model
@@ -148,4 +156,4 @@ Rebuild any of them with `pdflatex <name>.tex` (run twice for cross-references).
 
 ---
 
-Last updated: 2026-07-19 09:13
+Last updated: 2026-07-19 10:11
