@@ -92,10 +92,15 @@ grows with x.
 
 ### 3.2 T-matrix regime, 0.1 < x < 50
 
-The T-matrix is already solved and left in `COMMON /TMAT/` after a `TMD_ONE_SCATMAT` call
-(`tmatrix/src/tmd_one.f`). Mishchenko's fixed-orientation amplitude routine `AMPL`
-(`tmatrix/src/ampld.lp.f:535`), with its helper `VIGAMPL` (`:822`), reads that same common
-block but is not currently in the build. The work is:
+The T-matrix is solved inside every `TMD_ONE_SCATMAT` call (`tmatrix/src/tmd_one.f`).
+Mishchenko's fixed-orientation amplitude routine `AMPL` (`tmatrix/src/ampld.lp.f:535`), with
+its helper `VIGAMPL` (`:822`), reads the converged T-matrix from `COMMON /TMAT/` but is not
+currently in the build. One caution learned while implementing this (Stage B): the
+random-orientation expansion `GSP`, called at the end of `TMD_ONE_SCATMAT`, reuses the
+`/TMAT/` storage as scratch through an EQUIVALENCE and so destroys the T-matrix it reads. The
+block therefore does not hold the converged T-matrix on return unless it is saved before
+`GSP` and restored after; the implementation keeps an intact copy in a second common block
+for exactly this reason. The work is:
 
 1. Add `AMPL` and `VIGAMPL` to the build (`tmatrix/Makefile:46`, `SRC_TM`), or fold them
    into `tmd_one.f`. Keep the Mishchenko routine names unchanged so they stay checkable

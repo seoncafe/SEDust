@@ -76,7 +76,7 @@ program run_scatmat
    real(wp) :: nr, ki, x, qext, qsca, walb, asymm, csca, cext
    real(wp) :: csca_tot, cext_tot, wgi, g_ref, g_coeff, alb_tot
    real(wp) :: f11_int
-   integer  :: lmax, lmax_acc, l1m, ierr_t, kontr, lviol
+   integer  :: lmax, lmax_acc, l1m, ierr_t, kontr, lviol, nmax_tm
    integer  :: i, ia, iw, nwl, u_out, n_small, n_large, n_fail
    character(len=256) :: f_out
    character(len=64)  :: arg
@@ -121,7 +121,7 @@ program run_scatmat
          else
             call tmd_one_scatmat(a_dist(ia), wl_req(iw), nr, ki, EPS_BA, NP_OBL, &
                             DDELT, NDGS, qext, qsca, walb, asymm, &
-                            al1, al2, al3, al4, be1, be2, lmax, ierr_t)
+                            al1, al2, al3, al4, be1, be2, lmax, ierr_t, nmax_tm)
             if (ierr_t /= 0) then
                ! Same redirection rule as run_tmatrix.x: take the result
                ! from whichever asymptotic limit x is closer to.

@@ -86,6 +86,12 @@ C              Element (1) of every array is the l = 0 term.
 C              Entries beyond LMAX+1 are zeroed on return.
 C       LMAX   INTEGER truncation order; the highest populated index is
 C              LMAX+1.  Zero when IERR /= 0.
+C       NMAX_TM INTEGER multipole truncation order of the converged
+C              T-matrix left in COMMON /TMAT/.  This is the highest N (and
+C              highest azimuthal order M) for which RT11..IT22 are filled,
+C              i.e. the value a fixed-orientation amplitude evaluation
+C              (AMPL, src/ampl_oriented.f) must use as its NMAX.  Zero when
+C              IERR /= 0.
 C     OUTPUT
 C       IERR   INTEGER status code:
 C                0 success
@@ -101,12 +107,13 @@ C***********************************************************************
       SUBROUTINE TMD_ONE_SCATMAT(AXI, LAM, MRR, MRI, EPS, NP,
      &                   DDELT, NDGS,
      &                   QEXT, QSCA, WALB, ASYMM,
-     &                   AL1, AL2, AL3, AL4, BE1, BE2, LMAX, IERR)
+     &                   AL1, AL2, AL3, AL4, BE1, BE2, LMAX, IERR,
+     &                   NMAX_TM)
       IMPLICIT REAL*8 (A-H,O-Z)
       INCLUDE 'tmd.par.f'
       REAL*8  AXI, LAM, MRR, MRI, EPS, DDELT
       REAL*8  QEXT, QSCA, WALB, ASYMM
-      INTEGER NP, NDGS, LMAX, IERR
+      INTEGER NP, NDGS, LMAX, IERR, NMAX_TM
       REAL*8  X(NPNG2),W(NPNG2),S(NPNG2),SS(NPNG2),
      *        AN(NPN1),R(NPNG2),DR(NPNG2),
      *        DDR(NPNG2),DRR(NPNG2),DRI(NPNG2),ANN(NPN1,NPN1)
@@ -117,12 +124,24 @@ C***********************************************************************
      &     RT21(NPN6,NPN4,NPN4),RT22(NPN6,NPN4,NPN4),
      &     IT11(NPN6,NPN4,NPN4),IT12(NPN6,NPN4,NPN4),
      &     IT21(NPN6,NPN4,NPN4),IT22(NPN6,NPN4,NPN4)
+C  Intact copy of the converged T-matrix.  GSP (below) reuses the /TMAT/
+C  storage as scratch through an EQUIVALENCE and so destroys the T-matrix
+C  it reads; RT11..IT22 are copied here before GSP and copied back after,
+C  so /TMAT/ holds the intact T-matrix on return for a fixed-orientation
+C  amplitude evaluation (AMPL, src/ampl_oriented.f).
+      REAL*4
+     &     KT11(NPN6,NPN4,NPN4),KT12(NPN6,NPN4,NPN4),
+     &     KT21(NPN6,NPN4,NPN4),KT22(NPN6,NPN4,NPN4),
+     &     KI11(NPN6,NPN4,NPN4),KI12(NPN6,NPN4,NPN4),
+     &     KI21(NPN6,NPN4,NPN4),KI22(NPN6,NPN4,NPN4)
 
       COMMON /CT/ TR1,TI1
       COMMON /TMAT/ RT11,RT12,RT21,RT22,IT11,IT12,IT21,IT22
+      COMMON /TMATK/ KT11,KT12,KT21,KT22,KI11,KI12,KI21,KI22
 
       P    = DACOS(-1D0)
       IERR = 0
+      NMAX_TM = 0
       QEXT  = 0D0
       QSCA  = 0D0
       WALB  = 0D0
@@ -325,7 +344,29 @@ C  Single particle, RAT = 1 (volume-equivalent sphere): A = AXI.
       COEFF1 = LAM*LAM*0.5D0/P
       CSCA = QSCA*COEFF1
       CEXT = -QEXT*COEFF1
+
+C  Preserve the converged T-matrix across the GSP call, which overwrites
+C  /TMAT/ (see the /TMATK/ declaration above).
+      KT11 = RT11
+      KT12 = RT12
+      KT21 = RT21
+      KT22 = RT22
+      KI11 = IT11
+      KI12 = IT12
+      KI21 = IT21
+      KI22 = IT22
+
       CALL GSP(NMAX1,CSCA,LAM,AL1,AL2,AL3,AL4,BE1,BE2,LMAX)
+
+C  Restore /TMAT/ from the intact copy so it is available on return.
+      RT11 = KT11
+      RT12 = KT12
+      RT21 = KT21
+      RT22 = KT22
+      IT11 = KI11
+      IT12 = KI12
+      IT21 = KI21
+      IT22 = KI22
 
 C  Single particle: ALPH/BET reduce to AL/BE without quadrature
 C  weighting, hence WALB = CSCA/CEXT and ASYMM = AL1(2)/3.
@@ -337,6 +378,12 @@ C  carry the LAM**2 factor from COEFF1 above and inherit the units of
 C  LAM**2 (microns**2), so Q is dimensionless.
       QEXT = CEXT/(P*AXI*AXI)
       QSCA = CSCA/(P*AXI*AXI)
+
+C  NMAX1 is the multipole truncation to which the T-matrix in COMMON
+C  /TMAT/ has just been stored (DO 213 / DO 220 loops above run to
+C  N = NMAX1 and M = NMAX1).  Return it so a fixed-orientation amplitude
+C  evaluation can iterate over exactly the populated block.
+      NMAX_TM = NMAX1
 
       RETURN
       END
@@ -359,11 +406,12 @@ C***********************************************************************
       REAL*8  QEXT, QSCA, WALB, ASYMM
       INTEGER NP, NDGS, IERR
       REAL*8  AL1(NPL),AL2(NPL),AL3(NPL),AL4(NPL),BE1(NPL),BE2(NPL)
-      INTEGER LMAX
+      INTEGER LMAX, NMAX_TM
 
       CALL TMD_ONE_SCATMAT(AXI, LAM, MRR, MRI, EPS, NP, DDELT, NDGS,
      &                QEXT, QSCA, WALB, ASYMM,
-     &                AL1, AL2, AL3, AL4, BE1, BE2, LMAX, IERR)
+     &                AL1, AL2, AL3, AL4, BE1, BE2, LMAX, IERR,
+     &                NMAX_TM)
       RETURN
       END
 

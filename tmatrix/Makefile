@@ -43,12 +43,14 @@ else
   LDFLAGS =
 endif
 
-SRC_TM   = src/tmd_one.f src/lpd.f
+SRC_TM   = src/tmd_one.f src/lpd.f src/ampl_oriented.f
 SRC_COMM = ../sed/src/constants.f90 \
            driver/read_index.f90 driver/asymptotic_optics.f90
 SRC_Q    = $(SRC_COMM) driver/run_tmatrix.f90
 SRC_SM   = $(SRC_COMM) ../sed/src/size_dist.f90 driver/run_scatmat.f90
 SRC_CMP  = $(SRC_COMM) driver/compare_rayleigh_jori.f90
+SRC_CMP2 = $(SRC_COMM) driver/tmatrix_oriented.f90 \
+           driver/compare_tmatrix_jori.f90
 
 all: run_tmatrix.x run_scatmat.x
 
@@ -78,11 +80,22 @@ compare_rayleigh_jori.x: $(SRC_CMP)
 	@echo 'Built: ./compare_rayleigh_jori.x'
 	@echo 'Run:   ./compare_rayleigh_jori.x'
 
+# Stage-B check: oriented T-matrix Q_ext vs the HD23 orientation-resolved
+# table over the 0.1 < x < 50 subset.  Uses the T-matrix core plus the
+# fixed-orientation amplitude routine AMPL (src/ampl_oriented.f).
+compare_tmatrix_jori.x: $(SRC_TM) $(SRC_CMP2)
+	@mkdir -p build/cmp2
+	$(FC) $(FFLAGS) -Isrc -Jbuild/cmp2 $^ $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./compare_tmatrix_jori.x'
+	@echo 'Run:   ./compare_tmatrix_jori.x'
+
 clean:
 	rm -f *.o *.mod
 	rm -rf build
 
 cleanall: clean
-	rm -f run_tmatrix.x run_scatmat.x compare_rayleigh_jori.x
+	rm -f run_tmatrix.x run_scatmat.x compare_rayleigh_jori.x \
+	      compare_tmatrix_jori.x
 
 .PHONY: all clean cleanall
