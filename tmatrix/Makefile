@@ -51,6 +51,8 @@ SRC_SM   = $(SRC_COMM) ../sed/src/size_dist.f90 driver/run_scatmat.f90
 SRC_CMP  = $(SRC_COMM) driver/compare_rayleigh_jori.f90
 SRC_CMP2 = $(SRC_COMM) driver/tmatrix_oriented.f90 \
            driver/compare_tmatrix_jori.f90
+SRC_CMP3 = $(SRC_COMM) driver/tmatrix_oriented.f90 \
+           driver/compare_tmatrix_abs.f90
 
 all: run_tmatrix.x run_scatmat.x
 
@@ -90,12 +92,23 @@ compare_tmatrix_jori.x: $(SRC_TM) $(SRC_CMP2)
 	@echo 'Built: ./compare_tmatrix_jori.x'
 	@echo 'Run:   ./compare_tmatrix_jori.x'
 
+# Stage-C check: oriented T-matrix Q_abs (= Q_ext - Q_sca, with Q_sca from
+# the fixed-orientation phase-matrix integral) vs the HD23 orientation-
+# resolved table over the 0.1 < x < 50 subset.  Uses the T-matrix core plus
+# the fixed-orientation amplitude routine AMPL (src/ampl_oriented.f).
+compare_tmatrix_abs.x: $(SRC_TM) $(SRC_CMP3)
+	@mkdir -p build/cmp3
+	$(FC) $(FFLAGS) -Isrc -Jbuild/cmp3 $^ $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./compare_tmatrix_abs.x'
+	@echo 'Run:   ./compare_tmatrix_abs.x'
+
 clean:
 	rm -f *.o *.mod
 	rm -rf build
 
 cleanall: clean
 	rm -f run_tmatrix.x run_scatmat.x compare_rayleigh_jori.x \
-	      compare_tmatrix_jori.x
+	      compare_tmatrix_jori.x compare_tmatrix_abs.x
 
 .PHONY: all clean cleanall
