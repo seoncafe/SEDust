@@ -31,6 +31,14 @@ module asymptotic_optics
    implicit none
    private
    public :: rayleigh_limit, geometric_optics_limit
+   public :: projected_area_extinction, fresnel_opaque_absorption
+
+   ! Default surface-quadrature count per angular direction used by the
+   ! orientation-resolved geometric-optics absorption.  The 2D integrand is
+   ! smooth and vanishes at the terminator (grazing reflectance -> 1), so a
+   ! moderate Gauss-Legendre grid resolves it; the comparison driver confirms
+   ! convergence by doubling this.
+   integer, parameter :: NQUAD_GO = 64
 
 contains
 
@@ -195,35 +203,78 @@ contains
    end subroutine rayleigh_matrix_expansion
 
 
-   subroutine geometric_optics_limit(a_eff, lam, n_r, k_i, qext, qsca, walb, asymm, &
-                               al1, al2, al3, al4, be1, be2, lmax)
-      ! Geometric-optics limit. Q_ext = 2 (extinction paradox), and
-      ! Q_abs from a single chord through a sphere of radius a_eff:
-      !     Q_abs = 1 - exp(-4 k x), with k = Im(m), x = 2 pi a / lambda.
-      ! Asymmetry parameter is set to 0 (no preferred direction for
-      ! random-orientation averaging in the absorbing-opaque limit).
+   subroutine geometric_optics_limit(a_eff, lam, n_r, k_i, eps_ba, qext, qsca, walb, asymm, &
+                               al1, al2, al3, al4, be1, be2, lmax, &
+                               qext_ori, qabs_ori, qsca_ori)
+      ! Geometric-optics limit, x = 2 pi a_eff / lambda >> 1 (used for x > 50).
       !
-      ! Scattering matrix (optional outputs): isotropic and unpolarizing,
-      ! i.e. alpha_1 = (1) and every other coefficient zero, LMAX = 0.
-      ! This is the matrix-level counterpart of the g = 0 assumption
-      ! above and is equally crude -- the true large-x phase function is
-      ! strongly forward-peaked.  Domain of validity: it is used only for
-      ! x > 50, where the astrodust size distribution has essentially no
-      ! grains (dn/dloga has fallen by many orders of magnitude by
-      ! a_eff ~ 4 um), so the contribution to the C_sca-weighted size
-      ! integral is negligible at the optical wavelengths this table
-      ! targets.  It must NOT be relied on for a size distribution with
+      ! Averaged (equal-volume sphere) outputs -- UNCHANGED from the original
+      ! sphere model, so the cross-section-only sweep in run_tmatrix.f90 stays
+      ! byte-identical:
+      !     Q_ext = 2 (extinction paradox),
+      !     Q_abs = 1 - exp(-4 k_i x)  (a single chord of length 2 a_eff
+      !                                 through an absorbing sphere; k_i=Im(m)),
+      !     Q_sca = Q_ext - Q_abs, g = 0,
+      ! and the optional scattering matrix stays isotropic (alpha_1 = 1, all
+      ! other coefficients zero, LMAX = 0).  eps_ba does not enter any of
+      ! these; it is consumed only by the orientation-resolved outputs below.
+      !
+      ! Domain of validity of the averaged g = 0 / isotropic-matrix
+      ! assumption: it is used only for x > 50, where the astrodust size
+      ! distribution has essentially no grains (dn/dloga has fallen by many
+      ! orders of magnitude by a_eff ~ 4 um), so the contribution to the
+      ! C_sca-weighted size integral is negligible at the wavelengths this
+      ! table targets.  It must NOT be relied on for a size distribution with
       ! significant large-grain weight.
-      real(wp), intent(in)  :: a_eff, lam, n_r, k_i
+      !
+      ! Optional orientation-resolved outputs qext_ori/qabs_ori/qsca_ori
+      ! (length 3, jori index of sed/src/q_table_jori.f90) carry the two
+      ! pieces of wave-optics physics that survive for a non-spherical opaque
+      ! grain in this limit:
+      !
+      !   * Extinction: the extinction paradox gives Q_ext(jori) = 2 *
+      !     A_proj(jori) / (pi a_eff^2), where A_proj is the geometric shadow
+      !     area of the spheroid for that incidence, so the orientation split
+      !     follows the projected area alone (projected_area_extinction).
+      !     Q_ext(2) = Q_ext(3) here, so qpol_ext = 0 at this order.
+      !   * Absorption: for an opaque grain (Im(m) x >> 1, refracted ray fully
+      !     absorbed) the absorbed fraction at each illuminated surface point
+      !     is 1 minus the Fresnel power reflectance for the local angle of
+      !     incidence, with the incident polarization decomposed onto the
+      !     local s/p directions of the plane of incidence.  Integrating over
+      !     the illuminated surface (fresnel_opaque_absorption) makes Q_abs
+      !     depend on the incident polarization relative to the symmetry axis:
+      !     that dependence is the absorption dichroism by which jori=2 (E||a)
+      !     and jori=3 (E perp a) differ.  jori=1 (k||a) is axially symmetric
+      !     about k, so its two transverse polarizations absorb equally and
+      !     Q_abs(1) is the polarization-averaged value.
+      !
+      ! Opaque-limit validity: for astrodust in the UV, where x > 50 falls,
+      ! Im(m) runs from ~0.06 (near 4 eV) to ~0.7 (>10 eV), so the chord
+      ! optical depth 4 Im(m) x stays >~ 11 across the whole x > 50 region and
+      ! the fully-absorbed-refracted-ray assumption holds.  It would weaken
+      ! only for a weakly absorbing material (Im(m) x ~ 1), where internal
+      ! transmission and a second surface crossing would have to be added.
+      real(wp), intent(in)  :: a_eff, lam, n_r, k_i, eps_ba
       real(wp), intent(out) :: qext, qsca, walb, asymm
       real(wp), optional, intent(out) :: al1(:), al2(:), al3(:), al4(:), be1(:), be2(:)
       integer,  optional, intent(out) :: lmax
+      real(wp), optional, intent(out) :: qext_ori(:), qabs_ori(:), qsca_ori(:)
       real(wp) :: x, qabs
+      real(wp) :: qe_o(3), qa_o(3)
+      complex(wp) :: m
       real(wp), parameter :: PI = acos(-1.0_wp)
-      ! n_r is unused in this crude approximation; included in the
-      ! signature for symmetry with rayleigh_limit and to allow a
-      ! future refinement (Fresnel-based reflection / refraction).
-      associate (dummy => n_r); end associate
+      ! Body-frame incidence and polarization for the three orientations.
+      ! Body z = spheroid symmetry axis a.
+      !   jori=1: k || a  -> k along z, any transverse polarization (use x)
+      !   jori=2: k perp a, E || a      -> k along x, E along z
+      !   jori=3: k perp a, E perp a    -> k along x, E along y
+      real(wp), parameter :: KHAT_PAR(3)  = (/ 0.0_wp, 0.0_wp, 1.0_wp /)
+      real(wp), parameter :: EHAT_PAR(3)  = (/ 1.0_wp, 0.0_wp, 0.0_wp /)
+      real(wp), parameter :: KHAT_PERP(3) = (/ 1.0_wp, 0.0_wp, 0.0_wp /)
+      real(wp), parameter :: EHAT_AXIS(3) = (/ 0.0_wp, 0.0_wp, 1.0_wp /)
+      real(wp), parameter :: EHAT_EQ(3)   = (/ 0.0_wp, 1.0_wp, 0.0_wp /)
+
       x = 2.0_wp * PI * a_eff / lam
       qext = 2.0_wp
       qabs = 1.0_wp - exp(-4.0_wp * k_i * x)
@@ -238,6 +289,190 @@ contains
       if (present(be1)) be1 = 0.0_wp
       if (present(be2)) be2 = 0.0_wp
       if (present(lmax)) lmax = 0
+
+      if (present(qext_ori) .or. present(qabs_ori) .or. present(qsca_ori)) then
+         call projected_area_extinction(eps_ba, qe_o)
+         m = cmplx(n_r, abs(k_i), kind=wp)
+         call fresnel_opaque_absorption(eps_ba, m, KHAT_PAR,  EHAT_PAR,  NQUAD_GO, qa_o(1))
+         call fresnel_opaque_absorption(eps_ba, m, KHAT_PERP, EHAT_AXIS, NQUAD_GO, qa_o(2))
+         call fresnel_opaque_absorption(eps_ba, m, KHAT_PERP, EHAT_EQ,   NQUAD_GO, qa_o(3))
+         if (present(qext_ori)) qext_ori(1:3) = qe_o
+         if (present(qabs_ori)) qabs_ori(1:3) = qa_o
+         if (present(qsca_ori)) qsca_ori(1:3) = qe_o - qa_o
+      end if
    end subroutine geometric_optics_limit
+
+
+   subroutine projected_area_extinction(eps_ba, qext_ori)
+      ! Orientation-resolved extinction efficiency of a spheroid in the
+      ! extinction-paradox limit, Q_ext(jori) = 2 * A_proj(jori)/(pi a_eff^2).
+      !
+      ! Geometry (same eps_ba convention as rayleigh_limit; eps_ba = b/a with
+      ! eps_ba > 1 oblate).  From the equal-volume-sphere radius a_eff the
+      ! semi-axes are c = a_eff eps_ba^(-2/3) (symmetry axis) and a_s = a_eff
+      ! eps_ba^(1/3) (equatorial), so a_s/c = eps_ba.  The geometric shadow is
+      !   jori=1 (k || symmetry axis c):  A_proj = pi a_s^2      = pi a_eff^2 eps_ba^(2/3)
+      !   jori=2,3 (k perp c):            A_proj = pi a_s c       = pi a_eff^2 eps_ba^(-1/3)
+      ! giving Q_ext(1) = 2 eps_ba^(2/3) and Q_ext(2)=Q_ext(3)=2 eps_ba^(-1/3).
+      real(wp), intent(in)  :: eps_ba
+      real(wp), intent(out) :: qext_ori(:)
+      real(wp) :: two_third, minus_third
+      two_third   = eps_ba**( 2.0_wp/3.0_wp)
+      minus_third = eps_ba**(-1.0_wp/3.0_wp)
+      qext_ori(1) = 2.0_wp * two_third
+      qext_ori(2) = 2.0_wp * minus_third
+      qext_ori(3) = 2.0_wp * minus_third
+   end subroutine projected_area_extinction
+
+
+   subroutine fresnel_opaque_absorption(eps_ba, m, k_hat, e_hat, nquad, qabs, area_proj)
+      ! Absorption efficiency Q_abs = C_abs/(pi a_eff^2) of an opaque spheroid
+      ! in the geometric-optics limit, for a plane wave travelling along k_hat
+      ! with electric-field unit vector e_hat (both unit vectors in the body
+      ! frame whose z-axis is the symmetry axis a; e_hat must be transverse to
+      ! k_hat).
+      !
+      ! For an opaque grain the refracted ray is fully absorbed, so the
+      ! absorbed fraction at an illuminated surface point is
+      !     A(theta_i) = 1 - ( |e.s|^2 R_s(theta_i) + |e.p|^2 R_p(theta_i) ),
+      ! with theta_i the local angle of incidence, s/p the senkrecht/parallel
+      ! directions of the local plane of incidence, and R_s, R_p the Fresnel
+      ! power reflectances for the complex index m.  The absorbed power is
+      !     C_abs = INT_illuminated A(theta_i) dA_proj,
+      ! dA_proj = cos(theta_i) dA the projected-area element.  Q_abs = C_abs /
+      ! (pi a_eff^2) is independent of a_eff, so the surface is taken at
+      ! a_eff = 1 (semi-axes a_s = eps_ba^(1/3), c = eps_ba^(-2/3)).
+      !
+      ! The polarization dichroism between jori=2 and jori=3 arises entirely
+      ! because e_hat (= a_hat vs transverse) projects differently onto the
+      ! local s/p basis as it sweeps the surface: R_p < R_s away from normal
+      ! incidence, so the polarization that is more nearly p-like over the
+      ! illuminated surface absorbs more.
+      !
+      ! Quadrature: Gauss-Legendre with nquad nodes in u over [0,pi] and nquad
+      ! in v over [0,2pi], surface parametrized as
+      !   (a_s sin u cos v, a_s sin u sin v, c cos u).
+      ! The r_u x r_v cross product carries the area Jacobian, and its dot with
+      ! -k_hat is cos(theta_i) dA (positive on the illuminated half), so the
+      ! sin(u) weighting and the illumination mask are handled exactly.
+      real(wp),    intent(in)  :: eps_ba
+      complex(wp), intent(in)  :: m
+      real(wp),    intent(in)  :: k_hat(3), e_hat(3)
+      integer,     intent(in)  :: nquad
+      real(wp),    intent(out) :: qabs
+      real(wp), optional, intent(out) :: area_proj
+
+      real(wp), parameter :: PI = acos(-1.0_wp)
+      real(wp) :: as, cc
+      real(wp), allocatable :: ug(:), uw(:), vg(:), vw(:)
+      integer  :: iu, iv
+      real(wp) :: su, cu, sv, cv
+      real(wp) :: dS(3), dmag, proj, cos_i, sin2, w
+      real(wp) :: nhat(3), shat(3), phat(3), smag, es, ep, fs, fp
+      real(wp) :: rs2, rp2, reff, absorb
+      real(wp) :: qint, aint
+      complex(wp) :: m2, cost, rs, rp
+
+      as = eps_ba**( 1.0_wp/3.0_wp)
+      cc = eps_ba**(-2.0_wp/3.0_wp)
+      m2 = m*m
+
+      allocate(ug(nquad), uw(nquad), vg(nquad), vw(nquad))
+      call gauss_legendre(nquad, 0.0_wp,          PI,          ug, uw)
+      call gauss_legendre(nquad, 0.0_wp, 2.0_wp*PI,             vg, vw)
+
+      qint = 0.0_wp
+      aint = 0.0_wp
+      do iu = 1, nquad
+         su = sin(ug(iu));  cu = cos(ug(iu))
+         do iv = 1, nquad
+            cv = cos(vg(iv));  sv = sin(vg(iv))
+            ! Outward surface-element vector dS = (r_u x r_v) du dv.
+            dS(1) = cc*as * su*su * cv
+            dS(2) = cc*as * su*su * sv
+            dS(3) = as*as * su    * cu
+            ! Illuminated where the outward normal faces the source:
+            ! proj = -k.dS = cos(theta_i) dA_element > 0.
+            proj = -(k_hat(1)*dS(1) + k_hat(2)*dS(2) + k_hat(3)*dS(3))
+            if (proj <= 0.0_wp) cycle
+            dmag  = sqrt(dS(1)*dS(1) + dS(2)*dS(2) + dS(3)*dS(3))
+            cos_i = proj / dmag
+            if (cos_i > 1.0_wp) cos_i = 1.0_wp
+            nhat  = dS / dmag
+
+            ! Fresnel power reflectances at this incidence angle.
+            sin2 = 1.0_wp - cos_i*cos_i
+            cost = sqrt(1.0_wp - sin2/m2)
+            if (real(cost, kind=wp) < 0.0_wp) cost = -cost
+            rs = (cos_i - m*cost) / (cos_i + m*cost)
+            rp = (m*cos_i - cost) / (m*cos_i + cost)
+            rs2 = real(rs, kind=wp)**2 + aimag(rs)**2
+            rp2 = real(rp, kind=wp)**2 + aimag(rp)**2
+
+            ! Decompose e_hat onto the local s (perp plane of incidence) and
+            ! p (in plane, transverse to k) directions.
+            shat(1) = k_hat(2)*nhat(3) - k_hat(3)*nhat(2)
+            shat(2) = k_hat(3)*nhat(1) - k_hat(1)*nhat(3)
+            shat(3) = k_hat(1)*nhat(2) - k_hat(2)*nhat(1)
+            smag = sqrt(shat(1)**2 + shat(2)**2 + shat(3)**2)
+            if (smag > 1.0e-12_wp) then
+               shat = shat / smag
+               phat(1) = k_hat(2)*shat(3) - k_hat(3)*shat(2)
+               phat(2) = k_hat(3)*shat(1) - k_hat(1)*shat(3)
+               phat(3) = k_hat(1)*shat(2) - k_hat(2)*shat(1)
+               es = e_hat(1)*shat(1) + e_hat(2)*shat(2) + e_hat(3)*shat(3)
+               ep = e_hat(1)*phat(1) + e_hat(2)*phat(2) + e_hat(3)*phat(3)
+               fs = es*es;  fp = ep*ep
+            else
+               ! Normal incidence: plane of incidence undefined but R_s = R_p.
+               fs = 0.5_wp;  fp = 0.5_wp
+            end if
+
+            reff   = fs*rs2 + fp*rp2
+            absorb = 1.0_wp - reff
+            w = uw(iu) * vw(iv)
+            qint = qint + w * proj * absorb
+            aint = aint + w * proj
+         end do
+      end do
+      deallocate(ug, uw, vg, vw)
+
+      qabs = qint / PI
+      if (present(area_proj)) area_proj = aint
+   end subroutine fresnel_opaque_absorption
+
+
+   subroutine gauss_legendre(n, a, b, x, w)
+      ! Gauss-Legendre nodes x and weights w on [a,b], n-point rule.
+      ! Newton iteration on the Legendre polynomial (Numerical Recipes gauleg).
+      integer,  intent(in)  :: n
+      real(wp), intent(in)  :: a, b
+      real(wp), intent(out) :: x(n), w(n)
+      real(wp), parameter :: PI = acos(-1.0_wp)
+      real(wp), parameter :: TOL = 1.0e-15_wp
+      integer  :: i, j, mid
+      real(wp) :: p1, p2, p3, pp, z, z1, xm, xl
+      mid = (n + 1) / 2
+      xm  = 0.5_wp * (b + a)
+      xl  = 0.5_wp * (b - a)
+      do i = 1, mid
+         z = cos(PI * (real(i, wp) - 0.25_wp) / (real(n, wp) + 0.5_wp))
+         do
+            p1 = 1.0_wp;  p2 = 0.0_wp
+            do j = 1, n
+               p3 = p2;  p2 = p1
+               p1 = (real(2*j-1, wp)*z*p2 - real(j-1, wp)*p3) / real(j, wp)
+            end do
+            pp = real(n, wp) * (z*p1 - p2) / (z*z - 1.0_wp)
+            z1 = z
+            z  = z1 - p1/pp
+            if (abs(z - z1) <= TOL) exit
+         end do
+         x(i)     = xm - xl*z
+         x(n+1-i) = xm + xl*z
+         w(i)     = 2.0_wp * xl / ((1.0_wp - z*z) * pp*pp)
+         w(n+1-i) = w(i)
+      end do
+   end subroutine gauss_legendre
 
 end module asymptotic_optics

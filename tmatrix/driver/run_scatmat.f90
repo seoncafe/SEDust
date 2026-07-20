@@ -114,7 +114,7 @@ program run_scatmat
                                   al1, al2, al3, al4, be1, be2, lmax)
             n_small = n_small + 1
          else if (x > X_LARGE) then
-            call geometric_optics_limit(a_dist(ia), wl_req(iw), nr, ki, &
+            call geometric_optics_limit(a_dist(ia), wl_req(iw), nr, ki, EPS_BA, &
                                   qext, qsca, walb, asymm, &
                                   al1, al2, al3, al4, be1, be2, lmax)
             n_large = n_large + 1
@@ -131,7 +131,7 @@ program run_scatmat
                                         qext, qsca, walb, asymm, &
                                         al1, al2, al3, al4, be1, be2, lmax)
                else
-                  call geometric_optics_limit(a_dist(ia), wl_req(iw), nr, ki, &
+                  call geometric_optics_limit(a_dist(ia), wl_req(iw), nr, ki, EPS_BA, &
                                         qext, qsca, walb, asymm, &
                                         al1, al2, al3, al4, be1, be2, lmax)
                end if

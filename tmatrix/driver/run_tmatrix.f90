@@ -168,7 +168,7 @@ program run_tmatrix
             qabs = qext - qsca
             flag = 10
          else if (x > X_LARGE) then
-            call geometric_optics_limit(a_eff(ja), lambda(jw), nr, ki, qext, qsca, walb, asymm)
+            call geometric_optics_limit(a_eff(ja), lambda(jw), nr, ki, EPS_BA, qext, qsca, walb, asymm)
             qabs = qext - qsca
             flag = 20
          else
@@ -179,7 +179,7 @@ program run_tmatrix
                   call rayleigh_limit(a_eff(ja), lambda(jw), nr, ki, EPS_BA, qext, qsca, walb, asymm)
                   flag = ierr_t + 10
                else
-                  call geometric_optics_limit(a_eff(ja), lambda(jw), nr, ki, qext, qsca, walb, asymm)
+                  call geometric_optics_limit(a_eff(ja), lambda(jw), nr, ki, EPS_BA, qext, qsca, walb, asymm)
                   flag = ierr_t + 20
                end if
             else

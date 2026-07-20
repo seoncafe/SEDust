@@ -53,6 +53,8 @@ SRC_CMP2 = $(SRC_COMM) driver/tmatrix_oriented.f90 \
            driver/compare_tmatrix_jori.f90
 SRC_CMP3 = $(SRC_COMM) driver/tmatrix_oriented.f90 \
            driver/compare_tmatrix_abs.f90
+SRC_CMP4 = $(SRC_COMM) driver/tmatrix_oriented.f90 \
+           driver/compare_go_jori.f90
 
 all: run_tmatrix.x run_scatmat.x
 
@@ -103,12 +105,23 @@ compare_tmatrix_abs.x: $(SRC_TM) $(SRC_CMP3)
 	@echo 'Built: ./compare_tmatrix_abs.x'
 	@echo 'Run:   ./compare_tmatrix_abs.x'
 
+# Geometric-optics check: oriented Q_ext (projected-area extinction paradox)
+# and Q_abs (opaque-grain Fresnel surface integral) vs the HD23 orientation-
+# resolved table over the x > 50 subset, plus the continuity checks across
+# x = 50 that use the T-matrix core (src/ampl_oriented.f).
+compare_go_jori.x: $(SRC_TM) $(SRC_CMP4)
+	@mkdir -p build/cmp4
+	$(FC) $(FFLAGS) -Isrc -Jbuild/cmp4 $^ $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./compare_go_jori.x'
+	@echo 'Run:   ./compare_go_jori.x'
+
 clean:
 	rm -f *.o *.mod
 	rm -rf build
 
 cleanall: clean
 	rm -f run_tmatrix.x run_scatmat.x compare_rayleigh_jori.x \
-	      compare_tmatrix_jori.x compare_tmatrix_abs.x
+	      compare_tmatrix_jori.x compare_tmatrix_abs.x compare_go_jori.x
 
 .PHONY: all clean cleanall
