@@ -33,7 +33,8 @@ module sed_astrodust_mod
    use q_table_jori_mod,      only: load_q_table_jori, falign_hd23, &
                                     qj_n_lam=>nj_lam, qj_lam=>lam_j, &
                                     qj_aeff=>aeff_j, qj_qpol_abs=>qpol_abs, &
-                                    qj_qpol_ext=>qpol_ext
+                                    qj_qpol_ext=>qpol_ext, &
+                                    qj_qbir_ext=>qbir_ext, qj_has_bir=>has_bir
    use size_dist_mod,         only: load_size_dist, sd_n=>n_size, &
                                     sd_aeff=>a_dist, sd_dn=>dn_ad, &
                                     sd_dn_pah=>dn_pah, sd_fion=>f_ion
@@ -49,6 +50,7 @@ module sed_astrodust_mod
    use pah_ioniz_mod,         only: pah_ionfrac
    use dust_model_mod,        only: dust_model_t, grain_pop_t, free_dust_model, &
                                     dust_set_alignment, dust_set_alignment_profile
+   use scatmat_aligned_mod,   only: load_scatmat_aligned
    use zubko_io,              only: zda_comp_t, read_zda_config, zda_gofa, &
                                     read_zubko_optics, read_zubko_calor, &
                                     read_dnda_table, ZDA_MAXCOMP
@@ -65,7 +67,7 @@ module sed_astrodust_mod
    public :: Cabs, Csca, Cabs_pah, kappB_first, kappB_pah_first
    ! Polarized absorption cross section and alignment efficiency of the
    ! astrodust population (zero when the orientation-resolved table is absent).
-   public :: Cpol, Cpol_ext, falign_ad, gsca_ad
+   public :: Cpol, Cpol_ext, Cbir_ext, falign_ad, gsca_ad
    ! Charge-resolved PAH cross sections and number densities (neutral/cation),
    ! exposed so the MC SED builder can reproduce the same charge blend as
    ! the production sed_solve_pah (it loops both charge states).
@@ -144,6 +146,12 @@ module sed_astrodust_mod
    ! around it.
    real(wp), allocatable :: Cpol(:,:)           ! [cm^2] (NLAM, NA)
    real(wp), allocatable :: Cpol_ext(:,:)       ! [cm^2] (NLAM, NA)
+   ! Birefringent extinction cross section 0.5*(Cre_ext(3)-Cre_ext(2)) of the
+   ! aligned astrodust spheroid, the UV-block optic of the extinction matrix.
+   ! Built from the optional 4th (forward-amplitude real-part) block of the
+   ! orientation-resolved table; stays zero when that block is absent. See
+   ! build_Cpol.
+   real(wp), allocatable :: Cbir_ext(:,:)       ! [cm^2] (NLAM, NA)
    real(wp), allocatable :: falign_ad(:)        ! (NA)
    ! Scattering asymmetry <cos> of the astrodust grains, taken from the same
    ! T-matrix Q table as Cabs/Csca and interpolated onto the size grid the same
@@ -233,7 +241,7 @@ contains
 
    ! =====================================================================
    subroutine sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status, &
-                       qpol_path, qpol_wave_path, qpol_aeff_path)
+                       qpol_path, qpol_wave_path, qpol_aeff_path, scatmat_path)
       character(len=*), intent(in) :: qtable_path, sizedist_path
       integer,          intent(in) :: NT_in
       real(wp),         intent(in) :: T_lo, T_hi
@@ -242,6 +250,8 @@ contains
       ! readers keep their message + stop behavior (as the CLI drivers expect).
       !   status = 1  Q-table load failed
       !   status = 2  size-distribution load failed
+      !   status = 3  aligned scattering table load failed (only when
+      !               scatmat_path is supplied)
       integer, optional, intent(out) :: status
       ! Orientation-resolved DH21 table and its grid axes, supplying the
       ! polarized optics. Default to QPOL_*_DEF. A table that cannot be read
@@ -249,7 +259,12 @@ contains
       ! without polarized emission.
       character(len=*), optional, intent(in) :: qpol_path, qpol_wave_path, &
                                                 qpol_aeff_path
-      integer  :: i, ja, jw, jt, is
+      ! Aligned scattering table (run_scatmat_aligned.x product) for a polarized
+      ! RT host. When present it is parsed into scatmat_aligned_mod here at init;
+      ! its failure IS an error (status 3), unlike the polarized-optics table,
+      ! because a host that asked for it depends on it.
+      character(len=*), optional, intent(in) :: scatmat_path
+      integer  :: i, ja, jw, jt, is, scstat
       real(wp) :: a_um, x, t, Q_neu, Q_ion
       logical  :: rok
       character(len=512) :: pol_q, pol_w, pol_a
@@ -277,9 +292,9 @@ contains
                                           dn_pah, Cabs_pah, kappB_pah_first, &
                                           H_pah_first, kappCMB_pah, &
                                           log_H_pah_first, log_kappB_pah_first)
-      if (allocated(Cpol))     deallocate(Cpol, Cpol_ext, falign_ad)
+      if (allocated(Cpol))     deallocate(Cpol, Cpol_ext, Cbir_ext, falign_ad)
       if (allocated(gsca_ad))  deallocate(gsca_ad)
-      allocate(Cpol(NLAM, NA), Cpol_ext(NLAM, NA), falign_ad(NA))
+      allocate(Cpol(NLAM, NA), Cpol_ext(NLAM, NA), Cbir_ext(NLAM, NA), falign_ad(NA))
       allocate(gsca_ad(NLAM, NA))
       allocate(lam(NLAM), aeff(NA), T_first(NT), dn_ad(NA))
       allocate(Cabs(NLAM, NA), Csca(NLAM, NA), kappB_first(NT, NA), &
@@ -335,6 +350,20 @@ contains
       pol_w = QPOL_W_DEF;  if (present(qpol_wave_path)) pol_w = qpol_wave_path
       pol_a = QPOL_A_DEF;  if (present(qpol_aeff_path)) pol_a = qpol_aeff_path
       call build_Cpol(trim(pol_q), trim(pol_w), trim(pol_a))
+
+      ! ---- aligned scattering table for a polarized RT host (optional) ----
+      if (present(scatmat_path)) then
+         call load_scatmat_aligned(scatmat_path, scstat)
+         if (scstat /= 0) then
+            if (present(status)) then
+               status = 3;  return
+            else
+               write(*,'(a,i0,a)') ' sed_init: cannot load aligned scattering table (code ', &
+                    scstat, '): '//trim(scatmat_path)
+               stop 1
+            end if
+         end if
+      end if
 
       ! ---- kappB_first(NT, NA) = integral of Cabs * B_lambda over lambda ----
       call build_kappB()
@@ -574,7 +603,7 @@ contains
             log_H_pah_first, log_kappB_pah_first)
       ! DL07 has no polarized optics; drop anything a previous astrodust
       ! init left behind rather than leave stale arrays on the wrong grid.
-      if (allocated(Cpol)) deallocate(Cpol, Cpol_ext, falign_ad)
+      if (allocated(Cpol)) deallocate(Cpol, Cpol_ext, Cbir_ext, falign_ad)
       ! Likewise the astrodust asymmetry table: DL07 optics carry no <cos> here.
       if (allocated(gsca_ad)) deallocate(gsca_ad)
       allocate(lam(NLAM), aeff(NA), T_first(NT), dn_ad(NA))
@@ -1566,17 +1595,20 @@ contains
 
 
    subroutine build_Cpol(q_file, wave_file, aeff_file)
-      ! Fill Cpol(NLAM, NA), Cpol_ext(NLAM, NA) and falign_ad(NA) from the
-      ! orientation-resolved DH21 spheroid table:
+      ! Fill Cpol(NLAM, NA), Cpol_ext(NLAM, NA), Cbir_ext(NLAM, NA) and
+      ! falign_ad(NA) from the orientation-resolved DH21 spheroid table:
       !
       !   Q_pol,abs = 0.5 * (Q_abs(k perp a, E perp a) - Q_abs(k perp a, E || a))
       !   C_pol     = Q_pol,abs * pi * a_eff^2
       !   Q_pol,ext = 0.5 * (Q_ext(k perp a, E perp a) - Q_ext(k perp a, E || a))
       !   C_pol_ext = Q_pol,ext * pi * a_eff^2
+      !   Q_bir,ext = 0.5 * (Q_re(k perp a, E perp a) - Q_re(k perp a, E || a))
+      !   C_bir_ext = Q_bir,ext * pi * a_eff^2
       !
       ! C_pol drives the polarized emission; C_pol_ext drives the dichroic
-      ! (polarized) extinction a radiative transfer host needs for the
-      ! extinction matrix.
+      ! (polarized) extinction and C_bir_ext the birefringence a radiative
+      ! transfer host needs for the extinction matrix. C_bir_ext is built only
+      ! from a 4-block table (has_bir); it stays zero for an older 3-block table.
       !
       ! i.e. the absorption difference a perfectly aligned grain with its
       ! symmetry axis in the plane of the sky presents to the two linear
@@ -1603,6 +1635,7 @@ contains
 
       Cpol      = 0.0_wp
       Cpol_ext  = 0.0_wp
+      Cbir_ext  = 0.0_wp
       falign_ad = 0.0_wp
 
       call load_q_table_jori(q_file, wave_file, aeff_file, ok=rok)
@@ -1637,6 +1670,15 @@ contains
          Cpol_ext(:, ja) = Cpol_ext(:, ja) * PI * (aeff(ja) * UM2CM)**2
          falign_ad(ja)   = falign_hd23(aeff(ja))
       end do
+
+      ! Birefringent extinction, present only when the table carries the 4th
+      ! (forward-amplitude real-part) block.
+      if (qj_has_bir) then
+         do ja = 1, NA
+            call interp_q_grid(log(aeff(ja)), qj_aeff, qj_qbir_ext, Cbir_ext(:, ja))
+            Cbir_ext(:, ja) = Cbir_ext(:, ja) * PI * (aeff(ja) * UM2CM)**2
+         end do
+      end if
    end subroutine build_Cpol
 
 
@@ -1742,7 +1784,7 @@ contains
    ! Copy one population's arrays (from the module globals) into a grain_pop_t.
    subroutine set_pop(p, gtype, chan, dn_in, Cabs_in, kappB_in, H_in, &
                       log_H_in, log_kappB_in, kappCMB_in, Cpol_in, falign_in, &
-                      Csca_in, Cpol_ext_in, gsca_in)
+                      Csca_in, Cpol_ext_in, gsca_in, Cbir_ext_in)
       type(grain_pop_t), intent(inout) :: p
       character(len=*),  intent(in)    :: gtype
       integer,           intent(in)    :: chan
@@ -1759,6 +1801,10 @@ contains
       ! leaves them out and contributes zero to those terms of the size
       ! integral. The emission path never touches them.
       real(wp), optional, intent(in)   :: Csca_in(:,:), Cpol_ext_in(:,:), gsca_in(:,:)
+      ! Birefringent extinction, read only by dust_extinction. Optional and
+      ! independent: a population without it (the PAHs, or an astrodust model
+      ! built from a 3-block table) leaves it out and contributes zero.
+      real(wp), optional, intent(in)   :: Cbir_ext_in(:,:)
       p%grain_type = gtype
       p%out_channel = chan
       p%aeff      = aeff          ! [um] module-global size grid (set by sed_init)
@@ -1776,13 +1822,19 @@ contains
       if (present(Csca_in))     p%Csca     = Csca_in
       if (present(Cpol_ext_in)) p%Cpol_ext = Cpol_ext_in
       if (present(gsca_in))     p%gsca     = gsca_in
+      ! Store C_bir_ext only when the table supplied it (all-zero for a 3-block
+      ! table); an all-zero array would contribute nothing anyway, but leaving
+      ! it unallocated keeps the has-birefringence test honest.
+      if (present(Cbir_ext_in)) then
+         if (any(Cbir_ext_in /= 0.0_wp)) p%Cbir_ext = Cbir_ext_in
+      end if
    end subroutine set_pop
 
 
    ! Build the HD23 astrodust model into m. Channels: AD_S1, AD_S2, PAH
    ! (PAH = neutral + cation populations summed into one channel).
    subroutine build_astrodust(m, qtable_path, sizedist_path, NT_in, T_lo, T_hi, status, &
-                              qpol_path, qpol_wave_path, qpol_aeff_path)
+                              qpol_path, qpol_wave_path, qpol_aeff_path, scatmat_path)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: qtable_path, sizedist_path
       integer,            intent(in)  :: NT_in
@@ -1792,12 +1844,18 @@ contains
       ! the process; when absent the build stops on error (CLI behavior).
       !   status = 1  Q-table load failed
       !   status = 2  size-distribution load failed
+      !   status = 3  aligned scattering table load failed (only when
+      !               scatmat_path is supplied)
       integer, optional,  intent(out) :: status
       ! Orientation-resolved DH21 table + grid axes for the polarized optics,
       ! forwarded to sed_init. Omit to use the defaults; a table that cannot
       ! be read leaves the model unpolarized without failing the build.
       character(len=*), optional, intent(in) :: qpol_path, qpol_wave_path, &
                                                 qpol_aeff_path
+      ! Aligned scattering table (run_scatmat_aligned.x product) for a polarized
+      ! RT host, forwarded to sed_init. Omit to skip it; when supplied its
+      ! failure fails the build (status 3), unlike the polarized-optics table.
+      character(len=*), optional, intent(in) :: scatmat_path
       character(len=512) :: pol_q, pol_w, pol_a
 
       if (present(status)) status = 0
@@ -1808,9 +1866,15 @@ contains
 
       ! Astrodust/HD23 optics: Nc=417 (rho=2.0), D16 turbostratic graphite.
       nc_coeff = 417.0d0;  nc_integer = .false.;  qpah_use_d03_graphite = .false.
-      call sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status=status, &
-                    qpol_path=trim(pol_q), qpol_wave_path=trim(pol_w), &
-                    qpol_aeff_path=trim(pol_a))  ! sets globals
+      if (present(scatmat_path)) then
+         call sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status=status, &
+                       qpol_path=trim(pol_q), qpol_wave_path=trim(pol_w), &
+                       qpol_aeff_path=trim(pol_a), scatmat_path=scatmat_path)  ! sets globals
+      else
+         call sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status=status, &
+                       qpol_path=trim(pol_q), qpol_wave_path=trim(pol_w), &
+                       qpol_aeff_path=trim(pol_a))  ! sets globals
+      end if
       if (present(status)) then
          if (status /= 0) return
       end if
@@ -1837,7 +1901,8 @@ contains
       call set_pop(m%pops(1), 'sil', 1, dn_ad, Cabs, kappB_first, H_first(:,:,2), &
                    log_H_first(:,:,2), log_kappB_first, kappCMB, &
                    Cpol_in=Cpol, falign_in=falign_ad, &
-                   Csca_in=Csca, Cpol_ext_in=Cpol_ext, gsca_in=gsca_ad)
+                   Csca_in=Csca, Cpol_ext_in=Cpol_ext, gsca_in=gsca_ad, &
+                   Cbir_ext_in=Cbir_ext)
       call set_pop(m%pops(2), 'pah', 2, dn_cneu, Cabs_cneu, kappB_cneu, H_pah_first, &
                    log_H_pah_first, log_kappB_cneu, kappCMB_cneu)
       call set_pop(m%pops(3), 'pah', 2, dn_cion, Cabs_cion, kappB_cion, H_pah_first, &
@@ -2485,21 +2550,27 @@ contains
    !   C_ext/H  = C_abs/H + C_sca/H
    !   <cos>    = sum dn * Csca * g  /  sum dn * Csca      (scattering-weighted)
    !   C_polext = sum_pop sum_a dn(a) * Cpol_ext(lambda, a) * f_align(a)
-   ! A population whose Csca / gsca / Cpol_ext are unallocated contributes zero
-   ! to those terms; in the astrodust model the PAHs are exactly that case, so
-   ! they enter through absorption only.
+   !   C_birext = sum_pop sum_a dn(a) * Cbir_ext(lambda, a) * f_align(a)
+   ! A population whose Csca / gsca / Cpol_ext / Cbir_ext are unallocated
+   ! contributes zero to those terms; in the astrodust model the PAHs are exactly
+   ! that case, so they enter through absorption only. C_birext is also zero
+   ! when the model was built from a 3-block table with no birefringence.
    !
-   ! Units: all cross sections [cm^2/H]; gbar dimensionless. C_polext is the
-   ! MAXIMUM polarized extinction -- the size integral and the f_align weight
-   ! are done here, but the sin^2(gamma) geometry factor and any turbulent
-   ! depolarization are the radiative transfer's job and are NOT applied.
+   ! Units: all cross sections [cm^2/H]; gbar dimensionless. C_polext and
+   ! C_birext are the MAXIMUM dichroic and birefringent extinction -- the size
+   ! integral and the f_align weight are done here, but the sin^2(gamma) geometry
+   ! factor and any turbulent depolarization are the radiative transfer's job and
+   ! are NOT applied. C_polext is the IQ-block optic and C_birext the UV-block
+   ! optic of the extinction matrix (see extinction_matrix_aligned).
    ! REQUIRES: m is the most recently built model (its grids == the globals).
-   subroutine dust_extinction(m, Cext, Cabs, Csca, gbar, Cpol_ext, status)
+   subroutine dust_extinction(m, Cext, Cabs, Csca, gbar, Cpol_ext, Cbir_ext, status)
       type(dust_model_t), intent(in)  :: m
       real(wp),           intent(out) :: Cext(:), Cabs(:), Csca(:)   ! (NLAM) [cm^2/H]
       ! Scattering-weighted asymmetry; 0 where nothing scatters.
       real(wp), optional, intent(out) :: gbar(:)                     ! (NLAM)
       real(wp), optional, intent(out) :: Cpol_ext(:)                 ! (NLAM) [cm^2/H]
+      ! Birefringent extinction; 0 for a 3-block model or where nothing aligns.
+      real(wp), optional, intent(out) :: Cbir_ext(:)                 ! (NLAM) [cm^2/H]
       ! Optional error report (0 = success). When present, a size mismatch is
       ! reported through it instead of stopping the process; when absent such a
       ! call stops the run, matching dust_emission.
@@ -2514,6 +2585,7 @@ contains
       bad = size(Cext) /= m%NLAM .or. size(Cabs) /= m%NLAM .or. size(Csca) /= m%NLAM
       if (present(gbar))     bad = bad .or. size(gbar)     /= m%NLAM
       if (present(Cpol_ext)) bad = bad .or. size(Cpol_ext) /= m%NLAM
+      if (present(Cbir_ext)) bad = bad .or. size(Cbir_ext) /= m%NLAM
       if (bad) then
          if (present(status)) then
             status = 1;  return
@@ -2526,6 +2598,7 @@ contains
       allocate(gnum(m%NLAM))
       Cabs = 0.0_wp;  Csca = 0.0_wp;  gnum = 0.0_wp
       if (present(Cpol_ext)) Cpol_ext = 0.0_wp
+      if (present(Cbir_ext)) Cbir_ext = 0.0_wp
 
       do ip = 1, size(m%pops)
          na_p = size(m%pops(ip)%dn)
@@ -2555,6 +2628,16 @@ contains
                   do jw = 1, m%NLAM
                      Cpol_ext(jw) = Cpol_ext(jw) + m%pops(ip)%dn(ja) &
                                     * m%pops(ip)%Cpol_ext(jw, ja) * m%pops(ip)%falign(ja)
+                  end do
+               end do
+            end if
+         end if
+         if (present(Cbir_ext)) then
+            if (allocated(m%pops(ip)%Cbir_ext) .and. allocated(m%pops(ip)%falign)) then
+               do ja = 1, na_p
+                  do jw = 1, m%NLAM
+                     Cbir_ext(jw) = Cbir_ext(jw) + m%pops(ip)%dn(ja) &
+                                    * m%pops(ip)%Cbir_ext(jw, ja) * m%pops(ip)%falign(ja)
                   end do
                end do
             end if

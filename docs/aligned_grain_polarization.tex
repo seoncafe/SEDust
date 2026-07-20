@@ -44,7 +44,7 @@
 
 \title{Polarization by Aligned Grains: What SEDust and MoCafe Would Need}
 \author{Kwang-il Seon}
-\date{2026 July 18}
+\date{2026 July 20}
 
 \begin{document}
 \maketitle
@@ -1207,12 +1207,13 @@ $Z(\theta)$ at $V$, random orientation &
   far-infrared polarization comes from grains well above it, where all
   forms agree. \\
 $Z(\lambda,\theta)$, aligned orientation &
-  SEDust & later &
-  The fixed-orientation amplitude is now in the build
-  (\code{ampl\_oriented.f}), but only the forward value and the
-  scattering integral are used; the full aligned matrix at all angles is
-  not yet formed. Aligned spheroids scatter anisotropically with respect
-  to $\mathbf{B}$, which spherical Mie cannot represent. \\
+  SEDust & \textbf{done} &
+  Now built: the full fixed-orientation Mueller matrix
+  $Z(\theta_i;\theta_s,\phi)$ is formed at all scattering angles from
+  \code{ampl\_oriented.f} and size-integrated over the aligned population,
+  in five optical bands (\S\ref{sec:alignedscat}). Aligned spheroids scatter
+  anisotropically with respect to $\mathbf{B}$, which spherical Mie cannot
+  represent. \\
 \Ccirc &
   SEDust & done (optics) &
   Birefringence converts $U$ into $V$. Absent from the release, but now
@@ -1286,18 +1287,17 @@ other side, noting that the step and smooth forms are distinguishable
 only in the optical. This item does not become easier at a single
 wavelength and keeps its priority.
 
-\paragraph{Scattering matrix, aligned orientation (later).} The full
-orientation-dependent amplitude matrix is evaluated by \code{AMPL}, now in the
-build as \code{ampl\_oriented.f} and already used for the forward amplitude and
-the scattering integral; what is missing is retaining it at all scattering angles
-and assembling the sixteen Mueller elements. Stated
-for a wavelength grid the cost is storage rather than algorithm, since
-the table acquires a wavelength, a scattering angle, an orientation and
-$16$ matrix elements. At a single wavelength the wavelength axis drops
-out and the table is far smaller, which is worth remembering before this
-item is dismissed as infeasible. There is no shortcut through published
-data: the HD21 release carries integrated $Q_{\rm ext}$, $Q_{\rm abs}$
-and $Q_{\rm sca}$ only, with no scattering matrix at any orientation.
+\paragraph{Scattering matrix, aligned orientation (built).} The full
+orientation-dependent amplitude matrix is evaluated by \code{AMPL}, in the build
+as \code{ampl\_oriented.f}. Retaining it at all scattering angles and assembling
+the sixteen Mueller elements --- the step that was missing --- is now done, and
+the result is size-integrated over the aligned population into the phase matrix
+$Z_{\rm al}(\theta_i;\theta_s,\phi)$ and the extinction matrix $K(\theta_i)$. The
+cost turned out to be storage rather than algorithm, as anticipated: the shipped
+file spans five optical bands at 138\,MB (\S\ref{sec:alignedscat}). There is no
+shortcut through published data --- the HD21 release carries integrated
+$Q_{\rm ext}$, $Q_{\rm abs}$ and $Q_{\rm sca}$ only, with no scattering matrix at
+any orientation --- so this had to be computed from the T-matrix directly.
 
 \paragraph{Birefringence came free with the aligned extinction, as
 predicted.} \Ccirc\ is absent from the release but needs no separate
@@ -1308,11 +1308,11 @@ already done for \Cpol\ yields \Ccirc\ from the same output. Keeping the
 real part is now implemented: the regenerated table carries it as a 4th
 block, and it is certified by Kramers-Kronig against the dichroism to a
 median $\sim0.1\%$ over the interior of the grid, the only check available
-since the release publishes no birefringence. What is still deferred is
-returning it through \code{dust\_extinction} and using it in the
-$U\leftrightarrow V$ transfer term; the aligned scattering matrix, a
-separate and larger item, is where any remaining circular-polarization work
-belongs.
+since the release publishes no birefringence. \code{dust\_extinction} now
+returns it through an optional \code{Cbir\_ext} argument, and the aligned
+scattering table carries the same birefringence in its $K(\theta_i)$
+(\S\ref{sec:alignedscat}); what remains is using it in the
+$U\leftrightarrow V$ transfer term, which is the host's task.
 
 \paragraph{The averaging conventions do not match, but not yet
 critically.} SEDust builds \Cabs\ from the exact orientation average of
@@ -1366,8 +1366,9 @@ optical bands after, the realistic sequence is:
       already provides $Z(\theta)$ in five optical bands, and widening
       that set costs another run rather than another method. What
       remains is consuming it.
-\item Only then the aligned scattering matrix, \Ccirc, the averaging
-      convention, and any extension beyond the optical.
+\item Only then bring in the aligned scattering matrix (its supply is now
+      built, \S\ref{sec:alignedscat}; what remains is consuming it), \Ccirc,
+      the averaging convention, and any extension beyond the optical.
 \end{enumerate}
 
 The point worth emphasizing is that step~1 on its own is already the
@@ -1564,6 +1565,195 @@ physics or a better solver. It is the same pressure that leads the Hoang
 group to raise the axial ratio to $2$--$3$ when fitting real sight
 lines, and it belongs with the open shape question of
 \S\ref{sec:unverified}.
+
+%====================================================================
+\section{The aligned scattering matrix, as built}
+\label{sec:alignedscat}
+
+\emph{Status note (2026 July 20). The item this section describes ---
+$Z(\lambda,\theta)$ for aligned orientation, listed as ``later'' in earlier
+drafts and now marked \textbf{done} in Table~\ref{tab:optical} --- is built and
+verified. Its implementation is documented in
+\code{sedust\_polarization\_implementation.pdf} \S8 and its calling interface in
+the SEDust user manual; this section records the physics and the place it takes
+in the transfer.}
+
+The random-orientation matrix of \S\ref{sec:optical} answers how an
+\emph{unaligned} population scatters. An aligned grain scatters differently
+depending on how the incident ray is inclined to its symmetry axis, and that
+dependence is the scattering-side counterpart of the dichroic extinction the
+model already supplies. SEDust now computes it for the astrodust spheroid, from
+the same fixed-orientation T-matrix amplitude used for the oriented cross
+sections.
+
+\subsection{Why the phase matrix carries three angles}
+
+For a randomly oriented particle with a plane of symmetry the scattering matrix
+depends on the single scattering angle $\Theta$ and has six independent elements
+(the $F_{11},F_{22},F_{33},F_{44},F_{12},F_{34}$ of \S\ref{sec:optical}). Fix the
+grain --- place its symmetry axis $\hat a$ along $z$ --- and that reduction no
+longer holds: the matrix depends on the incidence direction relative to the axis
+\emph{and} on the full scattering direction. Writing $\theta_i$ for the polar
+angle of incidence from the axis and $(\theta_s,\phi)$ for the scattering
+direction, axial symmetry leaves only the azimuth \emph{difference} $\phi$, so
+\begin{equation}
+  Z = Z(\theta_i;\,\theta_s,\phi),\qquad 16\ \hbox{elements},\ \
+  \um^2\,\mathrm{sr}^{-1}.
+  \label{eq:Zangles}
+\end{equation}
+Sixteen elements rather than six is the price of dropping the orientation
+average, and the extra argument $\theta_i$ is exactly the inclination of the ray
+to $\mathbf{B}$ that carries the aligned-scattering information.
+
+\subsection{The meridional basis}
+
+Stokes vectors are referred to Mishchenko's meridional basis of each propagation
+direction \emph{in the grain frame}, whose $z$ axis is the alignment axis (the
+local $\mathbf{B}$): $\hat e_1 = \hat\theta$ (call it $v$), $\hat e_2 = \hat\phi$
+($h$), with $Q = I_v - I_h$. This is the basis into which the fixed-orientation
+amplitude matrix $\mathbf{S}$ is naturally rotated, so no adaptor stands between
+the analytic dipole limit and the T-matrix regime. At $\theta_i = 90^\circ$ the
+$v$ polarization is $\mathbf{E}\parallel\hat a$ (the jori\,$=2$ orientation of
+\S\ref{sec:optics}) and $h$ is $\mathbf{E}\perp\hat a$ (jori\,$=3$), which ties
+the extinction matrix at edge-on incidence back to the jori cross sections and
+fixes the sign of $\Cpol = \tfrac12[C_H(90) - C_E(90)]$ of Eq.~(\ref{eq:cpol}).
+The transfer code rotates the photon Stokes vector into this grain frame at each
+scattering event and back out afterward.
+
+\subsection{Exact symmetries}
+
+Three symmetries of the oblate spheroid reduce the stored angular ranges and, more
+usefully, are exact numerical checks on the matrix construction:
+\begin{itemize}
+\item \textbf{Azimuth mirror.} The plane through the axis and the incidence
+      direction is a symmetry plane, so $\phi\to360^\circ-\phi$ leaves $Z$
+      unchanged except that the two off-diagonal $2\times2$ blocks (elements
+      $13,14,23,24,31,32,41,42$) change sign. Only $\phi\in[0,180^\circ]$ need be
+      stored.
+\item \textbf{Equatorial mapping.} Under $z\to-z$, $\theta_i\to180^\circ-\theta_i$
+      maps onto the stored range with $\theta_s\to180^\circ-\theta_s$, $\phi$
+      unchanged, and the same off-diagonal-block sign flip (the diagonal blocks
+      keep their sign). Only $\theta_i\in[0,90^\circ]$ need be stored; physically
+      this encodes that the alignment axis is headless.
+\item \textbf{Axisymmetry at $\theta_i=0$.} When the ray travels along the axis
+      the problem is axisymmetric: $Z$ becomes independent of $\phi$ up to a frame
+      rotation and takes the six-element block-diagonal form. This is a check, not
+      a saving.
+\end{itemize}
+All three were verified numerically (to $\sim10^{-15}$ for the equatorial mapping,
+a few parts in $10^{7}$ for the azimuth mirror) before being used to reconstruct
+the unstored octants.
+
+\subsection{Aligned plus unaligned, exactly}
+
+Partial alignment is handled by the same decomposition used for the extinction: a
+perfectly aligned fraction $\falign(a)$ plus a randomly oriented remainder,
+\begin{equation}
+  Z_{\rm total}(\theta_i;\theta_s,\phi) = \int da\,n(a)\,
+    \bigl[\,\falign(a)\,Z_{\rm oriented}(a) + (1-\falign(a))\,F_{\rm random}(a)\,
+    \bigr].
+  \label{eq:zdecomp}
+\end{equation}
+SEDust stores the aligned integral $Z_{\rm al} = \int da\,n(a)\,\falign(a)\,
+Z_{\rm oriented}(a)$, the random-orientation matrix $F_{\rm tot}$ of every grain,
+and its aligned-weighted twin $F_{\rm ref} = \int da\,n(a)\,\falign(a)\,
+F_{\rm random}(a)$. Because Eq.~(\ref{eq:zdecomp}) is \emph{linear} in $\falign$,
+a cell alignment written as $\falign^{\rm cell} = \eta\,\falign^{\rm ref}$ with one
+scalar $\eta$ scales the aligned part exactly, $Z_{\rm al}^{\rm cell} = \eta\,
+Z_{\rm al}$, and the unaligned remainder is $F_{\rm unal} = F_{\rm tot} - \eta\,
+F_{\rm ref}$ (in absolute units, after restoring each matrix's $C_{\rm sca}$). Three
+stored integrals therefore give the scattering optics of any $\eta$ with no
+re-integration and no approximation --- the Rayleigh reduction factor $R$ of
+\S\ref{sec:alignment} enters as this $\eta$. A genuinely different profile shape
+requires regenerating the integrals over size.
+
+\subsection{The extinction matrix from forward amplitudes}
+
+The $4\times4$ extinction matrix of Eq.~(\ref{eq:transfer}) needs $\Cext(\theta_i)$,
+the dichroism $\Cpol(\theta_i)$, and the birefringence $\Ccirc(\theta_i)$ at the
+ray's inclination to the field. These are read from the \emph{forward} amplitude
+at each $\theta_i$ --- the same amplitude call the scattering matrix uses ---
+with $\Cext$ from its imaginary part (the optical theorem) and $\Ccirc$ from its
+real part, exactly as \S\ref{sec:optics} anticipated for the free birefringence.
+Stored on the $\theta_i$ grid, the extinction matrix is thus \emph{exact at every
+propagation angle}.
+
+This supersedes the interpolation the three-orientation table forces. The jori
+table gives $C_E$ only at $\psi = 0$ and $90^\circ$, so a transfer code has to
+interpolate between them with the modified picket fence $\sin^2\psi$ law of
+Eq.~(\ref{eq:mpfa}); away from small size parameters that law is only accurate to
+about ten percent. The forward-amplitude route removes the interpolation. In the
+Rayleigh limit it \emph{reduces} to the $\sin^2$ law exactly: the electric-dipole
+cross sections obey
+\begin{align}
+  C_v(\theta_i) &= \sin^2\theta_i\,C(\mathbf{E}\!\parallel\!\hat a)
+                 + \cos^2\theta_i\,C(\mathbf{E}\!\perp\!\hat a), &
+  C_h(\theta_i) &= C(\mathbf{E}\!\perp\!\hat a),
+  \label{eq:ksin2}
+\end{align}
+so $\Cpol(\theta_i) = \tfrac12[C_h - C_v] = -\tfrac12\sin^2\theta_i\,
+[C(\mathbf{E}\!\parallel\!\hat a) - C(\mathbf{E}\!\perp\!\hat a)]$, which is
+Eq.~(\ref{eq:qabspol}) with $R\to\eta$. The dipole $K(\theta_i)$ reproduces
+Eq.~(\ref{eq:ksin2}) to machine precision, and the T-matrix $K(\theta_i)$ follows
+it to a few parts in $10^4$ at small $x$, which is the anchor that the exact route
+and the interpolated one agree where they must.
+
+\subsection{Where each quantity enters the Peest transfer}
+\label{sec:alignedscat:map}
+
+The Monte Carlo formalism of Peest et al.\ (2017, \code{2017A\&A...601A..92P}),
+extended to aligned spheroids, dichroism and birefringence by Peest et al.\
+(2023, \code{2023A\&A...673A.112P}), and the scattering-plus-dichroism transfer of
+Seon (2018, \code{2018ApJ...862...87S}) are the destination. Each SEDust quantity
+maps onto one step of it (Table~\ref{tab:peestmap}); the division of labor is that
+SEDust returns the matrices in the grain frame and MoCafe performs the frame
+rotations, the direction sampling, the peel-off, and the $\exp(-K\tau)$ transfer.
+
+\begin{table}[!ht]
+\centering
+\caption{Which SEDust quantity enters which step of the Peest et al.\ Monte Carlo
+transfer. All are read from the aligned scattering table through the library API;
+$\theta_i = \arccos(\hat k\!\cdot\!\hat B)$ and the cell alignment scale $\eta$
+are the only inputs.}
+\label{tab:peestmap}
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+Transfer step & SEDust quantity & Role \\
+\midrule
+Optical depth / attenuation &
+  $K(\theta_i) = \eta\,K_{\rm al}(\theta_i) + (C_{\rm ext}^{\rm iso} -
+   \eta C_{\rm ext,ref})I$ &
+  The $4\times4$ extinction operator of Eq.~(\ref{eq:transfer}): $\Cext$ on the
+  diagonal, $\Cpol$ in the $IQ$ block (dichroism), $\Ccirc$ antisymmetric in the
+  $UV$ block (birefringence). The aligned piece is direction-resolved; the
+  isotropic remainder avoids double-counting the aligned population. \\
+Albedo, population split &
+  \code{scattering\_cross\_sections} $\to$ $C_{\rm sca,al}(\theta_i)$,
+  $C_{\rm sca,unal}$ &
+  The single-scattering albedo and the probability that an interaction is with the
+  aligned versus the unaligned population. \\
+Direction sampling &
+  $Z_{\rm al,11}(\theta_i;\theta_s,\phi)$ or $F_{\rm unal,11}(\Theta)$ &
+  The sky brightness the scattered direction is drawn from --- the aligned phase
+  function in the grain frame, or the random-orientation one in the scattering
+  plane. \\
+Stokes update at a scatter &
+  full $Z_{\rm al}$ (aligned) or the six-element $F_{\rm unal}$ (unaligned) &
+  Transform the Stokes vector, with meridional rotations into and out of the grain
+  frame for the aligned case; the unaligned case works in the scattering plane as
+  the existing \code{scatmat} file already does. \\
+Peel-off to the observer &
+  $Z_{\rm al}$ / $F_{\rm unal}$ toward $\hat n_{\rm obs}$ &
+  Evaluate the same phase matrix at the forced scattering geometry and weight by
+  the albedo. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The far-infrared and submillimeter milestone needs none of the scattering rows:
+there the albedo is essentially zero and only the $K(\theta_i)$ row and the
+emission vector are used. The scattering rows are what the optical update of
+Seon (2018) additionally requires, and they are now supplied.
 
 %====================================================================
 \section{Validation targets}

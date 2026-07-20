@@ -56,6 +56,7 @@ make                        # make_enthalpy.x  main_astrodust.x  main_dl07.x
 
 # the library, for embedding in an RT code
 make libsedust.a            # link with:  -L. -lsedust -I.
+make use_dustlib_scatmat.x  # reference consumer of the aligned-scattering API
 
 # optical-property tables (extinction, albedo, <cos>, K_abs, polarized ext.)
 make calc_kext_astrodust.x && ./calc_kext_astrodust.x
@@ -77,6 +78,11 @@ cd ../tmatrix && make && ./run_tmatrix.x test   # then ./run_tmatrix.x for the f
 
 # scattering matrix of randomly oriented grains (five optical bands ship with SEDust)
 ./run_scatmat.x 0.55                            # one wavelength; ./run_scatmat.x all for the grid
+
+# fixed-orientation scattering matrix of ALIGNED grains (also five optical bands)
+./run_scatmat_aligned.x test                    # one band, reduced grid: timing + OpenMP check
+./run_scatmat_aligned.x                         # default UBVRI bands -> output/ (~8 min, 32 threads)
+#   profile=FILE regenerates under a different alignment profile in minutes
 ```
 
 Outputs are plain ASCII `.dat` files written to each subdirectory's `output/`.
@@ -162,13 +168,43 @@ gives the dichroism, and it comes for free from the fixed-orientation amplitude
 already computed. The regenerated table stores it as an optional 4th block, from
 which the birefringence cross section follows; since no astrodust reference for it
 exists, it is certified internally by Kramers-Kronig against the dichroism to a
-median of about 0.1%. The released table carries none (circular polarization is
-then zero), `dust_extinction` does not yet return it, and consuming it in the
-transfer is the RT code's task. Scattering by *aligned* grains is not modeled —
-the scattering matrix above is the random-orientation one; this does not limit
-far-infrared or submillimeter polarized emission, where scattering is negligible.
-The PAH component is treated as unaligned, and the DL07 and Zubko models have no
-polarized optics.
+median of about 0.1%. `dust_extinction` returns it through an optional `Cbir_ext`
+argument, which is zero when the loaded table has no 4th block, as the release
+table does not; consuming it in the transfer is the RT code's task.
+
+Scattering by *aligned* grains is now computed from first principles for the
+astrodust spheroid. `tmatrix/run_scatmat_aligned.x` builds the fixed-orientation
+Mueller matrix `Z(theta_i; theta_s, phi)` of the DH21 oblate spheroid — from
+Mishchenko's fixed-orientation amplitude in the T-matrix regime and the analytic
+dipole below it — and size-integrates it over the astrodust distribution with the
+alignment weight `f_align(a)`, writing five optical bands (approximately UBVRI) to
+`output/scatmat_aligned_astrodust_P0.20_Fe0.00_1.400.dat`. The same file carries
+the 4x4 extinction matrix `K(theta_i)` — the total `Cext`, the dichroic `Cpol`,
+and the birefringent `Cbir` on the incidence-angle grid, from the forward
+amplitudes and therefore exact at every propagation angle rather than interpolated
+as `sin^2` — together with the two random-orientation matrices of the aligned and
+of the full population, so the unaligned remainder follows by subtraction. A
+cell's alignment enters only through a scalar `eta` (its local alignment scale)
+and `theta_i = acos(k-hat . B-hat)`: the aligned optics scale as `eta` and the
+unaligned extinction adds `Cext_tot - eta*Cext_ref`, exact by the linearity of the
+size integral in `f_align`. The table ships gzipped (the reader opens `.gz`
+directly) and `run_scatmat_aligned.x` regenerates it in minutes (`profile=FILE`
+swaps the alignment profile).
+
+The library reads it with the same lifecycle as the rest of the API: a
+`scatmat_path` argument on `sed_init` / `build_astrodust` loads and integrates it
+once (serial), and five pure-read query calls — `extinction_matrix_aligned`,
+`mueller_matrix_aligned`, `mueller_matrix_random`, `scattering_cross_sections`,
+and the band selector `scatmat_band` — serve a photon path concurrently from
+OpenMP threads. `sed/rt_example/use_dustlib_scatmat.f90` is a minimal two-cell
+reference consumer. This completes the material side of the Peest-formalism
+contract for aligned-grain polarized transfer: SEDust returns every quantity in
+matrix form, and the MoCafe-side consumption (frame rotations, direction sampling,
+peel-off, the `exp(-K tau)` step) remains future work. The random-orientation
+scatmat file above stays for unaligned use, and it does not limit far-infrared or
+submillimeter polarized emission, where scattering is negligible. The PAH
+component is treated as unaligned, and the DL07 and Zubko models have no polarized
+optics.
 
 ## Documentation
 
@@ -180,7 +216,8 @@ polarized optics.
   engines, and its validation against the matrix solvers.
 - `docs/sedust_polarization_implementation.pdf` — how the polarized optics are
   built: the orientation-resolved table, the derived cross sections, the
-  implementation decisions and their reasons, and the verification.
+  aligned-grain scattering matrix and its two-layer API, the implementation
+  decisions and their reasons, and the verification.
 - `docs/aligned_grain_polarization.pdf` — background on grain alignment and
   polarized radiative transfer, and what a radiative-transfer code would need
   in order to use the polarized optics.
@@ -201,4 +238,4 @@ Rebuild any of them with `pdflatex <name>.tex` (run twice for cross-references).
 
 ---
 
-Last updated: 2026-07-20 17:08 KST
+Last updated: 2026-07-21 00:08 KST

@@ -30,7 +30,7 @@
 
 \title{SEDust: User Manual}
 \author{Kwang-il Seon}
-\date{2026 July 19}
+\date{2026 July 20}
 
 \begin{document}
 \maketitle
@@ -276,7 +276,7 @@ a transfer code takes its opacity from the same model object, and on the same
 wavelength grid \code{m\%lam}, as its emission.
 
 \begin{lstlisting}
-call dust_extinction(m, Cext, Cabs, Csca [, gbar] [, Cpol_ext] [, status])
+call dust_extinction(m, Cext, Cabs, Csca [, gbar] [, Cpol_ext] [, Cbir_ext] [, status])
 \end{lstlisting}
 \begin{itemize}
 \item \code{Cext}, \code{Cabs}, \code{Csca} \code{(m\%NLAM)}: extinction,
@@ -286,6 +286,10 @@ call dust_extinction(m, Cext, Cabs, Csca [, gbar] [, Cpol_ext] [, status])
       $\langle\cos\theta\rangle$, and $0$ where nothing scatters.
 \item \code{Cpol\_ext(m\%NLAM)} (optional): the dichroic (polarized)
       extinction [\,cm$^2$/H\,]; see \S\ref{sec:pol}.
+\item \code{Cbir\_ext(m\%NLAM)} (optional): the birefringent extinction
+      [\,cm$^2$/H\,], the $f_{\rm align}$-weighted size integral of the
+      orientation-resolved table's 4th block. It is $0$ when the loaded table
+      carries no birefringence (the release table does not); see \S\ref{sec:pol}.
 \item \code{status} (optional): error report; see \S\ref{sec:status}.
 \end{itemize}
 
@@ -452,6 +456,20 @@ $\alpha_{\rm align} \le 0$, $f_{\max}$ outside $[0,1]$), and for
 2 for an \code{aeff\_in} that is not positive and strictly increasing, and
 3 for a \code{falign\_in} value outside $[-1, 1]$.
 
+\paragraph{Status code 4: a loaded aligned scattering table is now stale.}
+If an aligned scattering table has been loaded (\S\ref{sec:pol:scatmat}) and the
+requested profile differs from the one that table was integrated under, either
+setter returns the new code \code{4}. This is \emph{non-fatal}: the
+$f_{\rm align}$ update completes and the emission and \code{Cpol\_ext} channels
+re-integrate live under the new profile, so those outputs always honor the latest
+alignment. The code only signals that the loaded scattering matrices no longer
+correspond to it, because they were size-integrated once under the recorded
+profile. The sanctioned runtime variation of the aligned scattering optics is the
+scalar $\eta$ (\S\ref{sec:pol:scatmat}); a genuinely different profile requires
+regenerating the table with \code{run\_scatmat\_aligned.x profile=FILE}. A
+tabulated profile never matches the recorded analytic one and so always raises
+the flag.
+
 \subsection{Where the polarized optics come from}\label{sec:pol:source}
 
 The orientation-resolved spheroid cross sections behind \code{lamI\_pol} and
@@ -468,6 +486,99 @@ same exact optics as the total intensity, removing the mixed averaging conventio
 the release forces; see \code{sedust\_polarization\_implementation.pdf} \S7 and
 \code{tmatrix/run\_q\_jori.x}. Leaving \code{qpol\_path} unset keeps the release
 table and the existing results.
+
+\subsection{Aligned-grain scattering optics}\label{sec:pol:scatmat}
+
+For the astrodust spheroid SEDust also supplies the angle-resolved scattering
+optics of the aligned population, for a polarized RT code that transports a Stokes
+vector: the fixed-orientation Mueller matrix, the $4\times4$ extinction matrix,
+and the random-orientation remainder. These come from a table written by
+\code{tmatrix/run\_scatmat\_aligned.x} (five optical bands ship with SEDust); how
+it is built is documented in \code{sedust\_polarization\_implementation.pdf}
+\S8. The API follows the library's own lifecycle --- initialize once, then query
+along the photon path --- split into two strictly separated layers.
+
+\paragraph{Loading (once per run, serial).} Pass the table path as an optional
+\code{scatmat\_path} to \code{sed\_init} or \code{build\_astrodust}, exactly like
+\code{qpol\_path}:
+\begin{lstlisting}
+call build_astrodust(m, qtab, sizedist, NT, T_lo, T_hi, status=st, &
+                     qpol_path=QPOL, scatmat_path=SCATMAT)
+\end{lstlisting}
+The table is parsed and its size integrals kept in memory (about $81.5$\,MB for the
+production grid). A \code{scatmat\_path} that fails to load is an error
+(\code{status = 3} from the builder), because a host that asked for the table
+depends on it. This layer is not thread-safe; call it from serial code before the
+photon loop.
+
+\paragraph{Path queries (per event, thread-safe).} Five routines, all re-exported
+by \code{dust\_lib}, are pure reads of the loaded arrays: they write only their own
+output arguments, do no I/O and no allocation, and are safe to call concurrently
+from OpenMP photon threads. The whole cell dependence enters through two scalars
+the host already holds --- the alignment scale $\eta$, and the incidence angle
+$\theta_i = \arccos(\hat k\!\cdot\!\hat B)$ between the photon direction and the
+local field, from one dot product.
+\begin{lstlisting}
+call scatmat_band(lambda_um, iband, exact)                     ! pick the band once
+call extinction_matrix_aligned(iband, theta_i, eta, kmat)      ! 4x4  [um^2/H]
+call mueller_matrix_aligned(iband, theta_i, theta_s, phi, z)   ! 4x4  [um^2 sr^-1/H], eta=1
+call mueller_matrix_random(iband, big_theta, f_tot, f_ref)     ! 6-elt random matrices
+call scattering_cross_sections(iband, theta_i, eta, csca_aligned, csca_unaligned)
+\end{lstlisting}
+\begin{itemize}
+\item \code{scatmat\_band}: \code{lambda\_um} [\um] in; \code{iband} the nearest
+      stored band; \code{exact} \code{.true.} if it matched to $10^{-3}$
+      fractionally. The hot path then takes \code{iband} so no wavelength search
+      runs each event.
+\item \code{extinction\_matrix\_aligned}: \code{kmat(4,4)} [\,\um$^2$/H\,], the
+      $\eta$-scaled aligned extinction matrix at incidence \code{theta\_i} [deg].
+      Diagonal $\eta\,C_{\rm ext,al}$; $K(1,2)=K(2,1)=\eta\,C_{\rm pol,al}$
+      (dichroism); $K(3,4)=\eta\,C_{\rm bir,al}$, $K(4,3)=-\eta\,C_{\rm bir,al}$
+      (birefringence). \code{theta\_i} in $[0,180^\circ]$ is folded to
+      $[0,90^\circ]$, $K$ being even under the equatorial reflection.
+\item \code{mueller\_matrix\_aligned}: \code{z(4,4)} [\,\um$^2$\,sr$^{-1}$/H\,] at
+      the reference alignment ($\eta=1$; scale it yourself). \code{theta\_i},
+      \code{theta\_s} in $[0,180^\circ]$, \code{phi} in $[0,360^\circ]$; the
+      stored octants ($\theta_i\!\le\!90^\circ$, $\phi\!\le\!180^\circ$) and the
+      rest are handled by interpolation plus the header's symmetry relations.
+\item \code{mueller\_matrix\_random}: \code{f\_tot(6)}, \code{f\_ref(6)}, the two
+      six-element ($F_{11},F_{22},F_{33},F_{44},F_{12},F_{34}$) random-orientation
+      matrices at \code{big\_theta} [deg], $\alpha_1$-normalized as stored.
+      Restore absolute \um$^2$\,sr$^{-1}$/H with \code{f\_tot*scm\_csca\_tot(iband)}
+      and \code{f\_ref*scm\_csca\_ref(iband)}.
+\item \code{scattering\_cross\_sections}: \code{csca\_aligned} $=\eta\,
+      C_{\rm sca,al}(\theta_i)$ and \code{csca\_unaligned}
+      $=C_{\rm sca,tot}-\eta\,C_{\rm sca,ref}$ [\,\um$^2$/H\,], for the albedo and
+      the population split.
+\end{itemize}
+
+\paragraph{The $\eta$ contract, and unit note.} A cell's alignment enters only as
+$\eta$: the aligned matrix and the aligned $K$ scale as $\eta$, and the unaligned
+remainder scattering matrix is $F_{\rm tot}-\eta F_{\rm ref}$ in absolute units.
+For the total extinction matrix the aligned population must not be counted twice:
+the isotropic \code{Cext} from \code{dust\_extinction} already contains its
+reference-orientation average $C_{\rm ext,ref}$, so assemble
+\begin{equation}
+  K_{\rm total} = (C_{\rm ext}^{\rm iso} - \eta\,C_{\rm ext,ref})\,I
+                  + \eta\,K_{\rm al}(\theta_i),
+\label{eq:ktotal}
+\end{equation}
+which returns $C_{\rm ext}^{\rm iso}$ on the diagonal at the incidence average and
+adds the direction-resolved dichroism and birefringence. These aligned-scattering
+quantities are in \um$^2$ (per H), whereas \code{dust\_extinction} returns cm$^2$/H;
+convert with a factor $10^{8}$ before combining them, as
+Eq.~(\ref{eq:ktotal}) requires.
+
+\paragraph{Inlining.} The loaded grids and integrals are also exposed
+\code{public, protected} (\code{scm\_lambda}, \code{scm\_theta\_i},
+\code{scm\_theta\_s}, \code{scm\_phi}, \code{scm\_theta\_ran}, \code{scm\_cext\_tot},
+\code{scm\_csca\_tot}, \code{scm\_cext\_ref}, \code{scm\_csca\_ref},
+\code{scm\_F\_tot}, \code{scm\_F\_ref}, \code{scm\_Z}, and the \code{scm\_n*}
+sizes), so a host that prefers to inline its own lookups can take them once at
+startup and never call back. A complete two-cell reference consumer of every call
+is \code{sed/rt\_example/use\_dustlib\_scatmat.f90} (\code{make
+use\_dustlib\_scatmat.x}); it demonstrates the band selection,
+Eq.~(\ref{eq:ktotal}), the aligned and random queries, and the closure checks.
 
 \subsection{Division of labor}\label{sec:pol:division}
 
@@ -551,17 +662,20 @@ polarization fraction of a real line of sight.
       The released optics table carries $Q_{\rm ext}$, $Q_{\rm abs}$ and
       $Q_{\rm sca}$ but no phase retardation, so with it $C_{\rm circ}=0$. The
       regenerated orientation-resolved table (\S\ref{sec:pol:source}) adds a
-      birefringence block, and \code{q\_table\_jori} exposes it as
-      \code{qbir\_ext} (with a \code{has\_bir} flag); \code{dust\_extinction} does
-      not yet return it, so consuming it in the $U\leftrightarrow V$ transfer term
-      is currently the host's responsibility.
-\item \textbf{No scattering by aligned grains.} The release gives the
-      integrated $Q_{\rm sca}$ with no angular information, so a Mueller matrix
-      for an aligned spheroid cannot be built from it.
+      birefringence block, and \code{dust\_extinction} returns it as the optional
+      \code{Cbir\_ext} (\S\ref{sec:ext}); the aligned scattering table carries the
+      same birefringence in its $K(\theta_i)$ (\S\ref{sec:pol:scatmat}).
+      Consuming it in the $U\leftrightarrow V$ transfer term is the host's task.
+\item \textbf{Scattering by aligned grains: now available.} The angle-resolved
+      Mueller matrix of the aligned astrodust spheroid, which no released file
+      contains, is computed by \code{run\_scatmat\_aligned.x} and served through
+      the API of \S\ref{sec:pol:scatmat}. The release-derived cross sections still
+      supply only the integrated $Q_{\rm sca}$; the angular optics come from the
+      T-matrix engine.
 \item \textbf{Far-infrared and submillimeter polarized emission is complete
-      without either.} The albedo there is essentially zero, so the transfer
-      needs only the extinction matrix and the emission vector, both fully
-      determined by what is exported here.
+      without a scattering matrix.} The albedo there is essentially zero, so the
+      transfer needs only the extinction matrix and the emission vector, both
+      fully determined by what is exported here.
 \end{itemize}
 
 \paragraph{Reference numbers.} For a Mathis ISRF the intrinsic polarization

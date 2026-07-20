@@ -32,6 +32,7 @@ module asymptotic_optics
    private
    public :: rayleigh_limit, geometric_optics_limit
    public :: projected_area_extinction, fresnel_opaque_absorption
+   public :: spheroid_dipole_polarizability
 
    ! Default surface-quadrature count per angular direction used by the
    ! orientation-resolved geometric-optics absorption.  The 2D integrand is
@@ -88,34 +89,16 @@ contains
       ! Optional: orientation-resolved cross sections, arrays of length 3.
       real(wp), optional, intent(out) :: qext_ori(:), qabs_ori(:), qsca_ori(:)
       real(wp), optional, intent(out) :: qre_ori(:)
-      real(wp)    :: axrat, e2, e, ala, alb, fac
+      real(wp)    :: fac
       real(wp)    :: qabs_a, qabs_b, qsca_a, qsca_b, qabs
       real(wp)    :: qre_a, qre_b
-      complex(wp) :: eps, alpha_a, alpha_b
+      complex(wp) :: alpha_a, alpha_b
       real(wp), parameter :: PI = acos(-1.0_wp)
 
-      eps = cmplx(n_r*n_r - k_i*k_i, 2.0_wp*n_r*k_i, kind=wp)
-      axrat = 1.0_wp / eps_ba
-
-      e2 = abs(1.0_wp - 1.0_wp/(axrat*axrat))
-      e  = sqrt(e2)
-      if (axrat < 1.0_wp) then
-         ! oblate
-         ala = (1.0_wp + 1.0_wp/e2) * (1.0_wp - atan(e)/e)
-      else if (axrat > 1.0_wp) then
-         ! prolate
-         ala = (1.0_wp/e2 - 1.0_wp) * &
-               (log((1.0_wp + e)/(1.0_wp - e))/(2.0_wp*e) - 1.0_wp)
-      else
-         ! sphere
-         ala = 1.0_wp/3.0_wp
-      end if
-      alb = (1.0_wp - ala) / 2.0_wp
-
-      ! Polarizability per orientation (units: volume).
-      fac     = a_eff**3 / 3.0_wp
-      alpha_a = fac * (eps - 1.0_wp) / ((eps - 1.0_wp)*ala + 1.0_wp)
-      alpha_b = fac * (eps - 1.0_wp) / ((eps - 1.0_wp)*alb + 1.0_wp)
+      ! Electrostatic dipole polarizabilities (E along axis / transverse to
+      ! it), volume units.  Shared core, so any analytic dipole scattering
+      ! matrix built from the same routine is guaranteed the identical alpha.
+      call spheroid_dipole_polarizability(a_eff, n_r, k_i, eps_ba, alpha_a, alpha_b)
 
       ! Q_abs = (8 pi / (lam * a_eff^2)) * Im(alpha)
       fac    = 8.0_wp * PI / (lam * a_eff*a_eff)
@@ -162,6 +145,50 @@ contains
       if (present(al1)) call rayleigh_matrix_expansion(alpha_a, alpha_b, &
                              al1, al2, al3, al4, be1, be2, lmax)
    end subroutine rayleigh_limit
+
+
+   subroutine spheroid_dipole_polarizability(a_eff, n_r, k_i, eps_ba, alpha_a, alpha_b)
+      ! Electrostatic (Rayleigh) dipole polarizabilities of a homogeneous
+      ! spheroid, in volume units, following Draine (1992):
+      !   alpha_a  electric field parallel to the symmetry axis a
+      !   alpha_b  electric field transverse to the axis
+      ! with geometric depolarization factors L_a (ala) along the axis and
+      ! L_b = (1 - L_a)/2 (alb) transverse.  `eps_ba` is the Mishchenko axis
+      ! ratio b/a (> 1 oblate); Draine's AXRAT = symm/equator = 1/eps_ba.
+      !
+      ! This is the shared core used both by rayleigh_limit (random-orientation
+      ! average) and by the analytic dipole scattering matrix
+      ! (rayleigh_mueller_matrix_oriented, driver/scattering_matrix_oriented.f90),
+      ! so both see the identical polarizability tensor diag(alpha_b, alpha_b,
+      ! alpha_a) and their optical-theorem cross sections agree by construction.
+      real(wp),    intent(in)  :: a_eff, n_r, k_i, eps_ba
+      complex(wp), intent(out) :: alpha_a, alpha_b
+      real(wp)    :: axrat, e2, e, ala, alb, fac
+      complex(wp) :: eps
+
+      eps = cmplx(n_r*n_r - k_i*k_i, 2.0_wp*n_r*k_i, kind=wp)
+      axrat = 1.0_wp / eps_ba
+
+      e2 = abs(1.0_wp - 1.0_wp/(axrat*axrat))
+      e  = sqrt(e2)
+      if (axrat < 1.0_wp) then
+         ! oblate
+         ala = (1.0_wp + 1.0_wp/e2) * (1.0_wp - atan(e)/e)
+      else if (axrat > 1.0_wp) then
+         ! prolate
+         ala = (1.0_wp/e2 - 1.0_wp) * &
+               (log((1.0_wp + e)/(1.0_wp - e))/(2.0_wp*e) - 1.0_wp)
+      else
+         ! sphere
+         ala = 1.0_wp/3.0_wp
+      end if
+      alb = (1.0_wp - ala) / 2.0_wp
+
+      ! Polarizability per orientation (units: volume).
+      fac     = a_eff**3 / 3.0_wp
+      alpha_a = fac * (eps - 1.0_wp) / ((eps - 1.0_wp)*ala + 1.0_wp)
+      alpha_b = fac * (eps - 1.0_wp) / ((eps - 1.0_wp)*alb + 1.0_wp)
+   end subroutine spheroid_dipole_polarizability
 
 
    subroutine rayleigh_matrix_expansion(alpha_a, alpha_b, al1, al2, al3, al4, be1, be2, lmax)

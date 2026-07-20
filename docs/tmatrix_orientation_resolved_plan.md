@@ -12,6 +12,12 @@ model, and the full-grid table is generated and shipped. The as-built account, w
 validation numbers, is in `sedust_polarization_implementation.pdf` §7. This document is kept
 for the reasoning and the staging it records.
 
+**Scope note.** The orientation-resolved Q table covered here is one stage toward the
+actual goal: computing the polarized radiative transfer of Seon (2018, ApJ 862, 87) —
+dust scattering plus dichroic extinction by aligned grains — with properly derived
+grain optics. The scattering side, the fixed-orientation Mueller matrix of aligned
+grains, is the subject of `tmatrix_aligned_scattering_plan.md`.
+
 ---
 
 ## 1. Motivation

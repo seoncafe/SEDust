@@ -150,6 +150,22 @@ module dust_lib
                                 dust_emission, dust_emission_single_teq, &
                                 dust_extinction, &
                                 dust_set_alignment, dust_set_alignment_profile
+   ! Aligned-grain polarized scattering optics for a polarized RT host. The
+   ! init call (load_scatmat_aligned) runs once from serial code; the query
+   ! calls are pure reads, safe from OpenMP threads. The loaded grids and arrays
+   ! (scm_*) are exposed read-only so a host can inline its own lookups.
+   use scatmat_aligned_mod, only: load_scatmat_aligned, free_scatmat_aligned, &
+                                scatmat_band, extinction_matrix_aligned, &
+                                mueller_matrix_aligned, mueller_matrix_random, &
+                                scattering_cross_sections, &
+                                scm_loaded, scm_nband, scm_nti, scm_nts, scm_nphi, &
+                                scm_ntheta, scm_lambda, scm_theta_i, scm_theta_s, &
+                                scm_phi, scm_theta_ran, &
+                                scm_cos_theta_s, scm_cext_al, scm_cpol_al, scm_cbir_al, &
+                                scm_csca_al, scm_cext_tot, scm_csca_tot, scm_cext_ref, &
+                                scm_csca_ref, scm_F_tot, scm_F_ref, scm_Z, &
+                                scm_profile_name, scm_fmax, scm_a_align, scm_alpha, &
+                                scm_profile_mismatch, scm_bytes
    implicit none
    private
 
@@ -157,6 +173,18 @@ module dust_lib
    public :: dust_model_t, build_astrodust, build_dl07, build_zubko, build_from_files
    public :: dust_emission, dust_emission_single_teq, dust_extinction
    public :: dust_set_alignment, dust_set_alignment_profile
+   ! Re-exported aligned-scattering API (initialization + path queries)
+   public :: load_scatmat_aligned, free_scatmat_aligned, scatmat_band, &
+             extinction_matrix_aligned, mueller_matrix_aligned, &
+             mueller_matrix_random, scattering_cross_sections
+   ! Re-exported read-only storage (public, protected in scatmat_aligned_mod)
+   public :: scm_loaded, scm_nband, scm_nti, scm_nts, scm_nphi, scm_ntheta, &
+             scm_lambda, scm_theta_i, scm_theta_s, scm_phi, scm_theta_ran, &
+             scm_cos_theta_s, scm_cext_al, scm_cpol_al, scm_cbir_al, scm_csca_al, &
+             scm_cext_tot, scm_csca_tot, scm_cext_ref, scm_csca_ref, &
+             scm_F_tot, scm_F_ref, scm_Z, &
+             scm_profile_name, scm_fmax, scm_a_align, scm_alpha, &
+             scm_profile_mismatch, scm_bytes
    ! Table API
    public :: dust_emis_table_t, dust_build_table, dust_emission_interp, dust_free_table
    ! Convenience accessors

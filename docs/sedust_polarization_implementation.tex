@@ -30,7 +30,7 @@
 
 \title{Polarization in SEDust: Implementation Notes}
 \author{Kwang-il Seon}
-\date{2026 July 19}
+\date{2026 July 20}
 
 \begin{document}
 \maketitle
@@ -76,6 +76,25 @@ this note \\
 \caption{Division of the polarization documentation.}
 \label{tab:whichdoc}
 \end{table}
+
+\paragraph{Where this is going.} The polarization capability is not an end in
+itself. The destination is the polarized radiative transfer of
+Seon (2018): dust scattering plus dichroic extinction by aligned grains,
+computed with grain optics derived from first principles, in the Monte Carlo
+formalism of Peest et al.\ (2017) as extended to aligned spheroids by
+Peest et al.\ (2023). Under that contract MoCafe supplies the alignment
+assumptions (the \falign\ profile and the local magnetic-field geometry) and
+SEDust returns every material quantity in matrix form: the $4\times4$
+extinction matrix $K(\theta_i)$ with dichroism and birefringence, the phase
+matrix $Z_{\rm al}(\theta_i;\theta_s,\phi)$ of the aligned population, the
+random-orientation remainder, and the scattering cross sections. Dichroic
+extinction, polarized emission, birefringence, and the orientation-resolved
+cross-section table cover the extinction and emission side of that contract; the
+scattering side --- the fixed-orientation Mueller matrix, the extinction matrix
+built from forward amplitudes, and their library interface --- is now built and
+verified, and is documented in \S\ref{sec:aligned}. What remains is MoCafe's
+consumption: the frame rotations, direction sampling, peel-off, and the
+$\exp(-K\tau)$ transfer step, none of which is a SEDust responsibility.
 
 %====================================================================
 \section{The data source}\label{sec:source}
@@ -720,6 +739,298 @@ and trend; its size-parameter region carries no astrodust weight.}
 \end{table}
 
 %====================================================================
+\section{Aligned-grain scattering matrix and the extinction matrix}
+\label{sec:aligned}
+
+Section~\ref{sec:firstprinciples} regenerated the orientation-resolved
+\emph{cross sections}. This section adds the angle-resolved object they left out:
+the fixed-orientation Mueller matrix $Z(\theta_i;\theta_s,\phi)$ of the aligned
+astrodust spheroid, and the $4\times4$ extinction matrix $K(\theta_i)$ that goes
+with it. Between them they complete the material side of the Peest-formalism
+contract --- SEDust returns every quantity in matrix form; the RT code (MoCafe,
+whose consumption side is not yet built) does the rotations, sampling, peel-off,
+and $\exp(-K\tau)$ transfer. The design is set out in
+\code{docs/tmatrix\_aligned\_scattering\_plan.md}; this section records how each
+piece was built and why.
+
+\subsection{The engine}\label{sec:aligned:engine}
+
+\code{tmatrix/driver/scattering\_matrix\_oriented.f90} returns the
+fixed-orientation Mueller matrix $Z$ of the DH21 oblate spheroid ($b/a=1.4$) for
+one incidence direction. Two regimes, one output convention.
+
+\paragraph{T-matrix regime, one \code{AMPL} call.} With the T-matrix already
+converged and left in \code{COMMON /TMAT/} by \code{TMD\_ONE\_SCATMAT} --- the
+same restore of \S\ref{sec:firstprinciples} that made the oriented cross sections
+possible --- a single call to Mishchenko's \code{AMPL} evaluates the $2\times2$
+complex amplitude matrix $\mathbf{S}=[[S_{vv},S_{vh}],[S_{hv},S_{hh}]]$ for the
+chosen incidence and scattering angles. The 16 phase-matrix elements then follow
+from the standard bilinears in $\mathbf{S}$, copied \emph{verbatim} from
+Mishchenko's \code{src/ampld.lp.f} (its \code{Z11}$\ldots$\code{Z44}, Eqs.\
+(13)--(29) of Appl.\ Opt.\ \textbf{39}, 1026, 2000) so the phase matrix can be
+checked line by line against the source. Copying rather than rederiving is
+deliberate: the bilinears carry sign and conjugation conventions that are easy to
+transcribe wrongly, and the whole point of anchor~C below is that this transcription
+is exact.
+
+\paragraph{Rayleigh regime, analytic dipole.} Below $x=0.1$ the same $Z$ is the
+electric-dipole matrix, $S_{pq}=k^2\,(\hat e_p^{\rm sca}\!\cdot\!\boldsymbol\alpha
+\!\cdot\!\hat e_q^{\rm inc})$ with the spheroid polarizability
+$\boldsymbol\alpha=\mathrm{diag}(\alpha_b,\alpha_b,\alpha_a)$, then the same
+bilinears. The polarizability comes from \code{spheroid\_dipole\_polarizability},
+a routine extracted from \code{rayleigh\_limit} (\S\ref{sec:firstprinciples})
+without changing an operation, so the dipole cross sections that
+\S\ref{sec:firstprinciples} already validated and the dipole matrix here rest on
+one implementation of $\alpha_a,\alpha_b$.
+
+\paragraph{The Stokes basis, stated once.} Both regimes use Mishchenko's
+meridional basis of each propagation direction \emph{in the grain frame}, whose
+$z$ axis is the alignment axis: $\hat e_1=\hat\theta$ (call it $v$), $\hat
+e_2=\hat\phi$ ($h$), with $Q=I_v-I_h$. This is exactly the basis \code{AMPL}
+rotates its amplitudes into, so the analytic dipole and the T-matrix matrix share
+one convention with no adaptor between them. At $\theta_i=90^\circ$ the
+$v$-polarization is $\mathrm{jori}=2$ ($\mathbf{E}\parallel\hat a$) and $h$ is
+$\mathrm{jori}=3$ ($\mathbf{E}\perp\hat a$), which is what ties the extinction
+matrix back to the jori cross sections of \S\ref{sec:source}.
+
+\subsection{Symmetries, verified not assumed}\label{sec:aligned:sym}
+
+Three exact symmetries reduce the stored ranges and, more usefully, are numerical
+checks on the engine (anchor~E). Each was confirmed on a grid of
+$(\theta_i,\theta_s,\phi)$ before being relied on.
+
+\begin{itemize}
+\item \textbf{Azimuth mirror.} The plane through the axis and the incidence
+      direction is a symmetry plane, so $\phi\to360^\circ-\phi$ leaves $Z$
+      unchanged except that the two off-diagonal $2\times2$ blocks (elements
+      $13,14,23,24,31,32,41,42$) flip sign. Store $\phi\in[0,180^\circ]$; residual
+      $3.5\times10^{-7}$.
+\item \textbf{Equatorial mapping.} The oblate spheroid is symmetric under
+      $z\to-z$, so $\theta_i\to180^\circ-\theta_i$ maps onto the stored range with
+      $\theta_s\to180^\circ-\theta_s$, $\phi$ \emph{unchanged}, and the same
+      off-diagonal-block sign flip,
+      \[
+        Z(180^\circ-\theta_i;\,180^\circ-\theta_s,\,\phi)\;=\;S\odot
+        Z(\theta_i;\,\theta_s,\,\phi),\qquad
+        S=\begin{pmatrix}+&+&-&-\\ +&+&-&-\\ -&-&+&+\\ -&-&+&+\end{pmatrix},
+      \]
+      the diagonal blocks keeping their sign. Store $\theta_i\in[0,90^\circ]$;
+      residual $8.8\times10^{-16}$. Physically this also encodes that the
+      alignment axis is headless.
+\item \textbf{Axisymmetry at $\theta_i=0$.} There $Z$ must be independent of
+      $\phi$ up to a frame rotation, $Z(0;\theta_s,\phi)=Z(0;\theta_s,0)\,
+      R(\phi)$, the $\phi=0$ matrix being six-element block-diagonal. This is a
+      check, not a storage saving.
+\end{itemize}
+
+The library reconstructs the unstored octants from these relations, applying the
+$\pm1$ sign once to the interpolated matrix rather than to eight interpolation
+corners (\S\ref{sec:aligned:lib}); because each reflection contributes a constant
+that is the same for every corner of a cell, it factors out of the linear
+interpolation exactly.
+
+\subsection{The generator: one code path}\label{sec:aligned:gen}
+
+The shared physics lives in \code{tmatrix/driver/aligned\_population\_optics.f90},
+and both the production driver \code{run\_scatmat\_aligned.f90} and the
+verification program \code{compare\_scatmat\_aligned.f90} call it. This is on
+purpose: the numbers an anchor checks are produced by the exact code the
+production file is written from, so a passing anchor certifies the shipped path
+and not a parallel one.
+
+\paragraph{One solve, three products.} For each (band, size) in the T-matrix
+regime a single \code{TMD\_ONE\_SCATMAT} solve serves everything: its \code{GSP}
+expansion coefficients feed the random-orientation accumulation (the $F$ block
+below), the \code{/TMAT/} it leaves valid feeds the \code{AMPL} sweep over the
+$Z$ nodes, and its forward amplitudes give the extinction-matrix elements. No
+quantity is recomputed.
+
+\paragraph{Regime split and the $x>50$ guard.} The size-parameter regimes match
+\code{run\_scatmat.f90}: $x<0.1$ analytic dipole, $0.1\le x\le50$ T-matrix. Above
+$x=50$ no converged oriented matrix exists, so the bin is \emph{omitted from the
+aligned products} and instead enters $F_{\rm tot}$ as its random-orientation
+geometric-optics matrix, i.e.\ scattered as unaligned. Its $C_{\rm sca}$ is
+tallied, and the driver stops hard if the omitted fraction of the scattering
+weight exceeds $10^{-6}$. It never does for the shipped bands: the measured
+omitted fraction is at most $3.1\times10^{-15}$ (at $0.36\um$) and exactly zero at
+$0.64$ and $0.79\um$. The omission is thus provably negligible rather than
+assumed so.
+
+\paragraph{An OpenMP lesson: \code{-frecursive} for the amplitude routine.} The
+only parallel region is the loop over $Z$ nodes inside one size. \code{AMPL} and
+\code{VIGAMPL} only \emph{read} \code{COMMON /TMAT/} and otherwise write local
+automatic arrays, so distinct nodes are independent and each grid slot is written
+once --- which is why a 1-thread and an $N$-thread run are bitwise identical. The
+subtlety is in the build: \code{ampl\_oriented.f} is compiled \code{-frecursive}
+so its large local arrays become thread-private on the stack, while the serial
+T-matrix core (\code{tmd\_one.f}, \code{lpd.f}) keeps its static locals under the
+base flags. Compiling the amplitude routine with static locals would have shared
+those arrays across threads and silently corrupted the matrices; the Makefile
+therefore compiles that one file with the OpenMP-safe flags and the core without
+them. This is the implementation lesson worth carrying forward: thread-safety of a
+COMMON-based Mishchenko routine is decided by the compile flags of each file, not
+by a source edit.
+
+\subsection{Products and the $\eta$ contract}\label{sec:aligned:products}
+
+Per band the file (\code{output/scatmat\_aligned\_astrodust\_P0.20\_Fe0.00\_1.400.dat})
+carries three blocks, all per H.
+
+\begin{itemize}
+\item \textbf{$K$ block}, on the $\theta_i$ grid: $C_{\rm ext,al}$, the dichroic
+      $C_{\rm pol,al}$, and the birefringent $C_{\rm bir,al}$ from the forward
+      amplitudes, plus $C_{\rm sca,al}$ as the grid closure $\int Z_{11}\,
+      d\Omega$. Because these come from the forward amplitude at each $\theta_i$,
+      the extinction matrix is \emph{exact at every propagation angle}. This
+      replaces the $\sin^2\psi$ interpolation between the $\psi=0$ and $90^\circ$
+      values that the three-orientation jori table forces, and reduces to that law
+      analytically in the Rayleigh limit (anchor~G).
+\item \textbf{$F$ block}: $F_{\rm tot}$ (every grain, identical to
+      \code{run\_scatmat.f90}) and $F_{\rm ref}$ ($f_{\rm align}$-weighted), the
+      six-element random-orientation matrices, $\alpha_1$-normalized so
+      $\tfrac12\int F_{11}\,d\cos\Theta=1$; the header gives $C_{\rm sca,tot}$,
+      $C_{\rm sca,ref}$, $C_{\rm ext,tot}$, $C_{\rm ext,ref}$ to restore absolute
+      units.
+\item \textbf{$Z$ block}: $Z_{\rm al}=\int da\,n(a)\,f(a)\,Z(a)$, 16 elements,
+      $\um^2\,\mathrm{sr}^{-1}$ per H, on
+      $\theta_i=0(5)90^\circ$ (19) $\times$ $\theta_s=0(1)180^\circ$ (181)
+      $\times$ $\phi=0(5)180^\circ$ (37).
+\end{itemize}
+
+\paragraph{The $\eta$ contract.} The file header documents, and the library
+enforces, the exact rule for varying the alignment degree cell to cell by a single
+scalar $\eta$ (the local alignment scale, $f_{\rm cell}=\eta f_{\rm ref}$). The
+aligned matrix scales linearly, $Z_{\rm al,cell}=\eta Z_{\rm al}$; the extinction
+matrix likewise, $K_{\rm al,cell}=\eta K_{\rm al}$; the unaligned remainder
+scattering matrix is $F_{\rm unal}=F_{\rm tot}-\eta F_{\rm ref}$ in absolute units
+(after restoring $C_{\rm sca,tot}$ and $C_{\rm sca,ref}$); and the unaligned
+population adds an isotropic $C_{\rm ext,tot}-\eta C_{\rm ext,ref}$ to the
+extinction (its polarized and birefringent parts vanish). All of this is exact by
+the linearity of the size integral in $f_{\rm align}$, so three stored integrals
+give the scattering optics of any $\eta$ with no re-integration.
+
+\subsection{The library: two strictly separated layers}\label{sec:aligned:lib}
+
+\code{sed/src/scatmat\_aligned.f90} (module \code{scatmat\_aligned\_mod}) serves
+the table to a polarized RT host with the same lifecycle as the rest of the
+library: initialize once, query along the path.
+
+\paragraph{Initialization (serial, once).} \code{load\_scatmat\_aligned(path,
+status)} parses the table into module storage (about $81.5$\,MB resident for the
+production grid) and \code{free\_scatmat\_aligned} releases it. It is wired into
+\code{sed\_init} / \code{build\_astrodust} through an optional \code{scatmat\_path}
+argument --- exactly the \code{qpol\_path} pattern of \S\ref{sec:firstprinciples},
+except that a \code{scatmat\_path} that fails to load is an error (\code{status =
+3}), because a host that asked for the table depends on it, whereas a missing
+polarized-optics table only disables polarized emission. This layer is not
+thread-safe and is called from serial code.
+
+\paragraph{Path queries (pure reads, OpenMP-safe).} Five routines write only their
+own outputs and read the loaded arrays, so they are safe to call concurrently from
+photon threads:
+\begin{itemize}
+\item \code{scatmat\_band(lambda\_um, iband, exact)} --- nearest stored band, so
+      the hot path takes an integer and no wavelength search runs per event;
+\item \code{extinction\_matrix\_aligned(iband, theta\_i, eta, kmat)} --- the
+      $4\times4$ matrix with diagonal $\eta\,C_{\rm ext,al}$,
+      $K(1,2)=K(2,1)=\eta\,C_{\rm pol,al}$, $K(3,4)=\eta\,C_{\rm bir,al}$,
+      $K(4,3)=-\eta\,C_{\rm bir,al}$, $\theta_i$ folded into $[0,90^\circ]$ because
+      $K$ is even under the equatorial reflection;
+\item \code{mueller\_matrix\_aligned(iband, theta\_i, theta\_s, phi, z)} ---
+      trilinear interpolation plus the symmetry reconstruction of
+      \S\ref{sec:aligned:sym}, at the reference alignment ($\eta=1$; the caller
+      scales);
+\item \code{mueller\_matrix\_random(iband, big\_theta, f\_tot, f\_ref)} --- the two
+      six-element random-orientation matrices;
+\item \code{scattering\_cross\_sections(iband, theta\_i, eta, csca\_aligned,
+      csca\_unaligned)} with $\code{csca\_unaligned}=C_{\rm sca,tot}-\eta\,
+      C_{\rm sca,ref}$.
+\end{itemize}
+The loaded grids and arrays are also exposed \code{public, protected}, so a host
+that prefers to inline its own lookups can take them once at startup and never
+call back. The whole cell dependence enters through just two scalars the host
+already holds: $\eta$, and $\theta_i=\arccos(\hat k\!\cdot\!\hat B)$ from one dot
+product.
+
+\paragraph{The alignment guard (status 4).} The $K$ and $Z$ arrays were integrated
+over size once, under the profile recorded in the header; the sanctioned runtime
+variation is $\eta$, not a change of profile. So when a loaded scattering table is
+present and the host calls \code{dust\_set\_alignment} or
+\code{dust\_set\_alignment\_profile} with a profile that differs from the recorded
+one, the setter returns a \emph{new} status code~\code{4}. It is non-fatal: the
+$f_{\rm align}$ update still completes (the emission and $C_{\rm pol,ext}$ channels
+re-integrate live and honor the new profile), and the code only signals that the
+loaded scattering matrices no longer correspond to the model's alignment. A
+different profile requires regenerating the table
+(\code{run\_scatmat\_aligned.x profile=FILE}), which takes minutes. A tabulated
+profile never matches the recorded analytic one and so always raises the flag.
+
+\subsection{Birefringence through \code{dust\_extinction}}\label{sec:aligned:cbir}
+
+\code{dust\_extinction} gained an optional \code{Cbir\_ext} output, the
+$f_{\rm align}$-weighted size integral of the jori table's 4th-block
+birefringence,
+\[
+  C_{\rm bir,ext}(\lambda)=\sum_a {\rm d}n_{\rm Ad}(a)\,
+     C_{\rm bir,ext}(\lambda,a)\,f_{\rm align}(a),
+\]
+mirroring \code{Cpol\_ext} exactly. It is zero when the loaded table carries no
+4th block (as the release table does not), so the default path is unchanged, and
+it is the same birefringence the aligned $K$ block carries at $\theta_i=90^\circ$,
+reached here without loading the aligned scattering table. This closes the gap
+noted in the previous release, that \code{dust\_extinction} did not yet return the
+birefringence.
+
+\subsection{Verification}\label{sec:aligned:verif}
+
+Every anchor of the plan passes (Table~\ref{tab:alignverif}). The engine anchors
+(A--G) run at single sizes through \code{compare\_scatmat\_aligned.x}; the library
+checks run on the production table.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}llp{0.30\textwidth}l@{}}
+\toprule
+& Check & What it certifies & Result \\
+\midrule
+\multicolumn{4}{@{}l}{\emph{Engine (single size)}}\\
+A & closure $\int Z_{11}\,d\Omega$ vs $C_{\rm sca}(\mathrm{jori})$ & phase-matrix normalization & $2.7\times10^{-7}$ \\
+B & optical theorem vs $C_{\rm ext}(\mathrm{jori})$ & forward-amplitude geometry & $2\times10^{-14}$ \\
+C & orientation average vs GSP $F(\Theta)$ & the bilinears, incl.\ $F_{12},F_{34}$ signs & $1.4\times10^{-6}$ \\
+D & dipole vs closed form & Rayleigh implementation & $2\times10^{-16}$ \\
+  & dipole vs T-matrix at $x\!\sim\!0.1$ & regime continuity, $|\delta Z|/Z_{11}$ & $0.5$--$1.1\%$ \\
+E & $\phi$ mirror & azimuth symmetry & $3.5\times10^{-7}$ \\
+  & equatorial mapping & $z\to-z$ symmetry & $8.8\times10^{-16}$ \\
+G & Rayleigh $K(\theta_i)$ vs $\sin^2$ law & extinction-matrix angle law (exact) & $3.3\times10^{-16}$ \\
+  & T-matrix $K(\theta_i)$ vs $\sin^2$ law & at $x=0.137$ & $6.3\times10^{-4}$ \\
+\midrule
+\multicolumn{4}{@{}l}{\emph{Generator (size-integrated)}}\\
+F & $K$ vs independent jori integrals & $C_{\rm ext}$ & $1.6\times10^{-6}$ \\
+  &                                   & $C_{\rm pol}$ & $2.0\times10^{-5}$ \\
+  &                                   & $C_{\rm bir}$ & $1.3\times10^{-7}$ \\
+\midrule
+\multicolumn{4}{@{}l}{\emph{Library (production table)}}\\
+  & reader round-trip & parse vs re-emit & bitwise 0 \\
+  & symmetry reconstruction & unstored octants & bitwise 0 \\
+  & $\eta$ algebra & linear scaling & residual 0 \\
+  & $K(90^\circ)$ vs jori vs \code{dust\_extinction} & $C_{\rm pol}$ / $C_{\rm bir}$ & $1.6\times10^{-5}$ / $8.0\times10^{-5}$ \\
+  & \code{rt\_example} closures & end-to-end consumption & $0.997$--$1.001$ \\
+\bottomrule
+\end{tabular}
+\caption{Verification of the aligned scattering matrix, its extinction matrix, and
+the library API. Engine and generator anchors are those of the plan's \S5; the
+library checks run on the shipped production table.}
+\label{tab:alignverif}
+\end{table}
+
+\paragraph{Cost of the production run.} The five UBVRI bands (0.36, 0.44, 0.55,
+0.64, 0.79\um) take about 8 minutes at 32 threads (about 26 minutes at 8); the
+file is 138\,MB, 38\,MB gzipped. The existing regressions are unchanged:
+\code{calc\_polext} reproduces the release to a median of $0.0296\%$ as before,
+and every \code{sed}, \code{mc} and \code{tmatrix} target builds clean.
+
+%====================================================================
 \section{Limits and extension paths}
 
 These are limits of the published optics, not of the code.
@@ -746,14 +1057,17 @@ Lorentz oscillator; the residual is the finite-range truncation). What remains i
 return it through \code{dust\_extinction} and to consume it in the $U\leftrightarrow V$
 transfer term, both on the host side.
 
-\paragraph{No scattering matrix for aligned grains.} The release gives the
-integrated $Q_{\rm sca}$ with no angular information, so scattering by an
-aligned spheroid cannot be modeled from it. Reaching optical polarized transfer
-would require wavelength-resolved Mueller matrices, from \code{ampld.lp.f},
-DDSCAT, ADDA or CosTuuM, plus a matrix-based scattering treatment on the
-consumer side. The data volume is $\lambda \times \theta \times
-\text{orientation} \times 16$ components, which is the reason this has not been
-attempted.
+\paragraph{The aligned scattering matrix is now computed.} The release gives the
+integrated $Q_{\rm sca}$ with no angular information, so scattering by an aligned
+spheroid could not be modeled from it. It is now modeled from first principles:
+the fixed-orientation Mueller matrix $Z(\theta_i;\theta_s,\phi)$ of the aligned
+astrodust spheroid is built from the same fixed-orientation amplitude
+(\code{ampl\_oriented.f}) used above for extinction, size-integrated over the
+astrodust distribution with the alignment weight, and paired with the
+$4\times4$ extinction matrix $K(\theta_i)$ from the forward amplitudes. It is
+written for five optical bands by \code{run\_scatmat\_aligned.x} and served to a
+polarized RT host through a two-layer library API. \S\ref{sec:aligned} is the
+full account.
 
 \paragraph{The random-orientation scattering matrix does exist, in five optical
 bands.} This is a different object from the previous paragraph and should not be
@@ -862,6 +1176,9 @@ the user manual is the complete recipe.
       \code{2021ApJ...919...65D}
 \item Hensley, B. S., \& Draine, B. T. 2023, ApJ, 948, 55 (HD23).
       \code{2023ApJ...948...55H}
+\item Peest, C., Camps, P., Stalevski, M., Baes, M., \& Siebenmorgen, R.
+      2017, A\&A, 601, A92.
+      \code{2017A\&A...601A..92P}
 \item Peest, C., et al.\ 2023, A\&A, 673, A112.
       \code{2023A\&A...673A.112P}
 \item Planck Collaboration 2020, A\&A, 641, A12.

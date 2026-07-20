@@ -33,6 +33,13 @@ FFLAGS = -O2 -ffixed-line-length-none -ffree-line-length-none -w \
          -fmax-stack-var-size=65536
 # debug build: replace with -O0 -g -fcheck=all -fbacktrace -Wall
 
+# OpenMP flag set for the aligned scattering-matrix products.  It omits
+# -fmax-stack-var-size so the -frecursive implied by -fopenmp takes effect:
+# the AMPL work arrays must be thread-private automatic locals in the parallel
+# Z-node loop.  The serial T-matrix core (src/tmd_one.f, src/lpd.f) keeps the
+# base FFLAGS (static large locals) and is compiled separately below.
+FFLAGS_OMP = -O2 -ffixed-line-length-none -ffree-line-length-none -w -fopenmp
+
 # macOS needs an explicit 64 MB main-thread stack: its 8 MB default is too
 # small for Mishchenko's local arrays and ulimit -s cannot raise it.  GNU ld
 # on Linux neither accepts -stack_size nor needs it.
@@ -142,6 +149,46 @@ compare_birefringence.x: $(SRC_TM) $(SRC_CMP5)
 	@echo 'Built: ./compare_birefringence.x'
 	@echo 'Run:   ./compare_birefringence.x'
 
+# Size-integrated fixed-orientation (aligned) scattering matrix.  The Z-node
+# loop is parallelized with OpenMP, so AMPL is compiled -frecursive (thread-
+# private locals) while the serial T-matrix core keeps the base flags.
+SRC_APO = ../sed/src/constants.f90 driver/read_index.f90 \
+          driver/asymptotic_optics.f90 ../sed/src/size_dist.f90 \
+          ../sed/src/q_table_jori.f90 driver/scattering_matrix_oriented.f90 \
+          driver/aligned_population_optics.f90
+
+run_scatmat_aligned.x: driver/run_scatmat_aligned.f90 $(SRC_APO) $(SRC_TM)
+	@mkdir -p build/sma
+	$(FC) $(FFLAGS_OMP) -Isrc -Jbuild/sma -c src/ampl_oriented.f -o build/sma/ampl_oriented.o
+	$(FC) $(FFLAGS)     -Isrc -Jbuild/sma -c src/tmd_one.f       -o build/sma/tmd_one.o
+	$(FC) $(FFLAGS)     -Isrc -Jbuild/sma -c src/lpd.f           -o build/sma/lpd.o
+	$(FC) $(FFLAGS_OMP) -Isrc -Jbuild/sma $(SRC_APO) driver/run_scatmat_aligned.f90 \
+	      build/sma/ampl_oriented.o build/sma/tmd_one.o build/sma/lpd.o $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./run_scatmat_aligned.x'
+	@echo 'Smoke test:  ./run_scatmat_aligned.x test'
+
+# Fixed-orientation scattering-matrix engine and aligned population: closure,
+# optical theorem, random-orientation average, Rayleigh limit, symmetry
+# (A-E), size-integrated closure vs the jori table (F), and the Rayleigh K
+# sin^2 law (G).  Anchor F calls the size-integrated accumulation, so this is
+# built with the same OpenMP-safe per-file flags as run_scatmat_aligned.x.
+SRC_CMPA = ../sed/src/constants.f90 driver/read_index.f90 \
+           driver/asymptotic_optics.f90 driver/tmatrix_oriented.f90 \
+           driver/scattering_matrix_oriented.f90 ../sed/src/size_dist.f90 \
+           ../sed/src/q_table_jori.f90 driver/aligned_population_optics.f90
+
+compare_scatmat_aligned.x: driver/compare_scatmat_aligned.f90 $(SRC_CMPA) $(SRC_TM)
+	@mkdir -p build/cmp6
+	$(FC) $(FFLAGS_OMP) -Isrc -Jbuild/cmp6 -c src/ampl_oriented.f -o build/cmp6/ampl_oriented.o
+	$(FC) $(FFLAGS)     -Isrc -Jbuild/cmp6 -c src/tmd_one.f       -o build/cmp6/tmd_one.o
+	$(FC) $(FFLAGS)     -Isrc -Jbuild/cmp6 -c src/lpd.f           -o build/cmp6/lpd.o
+	$(FC) $(FFLAGS_OMP) -Isrc -Jbuild/cmp6 $(SRC_CMPA) driver/compare_scatmat_aligned.f90 \
+	      build/cmp6/ampl_oriented.o build/cmp6/tmd_one.o build/cmp6/lpd.o $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./compare_scatmat_aligned.x'
+	@echo 'Run:   ./compare_scatmat_aligned.x'
+
 clean:
 	rm -f *.o *.mod
 	rm -rf build
@@ -149,6 +196,6 @@ clean:
 cleanall: clean
 	rm -f run_tmatrix.x run_scatmat.x run_q_jori.x compare_rayleigh_jori.x \
 	      compare_tmatrix_jori.x compare_tmatrix_abs.x compare_go_jori.x \
-	      compare_birefringence.x
+	      compare_birefringence.x compare_scatmat_aligned.x run_scatmat_aligned.x
 
 .PHONY: all clean cleanall

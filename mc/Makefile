@@ -35,6 +35,7 @@ SED_PIPELINE = $(SED_DIR)/size_dist.f90 $(SED_DIR)/q_table.f90 \
                $(SED_DIR)/p_sub.f90 $(SED_DIR)/stoch_qm.f90 \
                $(SED_DIR)/pah_ioniz.f90 $(SED_DIR)/grain_dist.f90 \
                $(SED_DIR)/q_silicate.f90 $(SED_DIR)/pah_ld01.f90 \
+               $(SED_DIR)/scatmat_aligned.f90 \
                $(SED_DIR)/dust_model_mod.f90 $(SED_DIR)/zubko_io.f90 \
                $(SED_DIR)/sed_astrodust.f90
 

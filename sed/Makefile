@@ -6,6 +6,8 @@
 #   make calc_kext_astrodust.x   astrodust+PAH extinction/albedo/<cos>/K_abs
 #   make calc_kext_dl07.x        DL07 (WD01 MW) extinction/albedo/<cos>
 #   make calc_polext.x           HD23 polarized extinction per H, vs release
+#   make test_scatmat_aligned.x  aligned-scattering reader/interface checks
+#   make use_dustlib_scatmat.x   rt_example aligned-scattering consumer (vs libsedust.a)
 #   make clean / cleanall
 #
 # Run (from this directory; data paths are relative to ../):
@@ -47,7 +49,7 @@ SRC_PIPE    = $(SRC_BASE) src/enthalpy_v2.f90 \
               src/q_graphite_d16_sphere.f90 src/qpah.f90 \
               src/radfield.f90 src/p_sub.f90 \
               src/stoch_qm.f90 $(SRC_DL07MOD) \
-              src/dust_model_mod.f90 src/zubko_io.f90 \
+              src/scatmat_aligned.f90 src/dust_model_mod.f90 src/zubko_io.f90 \
               src/sed_astrodust.f90
 
 SRC_ENTH    = $(SRC_BASE) src/enthalpy_v2.f90 \
@@ -95,6 +97,15 @@ calc_polext.x: $(SRC_POLEXT)
 	$(FC) $(FFLAGS) $^ -o $@
 	@echo 'Built: ./calc_polext.x'
 
+# Aligned-scattering interface checks: reader round-trip, symmetry
+# reconstruction, eta algebra, and K consistency against the calc_polext-style
+# f_align-weighted size integrals. Reuses the full SED pipeline + dust_lib.
+SRC_TSCAT = $(SRC_PIPE) src/dust_lib.f90 src/test_scatmat_aligned.f90
+
+test_scatmat_aligned.x: $(SRC_TSCAT)
+	$(FC) $(FFLAGS) $^ -o $@
+	@echo 'Built: ./test_scatmat_aligned.x'
+
 # ---- libsedust.a: the model-agnostic dust-emission library, for a Fortran
 # 3D RT code to link.  Usage from the RT:  use dust_lib ;  link
 #   -L<sed> -lsedust  with the .mod search path  -I<sed>
@@ -107,12 +118,20 @@ libsedust.a: $(LIB_SRC)
 	ar rcs $@ $(LIB_OBJ)
 	@echo 'Built: libsedust.a  (link with -L. -lsedust -I.)'
 
+# rt_example: aligned-scattering Peest-style consumer, built AS AN EXTERNAL host
+# would -- against libsedust.a and the .mod search path, not from the pipeline
+# sources. Build and run from sed/ (data paths are relative to ../).
+use_dustlib_scatmat.x: libsedust.a rt_example/use_dustlib_scatmat.f90
+	$(FC) $(FFLAGS) -I. rt_example/use_dustlib_scatmat.f90 libsedust.a -o $@
+	@echo 'Built: ./use_dustlib_scatmat.x'
+
 clean:
 	rm -f *.o *.mod
 
 cleanall: clean
 	rm -f *.a make_enthalpy.x main_astrodust.x main_dl07.x \
-	      calc_kext_dl07.x calc_kext_astrodust.x calc_polext.x
+	      calc_kext_dl07.x calc_kext_astrodust.x calc_polext.x \
+	      test_scatmat_aligned.x use_dustlib_scatmat.x
 	rm -f output/astrodust_irem_ours_*.dat output/enthalpy_*.dat
 
 .PHONY: all clean cleanall

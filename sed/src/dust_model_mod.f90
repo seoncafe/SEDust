@@ -25,9 +25,10 @@ module dust_model_mod
    !   kappCMB  [..]      CMB-pumped term for calc_P (NA)
    !
    ! Types plus trivial (de)allocation helpers.
-   use constants,        only: wp
-   use q_table_jori_mod, only: falign_powerlaw, &
-                               A_ALIGN, ALPHA_ALIGN, FMAX_ALIGN
+   use constants,         only: wp
+   use q_table_jori_mod,  only: falign_powerlaw, &
+                                A_ALIGN, ALPHA_ALIGN, FMAX_ALIGN
+   use scatmat_aligned_mod, only: alignment_matches_scatmat, scm_loaded
    implicit none
    private
    public :: grain_pop_t, dust_model_t, free_dust_model
@@ -45,6 +46,12 @@ module dust_model_mod
       ! population that neither scatters nor polarizes (the PAHs), which is how
       ! the size integral recognizes a zero contribution.
       real(wp), allocatable :: Cpol_ext(:,:)        ! (NLAM, NA) [cm^2] polarized extinction
+      ! Birefringent extinction 0.5*(Cre_ext(3)-Cre_ext(2)) of the aligned
+      ! spheroid, the UV-block optic of the extinction matrix. Left unallocated
+      ! when the orientation-resolved table carries no forward-amplitude
+      ! real-part block (an older 3-block jori table), which is how the size
+      ! integral recognizes a zero birefringence contribution.
+      real(wp), allocatable :: Cbir_ext(:,:)        ! (NLAM, NA) [cm^2] birefringent extinction
       real(wp), allocatable :: gsca(:,:)            ! (NLAM, NA) scattering asymmetry <cos>
       real(wp), allocatable :: falign(:)            ! (NA) alignment efficiency
       real(wp), allocatable :: kappB(:,:), log_kappB(:,:)   ! (NT, NA)
@@ -113,11 +120,27 @@ contains
    !   1  a_align <= 0
    !   2  alpha_align <= 0
    !   3  f_max outside [0, 1]
+   !   4  the aligned scattering table is loaded and this profile differs from
+   !      the one it was integrated under (see the note below). The falign
+   !      update still completes; code 4 is a NON-fatal signal, not a rejection.
+   !
+   ! ALIGNED-SCATTERING GUARD. When an aligned scattering table is loaded
+   ! (scatmat_aligned_mod), its K and Z arrays were integrated over size ONCE,
+   ! under the profile recorded in the table header. The sanctioned runtime
+   ! variation of that table is the scalar eta (a linear scale), NOT a change of
+   ! profile. So if the new (f_max, a_align, alpha_align) departs from the
+   ! recorded profile beyond 1e-6 relative, this routine sets the module flag
+   ! scm_profile_mismatch and returns status = 4: the emission/Cpol_ext channels
+   ! still honor the new falign exactly (they re-integrate live), but the
+   ! scattering matrices no longer correspond to it and the table must be
+   ! regenerated with run_scatmat_aligned.x profile=FILE. The mismatch is neither
+   ! silently accepted nor fatal.
    subroutine dust_set_alignment(m, f_max, a_align, alpha_align, status)
       type(dust_model_t), intent(inout) :: m
       real(wp),           intent(in)    :: f_max, a_align, alpha_align
       integer, optional,  intent(out)   :: status
       integer :: ip, ia, na_p
+      logical :: matched
 
       if (present(status)) status = 0
 
@@ -148,6 +171,19 @@ contains
 
       m%align_fmax = f_max;  m%align_a = a_align;  m%align_alpha = alpha_align
       m%align_tabulated = .false.
+
+      ! Aligned-scattering guard (see the header note): flag a departure from
+      ! the loaded table's recorded profile without rejecting or stopping.
+      call alignment_matches_scatmat(f_max, a_align, alpha_align, .false., matched)
+      if (.not. matched) then
+         if (present(status)) then
+            status = 4
+         else
+            write(*,'(a)') 'dust_set_alignment: alignment profile differs from '// &
+                 'the loaded aligned scattering table; regenerate it (eta is the '// &
+                 'sanctioned runtime variation).'
+         end if
+      end if
 
    contains
 
@@ -192,12 +228,17 @@ contains
    !   1  aeff_in and falign_in differ in size, or fewer than 2 points
    !   2  aeff_in not positive and strictly increasing
    !   3  a falign_in value outside [-1, 1]
+   !   4  the aligned scattering table is loaded (see dust_set_alignment's
+   !      header note): a tabulated profile never matches the recorded analytic
+   !      profile, so this always sets scm_profile_mismatch and returns 4 once the
+   !      falign update completes. NON-fatal signal, not a rejection.
    subroutine dust_set_alignment_profile(m, aeff_in, falign_in, status)
       type(dust_model_t), intent(inout) :: m
       real(wp),           intent(in)    :: aeff_in(:)     ! (N) [um]
       real(wp),           intent(in)    :: falign_in(:)   ! (N)
       integer, optional,  intent(out)   :: status
       integer :: ip, ia, na_p, n, i
+      logical :: matched
 
       if (present(status)) status = 0
       n = size(aeff_in)
@@ -236,6 +277,19 @@ contains
       end if
 
       m%align_tabulated = .true.
+
+      ! Aligned-scattering guard: a tabulated profile is not the recorded
+      ! analytic one, so flag the mismatch (non-fatal) when a table is loaded.
+      call alignment_matches_scatmat(0.0_wp, 0.0_wp, 0.0_wp, .true., matched)
+      if (.not. matched) then
+         if (present(status)) then
+            status = 4
+         else
+            write(*,'(a)') 'dust_set_alignment_profile: tabulated profile '// &
+                 'differs from the loaded aligned scattering table; regenerate '// &
+                 'it (eta is the sanctioned runtime variation).'
+         end if
+      end if
 
    contains
 
@@ -286,13 +340,15 @@ contains
    end function falign_at_radius
 
 
-   ! .true. for a population that carries polarized optics on either the
-   ! emission (Cpol) or the extinction (Cpol_ext) side, and so needs an
-   ! alignment efficiency. Needs a radius grid to evaluate one on.
+   ! .true. for a population that carries polarized optics on the emission
+   ! (Cpol), the dichroic extinction (Cpol_ext), or the birefringent extinction
+   ! (Cbir_ext) side, and so needs an alignment efficiency. Needs a radius grid
+   ! to evaluate one on.
    pure logical function polarizable(p)
       type(grain_pop_t), intent(in) :: p
       polarizable = allocated(p%aeff) .and. &
-                    (allocated(p%Cpol) .or. allocated(p%Cpol_ext))
+                    (allocated(p%Cpol) .or. allocated(p%Cpol_ext) .or. &
+                     allocated(p%Cbir_ext))
    end function polarizable
 
 
@@ -322,6 +378,7 @@ contains
       if (allocated(p%Csca))      deallocate(p%Csca)
       if (allocated(p%Cpol))      deallocate(p%Cpol)
       if (allocated(p%Cpol_ext))  deallocate(p%Cpol_ext)
+      if (allocated(p%Cbir_ext))  deallocate(p%Cbir_ext)
       if (allocated(p%gsca))      deallocate(p%gsca)
       if (allocated(p%falign))    deallocate(p%falign)
       if (allocated(p%kappB))     deallocate(p%kappB)
