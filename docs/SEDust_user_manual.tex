@@ -452,6 +452,23 @@ $\alpha_{\rm align} \le 0$, $f_{\max}$ outside $[0,1]$), and for
 2 for an \code{aeff\_in} that is not positive and strictly increasing, and
 3 for a \code{falign\_in} value outside $[-1, 1]$.
 
+\subsection{Where the polarized optics come from}\label{sec:pol:source}
+
+The orientation-resolved spheroid cross sections behind \code{lamI\_pol} and
+\code{Cpol\_ext} default to the Draine \& Hensley (2021) release table. They can
+instead be taken from a table SEDust regenerates from the astrodust dielectric
+function with its own T-matrix engine: \code{build\_astrodust} and \code{sed\_init}
+accept an optional \code{qpol\_path} (with \code{qpol\_wave\_path} and
+\code{qpol\_aeff\_path} for its grid axes) that overrides the default file. The
+regenerated table matches the release to a few parts in $10^4$ where grains carry
+weight and is written in the release table's own format, so nothing else in the
+call changes. Its
+one deliberate benefit is that it supplies the polarized cross sections from the
+same exact optics as the total intensity, removing the mixed averaging convention
+the release forces; see \code{sedust\_polarization\_implementation.pdf} \S7 and
+\code{tmatrix/run\_q\_jori.x}. Leaving \code{qpol\_path} unset keeps the release
+table and the existing results.
+
 \subsection{Division of labor}\label{sec:pol:division}
 
 Table~\ref{tab:poldivision} is the part to get right. SEDust stops at the

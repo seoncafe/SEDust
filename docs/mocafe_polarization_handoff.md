@@ -25,6 +25,19 @@ Completed in this session:
 - **Random-orientation scattering matrix.** Computed and stored for five optical
   bands; see §4.
 
+Added since this note (2026 July 20):
+
+- **First-principles orientation-resolved optics.** The `jori=1,2,3` cross sections no
+  longer have to come from the HD23 file. SEDust computes them itself across all three
+  size-parameter regimes (Rayleigh polarizability; fixed-orientation T-matrix amplitude
+  with the optical theorem and a phase-matrix integral; projected-area plus Fresnel
+  geometric optics), matching the release to a few parts in `10^4` wherever grains carry
+  weight and reproducing `polarized_extinction.dat` end to end to 0.06%. `tmatrix/run_q_jori.x`
+  writes the regenerated table (drop-in for the release format); `oriented_cross_sections`
+  is the same computation for one grain and wavelength. The default polarized optics still
+  come from the release table; pass `qpol_path` to `build_astrodust` or `sed_init` to use
+  the regenerated one. See `sedust_polarization_implementation.pdf` §7.
+
 Two setters change the alignment efficiency on an existing model, both
 re-exported by `dust_lib`:
 
@@ -133,11 +146,14 @@ model itself.
 
 These are limits of the optics as published, not of the implementation.
 
-**No circular polarization or birefringence.** The table header offers `Q_ext`, `Q_abs`
-and `Q_sca` only. None of them is a phase retardation, so `C_circ` cannot be built and
-must be set to zero. Obtaining it would mean computing the fixed-orientation amplitude
-matrix ourselves; `tmatrix/src/ampld.lp.f` exists in the tree for this and is currently
-excluded from the build.
+**No circular polarization or birefringence.** The table stores `Q_ext`, `Q_abs`
+and `Q_sca` only. None of them is a phase retardation, so `C_circ` cannot be built from
+the table and is set to zero. The fixed-orientation amplitude matrix is now computed here
+(Mishchenko's `AMPL`, in `tmatrix/src/ampl_oriented.f`), but only its imaginary part in
+the forward direction is used, for extinction. Birefringence is the real part of the same
+forward-amplitude difference between the two linear polarizations; forming it means
+extending the oriented pipeline to keep that complex amplitude rather than the real `Q` it
+now reduces to, not bringing new code into the build.
 
 **No scattering matrix for aligned grains.** The release gives the integrated `Q_sca`
 with no angular information, so scattering by an aligned spheroid cannot be modeled from

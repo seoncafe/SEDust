@@ -747,16 +747,17 @@ records what was actually done.}
 SEDust was in better shape than expected. The polarized cross-section
 table \code{q\_DH21Ad} was already present with all three orientation
 blocks (\S\ref{sec:optics}), and its correctness has been verified
-against the HD23 release. The \code{tmatrix/} directory links only
-\code{tmd\_one.f}, the random-orientation average driver; the
-fixed-orientation code \code{ampld.lp.f} is present but unused. As long
-as the astrodust model is the target, no T-matrix run is needed for the
-cross sections; a run is needed only for the scattering matrix
-(\S\ref{sec:optical}, now done for five optical bands), for exploring
-other axial ratios or compositions, or for the fixed-orientation
-amplitude matrix that circular polarization would require (\S\ref{sec:optics}): the released table
-carries $Q_{\rm ext}$, $Q_{\rm abs}$ and $Q_{\rm sca}$ only, so \Ccirc\
-cannot be built from it.
+against the HD23 release. The \code{tmatrix/} directory now links both
+\code{tmd\_one.f}, the random-orientation average driver, and
+\code{ampl\_oriented.f}, Mishchenko's fixed-orientation amplitude routine,
+so SEDust can also regenerate the orientation-resolved cross sections from the
+dielectric function itself; the default polarized optics still read the release
+table, but they no longer have to. A T-matrix run is therefore useful not only
+for the scattering matrix (\S\ref{sec:optical}, now done for five optical bands)
+and for exploring other axial ratios or compositions, but for the polarized cross
+sections directly. Circular polarization remains unavailable: neither the release
+table nor the regenerated one stores a phase lag, only $Q_{\rm ext}$, $Q_{\rm abs}$
+and $Q_{\rm sca}$, so \Ccirc\ cannot be built from either.
 
 The structural entry point was \code{grain\_pop\_t} in
 \code{sed/src/dust\_model\_mod.f90}: adding a \code{Cpol(NLAM,NA)}
@@ -1206,9 +1207,11 @@ $Z(\theta)$ at $V$, random orientation &
   forms agree. \\
 $Z(\lambda,\theta)$, aligned orientation &
   SEDust & later &
-  \code{ampld.lp.f} present but unused. Aligned spheroids scatter
-  anisotropically with respect to $\mathbf{B}$, which spherical Mie
-  cannot represent. \\
+  The fixed-orientation amplitude is now in the build
+  (\code{ampl\_oriented.f}), but only the forward value and the
+  scattering integral are used; the full aligned matrix at all angles is
+  not yet formed. Aligned spheroids scatter anisotropically with respect
+  to $\mathbf{B}$, which spherical Mie cannot represent. \\
 \Ccirc &
   SEDust & later &
   Absent from the release. Birefringence converts $U$ into $V$; the
@@ -1282,8 +1285,10 @@ only in the optical. This item does not become easier at a single
 wavelength and keeps its priority.
 
 \paragraph{Scattering matrix, aligned orientation (later).} The full
-orientation-dependent amplitude matrix requires \code{ampld.lp.f}, which
-is present in \code{tmatrix/src/} but excluded from the build. Stated
+orientation-dependent amplitude matrix is evaluated by \code{AMPL}, now in the
+build as \code{ampl\_oriented.f} and already used for the forward amplitude and
+the scattering integral; what is missing is retaining it at all scattering angles
+and assembling the sixteen Mueller elements. Stated
 for a wavelength grid the cost is storage rather than algorithm, since
 the table acquires a wavelength, a scattering angle, an orientation and
 $16$ matrix elements. At a single wavelength the wavelength axis drops
@@ -1318,6 +1323,16 @@ resolving it changes \Cabs, and therefore breaks the byte-identical
 regression of the existing SEDs; that is an engineering consequence to
 plan around, not a reason to leave two conventions in one model
 permanently.
+
+The regenerated orientation-resolved table (the first-principles route added
+after v1.20; see \code{sedust\_polarization\_implementation.pdf}) is the concrete
+way to unify them. It supplies \Cpol\ from the exact fixed-orientation T-matrix,
+$\tfrac12(Q_3-Q_2)$, rather than from the MPFA approximation of
+Eq.~(\ref{eq:cpol}), so both channels rest on the same exact optics and the mixed
+convention is removed outright, at the price of the FIR emission dichroism
+disagreeing with the release by the same few parts in $10^4$. It is opt-in for
+exactly this reason, to keep the regression baseline until that step is taken
+deliberately.
 
 For v1.20 the decision was taken explicitly to defer it. The scope of
 the update lies wholly inside the range where the disagreement is

@@ -2,10 +2,15 @@
 
 **Date:** 2026 July 20
 
-This is a planning document, not a specification or a report of completed work. It states
-the goal, the physics to be computed, the engine changes required, the output format, the
-comparison strategy, the staging, and the open questions. Nothing here has been implemented
-yet.
+This is the planning document that guided the work. It states the goal, the physics to be
+computed, the engine changes required, the output format, the comparison strategy, the
+staging, and the open questions.
+
+**Status: implemented (2026 July 20).** All four stages are done, verified against HD23, and
+committed; the geometric-optics regime was carried through the projected-area plus Fresnel
+model, and the full-grid table is generated and shipped. The as-built account, with the
+validation numbers, is in `sedust_polarization_implementation.pdf` §7. This document is kept
+for the reasoning and the staging it records.
 
 ---
 
