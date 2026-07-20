@@ -97,7 +97,9 @@ make libsedust.a      # the library archive (link this into your RT code)
 The compiler is \code{gfortran} with \code{-O3 -march=native -fopenmp}
 (edit the \code{Makefile} for ifort). \code{libsedust.a} is a static archive of
 all library objects; the Fortran \code{.mod} files are written alongside it in
-\code{SEDust/sed/}.
+\code{SEDust/sed/}. Because those \code{.mod} files share one directory, the
+\code{Makefile} carries \code{.NOTPARALLEL} and builds serially; \code{make -j}
+is not supported until the object and module graph lives in a separate directory.
 
 %====================================================================
 \section{Models and builders}
@@ -254,8 +256,15 @@ nonzero value only names the failing stage: the contract is simply
       \code{2} \code{size(lamI\_total)}$\,\ne$\code{tab\%NLAM};
       \code{3} \code{lamI\_chan} present but not
       \code{(tab\%NLAM, tab\%n\_channel)}.
-\item \code{build\_astrodust}, \code{build\_dl07}: \code{1} $Q$-table load failed;
+\item \code{build\_dl07}: \code{1} $Q$-table load failed;
       \code{2} size-distribution load failed.
+\item \code{build\_astrodust}: \code{1} $Q$-table load failed;
+      \code{2} size-distribution load failed;
+      \code{3} an explicit \code{scatmat\_path} failed to load;
+      \code{4} an explicit \code{qpol\_path} could not be read (an implicit
+      default degrades gracefully instead);
+      \code{5} \code{load\_polarized\_optics=.false.} combined with an explicit
+      \code{qpol\_*}/\code{scatmat\_path} (a contradiction).
 \item \code{build\_zubko}: \code{1} config read; \code{2} fewer than 3 components;
       \code{3} a component's optics read; \code{4} grid inconsistent;
       \code{5} a component's calorimetry read failed.
@@ -485,7 +494,21 @@ one deliberate benefit is that it supplies the polarized cross sections from the
 same exact optics as the total intensity, removing the mixed averaging convention
 the release forces; see \code{sedust\_polarization\_implementation.pdf} \S7 and
 \code{tmatrix/run\_q\_jori.x}. Leaving \code{qpol\_path} unset keeps the release
-table and the existing results.
+table and the existing results, though an explicit \code{qpol\_path} that cannot
+be read now fails the build with \code{status = 4} (and an unconditional stderr
+message), whereas the implicit default still degrades gracefully to an unpolarized
+model.
+
+\paragraph{Scalar-only builds.} \code{build\_astrodust} and \code{sed\_init} take
+an optional \code{load\_polarized\_optics}. Absent or \code{.true.} is the present
+behavior. \code{.false.} never opens the orientation-resolved polarized $Q$ table:
+\code{Cpol}, \code{Cpol\_ext}, \code{Cbir\_ext} and \code{falign} stay zero, and
+the scalar \code{Cext}/\code{Cabs}/\code{Csca}/\code{gbar} and the total SED come
+back bit-identical to a polarized build at zero alignment. Combining it with an
+explicit \code{qpol\_*} or \code{scatmat\_path} is a contradiction and returns
+\code{status = 5}. The query \code{dust\_has\_polarized\_optics(m)} reports whether
+the built model carries polarized optics at all; the aligned-scattering table's
+load state is separately visible as \code{scm\_loaded}.
 
 \subsection{Aligned-grain scattering optics}\label{sec:pol:scatmat}
 
@@ -508,10 +531,14 @@ call build_astrodust(m, qtab, sizedist, NT, T_lo, T_hi, status=st, &
 The table is parsed and its size integrals kept in memory (about $81.5$\,MB for the
 production grid). A \code{scatmat\_path} that fails to load is an error
 (\code{status = 3} from the builder), because a host that asked for the table
-depends on it. This layer is not thread-safe; call it from serial code before the
-photon loop.
+depends on it. A gzipped table --- both this and the polarized $Q$ table ship
+\code{.gz} --- is decompressed to a scratch copy under \code{TMPDIR} (else
+\code{/tmp}) named with the process id (\code{scatmat\_aligned\_<pid>.dat},
+\code{q\_jori\_<pid>.dat}) and deleted after the read, so concurrent MPI ranks
+never collide and a read-only launch directory is never written. This layer is not
+thread-safe; call it from serial code before the photon loop.
 
-\paragraph{Path queries (per event, thread-safe).} Five routines, all re-exported
+\paragraph{Path queries (per event, thread-safe).} Six routines, all re-exported
 by \code{dust\_lib}, are pure reads of the loaded arrays: they write only their own
 output arguments, do no I/O and no allocation, and are safe to call concurrently
 from OpenMP photon threads. The whole cell dependence enters through two scalars
@@ -519,10 +546,11 @@ the host already holds --- the alignment scale $\eta$, and the incidence angle
 $\theta_i = \arccos(\hat k\!\cdot\!\hat B)$ between the photon direction and the
 local field, from one dot product.
 \begin{lstlisting}
-call scatmat_band(lambda_um, iband, exact)                     ! pick the band once
-call extinction_matrix_aligned(iband, theta_i, eta, kmat)      ! 4x4  [um^2/H]
-call mueller_matrix_aligned(iband, theta_i, theta_s, phi, z)   ! 4x4  [um^2 sr^-1/H], eta=1
-call mueller_matrix_random(iband, big_theta, f_tot, f_ref)     ! 6-elt random matrices
+call scatmat_band(lambda_um, iband, exact)                       ! pick the band once
+call extinction_matrix_aligned(iband, theta_i, eta, kmat)        ! 4x4  [um^2/H]
+call mueller_matrix_total(iband, theta_i, theta_s, phi, eta, z)  ! 4x4  [um^2 sr^-1/H], absolute
+call mueller_matrix_aligned(iband, theta_i, theta_s, phi, z)     ! 4x4  [um^2 sr^-1/H], aligned only, eta=1
+call mueller_matrix_random(iband, big_theta, f_tot, f_ref)       ! 6-elt random matrices
 call scattering_cross_sections(iband, theta_i, eta, csca_aligned, csca_unaligned)
 \end{lstlisting}
 \begin{itemize}
@@ -536,25 +564,62 @@ call scattering_cross_sections(iband, theta_i, eta, csca_aligned, csca_unaligned
       (dichroism); $K(3,4)=\eta\,C_{\rm bir,al}$, $K(4,3)=-\eta\,C_{\rm bir,al}$
       (birefringence). \code{theta\_i} in $[0,180^\circ]$ is folded to
       $[0,90^\circ]$, $K$ being even under the equatorial reflection.
-\item \code{mueller\_matrix\_aligned}: \code{z(4,4)} [\,\um$^2$\,sr$^{-1}$/H\,] at
-      the reference alignment ($\eta=1$; scale it yourself). \code{theta\_i},
-      \code{theta\_s} in $[0,180^\circ]$, \code{phi} in $[0,360^\circ]$; the
-      stored octants ($\theta_i\!\le\!90^\circ$, $\phi\!\le\!180^\circ$) and the
-      rest are handled by interpolation plus the header's symmetry relations.
+\item \code{mueller\_matrix\_total} (\textbf{recommended}): the \emph{absolute}
+      combined phase matrix \code{z(4,4)} [\,\um$^2$\,sr$^{-1}$/H\,] at
+      grain-frame geometry and alignment $\eta$, with both populations already
+      assembled,
+      \[
+        z = \eta\,Z_{\rm al}
+          + L(\pi-\sigma_2)\,F_{\rm unal}(\Theta)\,L(-\sigma_1)\,/\,(4\pi),
+        \quad
+        F_{\rm unal}=C_{\rm sca,tot}F_{\rm tot}-\eta\,C_{\rm sca,ref}F_{\rm ref},
+      \]
+      with $\cos\Theta=\cos\theta_i\cos\theta_s+\sin\theta_i\sin\theta_s\cos\phi$
+      and the meridional rotation angles (closed forms, poles included)
+      \begin{align*}
+        \sigma_1 &= \mathrm{atan2}\!\left(\sin\theta_s\sin\phi,\;
+                    \cos\theta_i\sin\theta_s\cos\phi-\sin\theta_i\cos\theta_s\right),\\
+        \sigma_2 &= \mathrm{atan2}\!\left(-\sin\theta_i\sin\phi,\;
+                    \cos\theta_i\sin\theta_s-\sin\theta_i\cos\theta_s\cos\phi\right).
+      \end{align*}
+      $L$ is the Stokes rotation. Prefer this call to reconstructing the mixture
+      from the public arrays: it is the one place the normalization and the
+      rotation signs are certified.
+\item \code{mueller\_matrix\_aligned}: the aligned matrix alone, \code{z(4,4)}
+      [\,\um$^2$\,sr$^{-1}$/H\,] at the reference alignment ($\eta=1$; scale it
+      yourself). \code{theta\_i}, \code{theta\_s} in $[0,180^\circ]$, \code{phi}
+      in $[0,360^\circ]$; the stored octants ($\theta_i\!\le\!90^\circ$,
+      $\phi\!\le\!180^\circ$) and the rest are handled by interpolation plus the
+      header's symmetry relations.
 \item \code{mueller\_matrix\_random}: \code{f\_tot(6)}, \code{f\_ref(6)}, the two
       six-element ($F_{11},F_{22},F_{33},F_{44},F_{12},F_{34}$) random-orientation
-      matrices at \code{big\_theta} [deg], $\alpha_1$-normalized as stored.
-      Restore absolute \um$^2$\,sr$^{-1}$/H with \code{f\_tot*scm\_csca\_tot(iband)}
-      and \code{f\_ref*scm\_csca\_ref(iband)}.
+      matrices at \code{big\_theta} [deg], $\alpha_1$-normalized as stored
+      ($\tfrac12\int F_{11}\,{\rm d}\cos\Theta=1$, i.e.\ $\int F_{11}\,{\rm
+      d}\Omega=4\pi$). The absolute differential matrix is $C_{\rm sca}F/(4\pi)$:
+      restore \um$^2$\,sr$^{-1}$/H with
+      \code{f\_tot*scm\_csca\_tot(iband)/(4*PI)} and
+      \code{f\_ref*scm\_csca\_ref(iband)/(4*PI)}, the $1/(4\pi)$ turning the
+      $4\pi$-normalized $F$ into the matrix whose element 11 integrates to
+      $C_{\rm sca}$ over the sphere. (Omitting it overweights the remainder by
+      $4\pi$ relative to $Z_{\rm al}$, whose stored matrix already integrates to
+      $C_{\rm sca,al}$.)
 \item \code{scattering\_cross\_sections}: \code{csca\_aligned} $=\eta\,
       C_{\rm sca,al}(\theta_i)$ and \code{csca\_unaligned}
       $=C_{\rm sca,tot}-\eta\,C_{\rm sca,ref}$ [\,\um$^2$/H\,], for the albedo and
-      the population split.
+      the population split. An optional fourth output
+      \code{csca\_pol\_aligned} $=\eta\,C_{\rm sca,pol,al}(\theta_i)$ is the
+      polarized scattering cross section $\int Z_{12}\,{\rm d}\Omega$ of the
+      aligned matrix (Peest et al.\ 2023), which the polarization-dependent albedo
+      $\Lambda=[C_{\rm sca}+C_{\rm sca,pol}\,Q/I]/[C_{\rm ext}+C_{\rm pol}\,Q/I]$
+      needs; the random remainder contributes zero to it by azimuthal symmetry.
 \end{itemize}
 
 \paragraph{The $\eta$ contract, and unit note.} A cell's alignment enters only as
 $\eta$: the aligned matrix and the aligned $K$ scale as $\eta$, and the unaligned
-remainder scattering matrix is $F_{\rm tot}-\eta F_{\rm ref}$ in absolute units.
+remainder scattering matrix is
+$Z_{\rm unal}=[C_{\rm sca,tot}F_{\rm tot}-\eta\,C_{\rm sca,ref}F_{\rm ref}]/(4\pi)$
+in absolute \um$^2$\,sr$^{-1}$/H, whose element-11 solid-angle integral is
+$C_{\rm sca,tot}-\eta\,C_{\rm sca,ref}$.
 For the total extinction matrix the aligned population must not be counted twice:
 the isotropic \code{Cext} from \code{dust\_extinction} already contains its
 reference-orientation average $C_{\rm ext,ref}$, so assemble

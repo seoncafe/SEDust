@@ -38,16 +38,29 @@ module q_table_jori_mod
    !
    ! gzip handling: the table ships compressed and Fortran cannot read a
    ! deflate stream, so the reader shells out to `gzip -dc` once, writes a
-   ! scratch copy next to the caller's working directory, reads it, and
-   ! deletes it. This keeps a fresh clone working with no manual setup step
-   ! and leaves neither an untracked ~12 MB sibling in data/dielectric nor a
+   ! scratch copy into TMPDIR (or /tmp), reads it, and deletes it. The scratch
+   ! name carries the process id (q_jori_<pid>.dat), so concurrent MPI ranks
+   ! never share it and a read-only launch directory is never written. This
+   ! keeps a fresh clone working with no manual setup step and avoids a
    ! dependency on a zlib binding. A path that does not end in `.gz` is
    ! opened directly.
 
    use, intrinsic :: iso_fortran_env, only: real64, error_unit
    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+   use, intrinsic :: iso_c_binding,   only: c_int
    implicit none
    private
+
+   interface
+      ! POSIX getpid, used only to name a collision-free decompression scratch
+      ! file so concurrent MPI ranks never write the same path. Local copy of
+      ! the same helper in scatmat_aligned_mod; this repo keeps sibling copies.
+      function c_getpid() bind(c, name="getpid") result(pid)
+         import :: c_int
+         integer(c_int) :: pid
+      end function c_getpid
+   end interface
+
    public :: load_q_table_jori, falign_hd23, falign_powerlaw
    public :: nj_lam, nj_aeff, lam_j, aeff_j
    public :: qpol_ext, qpol_abs, qran_ext, qran_abs, qran_sca
@@ -179,12 +192,11 @@ contains
       if (i > 3) gz = (q_file(i-2:i) == '.gz')
 
       if (gz) then
-         read_path = 'q_jori_scratch.dat'
+         read_path = unique_scratch_path()
          call gunzip_to(q_file, trim(read_path), sub_ok)
          if (.not. sub_ok) then
             ! The redirection creates the target before gzip can fail, so
-            ! remove the empty file rather than leave it in the caller's
-            ! working directory.
+            ! remove the empty file rather than leave it behind in TMPDIR.
             call discard_scratch_copy(.true., trim(read_path))
             call bail('gzip -dc failed on '//trim(q_file))
             return
@@ -275,6 +287,13 @@ contains
                qre_j(jw, :, jori) = row(1:nj_aeff)
             end do
          end do
+         ! qre_j is fully populated here (allocated at the top of this branch),
+         ! so form the birefringence in the same block -- the only place qre_j is
+         ! read. That keeps the allocated-before-use invariant obvious to both
+         ! the reader and the compiler (no cross-block liveness on qre_j).
+         allocate(qbir_ext(nj_lam, nj_aeff))
+         qbir_ext = 0.5_wp * (qre_j(:,:,3) - qre_j(:,:,2))
+         deallocate(qre_j)
          has_bir = .true.
       end if
 
@@ -296,11 +315,7 @@ contains
       qran_abs = (qabs_j(:,:,1) + qabs_j(:,:,2) + qabs_j(:,:,3)) / 3.0_wp
       qran_sca = (qsca_j(:,:,1) + qsca_j(:,:,2) + qsca_j(:,:,3)) / 3.0_wp
 
-      if (has_bir) then
-         allocate(qbir_ext(nj_lam, nj_aeff))
-         qbir_ext = 0.5_wp * (qre_j(:,:,3) - qre_j(:,:,2))
-         deallocate(qre_j)
-      end if
+      ! qbir_ext was formed above, inside the 4-block branch, from qre_j.
 
       ! The three orientations enter the optics only through Q_pol, Q_ran and
       ! the birefringence, so once those are formed the orientation-resolved
@@ -387,6 +402,21 @@ contains
       end do
       ok = .true.
    end subroutine read_grid
+
+
+   function unique_scratch_path() result(p)
+      ! Collision-free decompression target: TMPDIR (else /tmp) plus the process
+      ! id, so concurrent MPI ranks never share the scratch name and a read-only
+      ! launch directory is never written.
+      character(len=512) :: p
+      character(len=512) :: tmpdir
+      character(len=32)  :: pidstr
+      integer :: stat
+      call get_environment_variable('TMPDIR', tmpdir, status=stat)
+      if (stat /= 0 .or. len_trim(tmpdir) == 0) tmpdir = '/tmp'
+      write(pidstr,'(i0)') int(c_getpid())
+      p = trim(tmpdir)//'/q_jori_'//trim(pidstr)//'.dat'
+   end function unique_scratch_path
 
 
    subroutine gunzip_to(gz_file, out_file, ok)

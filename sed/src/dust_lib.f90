@@ -148,7 +148,7 @@ module dust_lib
    use sed_astrodust_mod, only: dust_model_t, &
                                 build_astrodust, build_dl07, build_zubko, build_from_files, &
                                 dust_emission, dust_emission_single_teq, &
-                                dust_extinction, &
+                                dust_extinction, dust_has_polarized_optics, &
                                 dust_set_alignment, dust_set_alignment_profile
    ! Aligned-grain polarized scattering optics for a polarized RT host. The
    ! init call (load_scatmat_aligned) runs once from serial code; the query
@@ -157,13 +157,13 @@ module dust_lib
    use scatmat_aligned_mod, only: load_scatmat_aligned, free_scatmat_aligned, &
                                 scatmat_band, extinction_matrix_aligned, &
                                 mueller_matrix_aligned, mueller_matrix_random, &
-                                scattering_cross_sections, &
+                                mueller_matrix_total, scattering_cross_sections, &
                                 scm_loaded, scm_nband, scm_nti, scm_nts, scm_nphi, &
                                 scm_ntheta, scm_lambda, scm_theta_i, scm_theta_s, &
                                 scm_phi, scm_theta_ran, &
                                 scm_cos_theta_s, scm_cext_al, scm_cpol_al, scm_cbir_al, &
-                                scm_csca_al, scm_cext_tot, scm_csca_tot, scm_cext_ref, &
-                                scm_csca_ref, scm_F_tot, scm_F_ref, scm_Z, &
+                                scm_csca_al, scm_csca_pol_al, scm_cext_tot, scm_csca_tot, &
+                                scm_cext_ref, scm_csca_ref, scm_F_tot, scm_F_ref, scm_Z, &
                                 scm_profile_name, scm_fmax, scm_a_align, scm_alpha, &
                                 scm_profile_mismatch, scm_bytes
    implicit none
@@ -172,16 +172,17 @@ module dust_lib
    ! Re-exported model API
    public :: dust_model_t, build_astrodust, build_dl07, build_zubko, build_from_files
    public :: dust_emission, dust_emission_single_teq, dust_extinction
+   public :: dust_has_polarized_optics
    public :: dust_set_alignment, dust_set_alignment_profile
    ! Re-exported aligned-scattering API (initialization + path queries)
    public :: load_scatmat_aligned, free_scatmat_aligned, scatmat_band, &
              extinction_matrix_aligned, mueller_matrix_aligned, &
-             mueller_matrix_random, scattering_cross_sections
+             mueller_matrix_random, mueller_matrix_total, scattering_cross_sections
    ! Re-exported read-only storage (public, protected in scatmat_aligned_mod)
    public :: scm_loaded, scm_nband, scm_nti, scm_nts, scm_nphi, scm_ntheta, &
              scm_lambda, scm_theta_i, scm_theta_s, scm_phi, scm_theta_ran, &
              scm_cos_theta_s, scm_cext_al, scm_cpol_al, scm_cbir_al, scm_csca_al, &
-             scm_cext_tot, scm_csca_tot, scm_cext_ref, scm_csca_ref, &
+             scm_csca_pol_al, scm_cext_tot, scm_csca_tot, scm_cext_ref, scm_csca_ref, &
              scm_F_tot, scm_F_ref, scm_Z, &
              scm_profile_name, scm_fmax, scm_a_align, scm_alpha, &
              scm_profile_mismatch, scm_bytes

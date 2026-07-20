@@ -193,11 +193,14 @@ swaps the alignment profile).
 
 The library reads it with the same lifecycle as the rest of the API: a
 `scatmat_path` argument on `sed_init` / `build_astrodust` loads and integrates it
-once (serial), and five pure-read query calls — `extinction_matrix_aligned`,
-`mueller_matrix_aligned`, `mueller_matrix_random`, `scattering_cross_sections`,
-and the band selector `scatmat_band` — serve a photon path concurrently from
-OpenMP threads. `sed/rt_example/use_dustlib_scatmat.f90` is a minimal two-cell
-reference consumer. This completes the material side of the Peest-formalism
+once (serial), and six pure-read query calls — `extinction_matrix_aligned`,
+`mueller_matrix_aligned`, `mueller_matrix_random`, `mueller_matrix_total`,
+`scattering_cross_sections`, and the band selector `scatmat_band` — serve a photon
+path concurrently from OpenMP threads. `mueller_matrix_total` is the recommended
+one: it returns the absolute combined phase matrix — the aligned part plus the
+random-orientation remainder, correctly `1/(4 pi)`-normalized and rotated into the
+grain frame — in a single call. `sed/rt_example/use_dustlib_scatmat.f90` is a
+minimal two-cell reference consumer. This completes the material side of the Peest-formalism
 contract for aligned-grain polarized transfer: SEDust returns every quantity in
 matrix form, and the MoCafe-side consumption (frame rotations, direction sampling,
 peel-off, the `exp(-K tau)` step) remains future work. The random-orientation
@@ -205,6 +208,13 @@ scatmat file above stays for unaligned use, and it does not limit far-infrared o
 submillimeter polarized emission, where scattering is negligible. The PAH
 component is treated as unaligned, and the DL07 and Zubko models have no polarized
 optics.
+
+A build can also skip the polarized optics entirely: `load_polarized_optics=.false.`
+on `build_astrodust` / `sed_init` never opens the orientation-resolved table, leaves
+`Cpol`/`Cpol_ext`/`Cbir_ext`/`falign` zero, and returns the scalar cross sections
+and total SED bit-identical to a polarized build at zero alignment.
+`dust_has_polarized_optics(m)` reports whether a built model carries polarized
+optics at all.
 
 ## Documentation
 
@@ -238,4 +248,4 @@ Rebuild any of them with `pdflatex <name>.tex` (run twice for cross-references).
 
 ---
 
-Last updated: 2026-07-21 00:08 KST
+Last updated: 2026-07-21 07:03 KST

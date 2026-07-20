@@ -28,11 +28,12 @@ program test_scatmat_aligned
                                load_scatmat_aligned, free_scatmat_aligned, &
                                scatmat_band, extinction_matrix_aligned, &
                                mueller_matrix_aligned, mueller_matrix_random, &
+                               mueller_matrix_total, &
                                scattering_cross_sections, scm_profile_mismatch, &
                                scm_nband, scm_nti, scm_nts, scm_nphi, scm_ntheta, scm_bytes, &
                                scm_lambda, scm_theta_i, scm_theta_s, scm_phi, scm_theta_ran, &
                                scm_cext_al, scm_cpol_al, scm_cbir_al, scm_csca_al, &
-                               scm_csca_tot, scm_csca_ref, &
+                               scm_csca_pol_al, scm_csca_tot, scm_csca_ref, &
                                scm_F_tot, scm_F_ref, scm_Z, &
                                scm_profile_name, scm_fmax, scm_a_align, scm_alpha
    use q_table_jori_mod, only: nj_lam, nj_aeff, lam_j, aeff_j, qpol_ext, qbir_ext, &
@@ -51,6 +52,15 @@ program test_scatmat_aligned
    character(len=*), parameter :: SIZED = '../data/release/size_distribution.dat'
 
    real(wp), parameter :: CM2_TO_UM2 = 1.0e8_wp    ! 1 cm^2 = 1e8 um^2
+
+   ! Declared tolerances for the absolute-units checks. A FAIL sets stop 1.
+   ! Values are set from the measured closures with a modest margin (see the
+   ! numbers each check prints); a regression that exceeds them fails the test.
+   real(wp), parameter :: TOL_RAND_CLOS  = 1.0e-3_wp  ! (1/4pi) INT Csca_tot F11 dOmega vs Csca_tot (meas 3.5e-4)
+   real(wp), parameter :: TOL_ALIGN_CLOS = 5.0e-5_wp  ! stored-Z11 re-integration vs scm_csca_al, ASCII (meas 3.3e-6)
+   real(wp), parameter :: TOL_CP_MATCH   = 1.0e-9_wp  ! Csca,pol routine vs direct Z12 re-integration (meas 0)
+   real(wp), parameter :: TOL_COMB       = 6.0e-3_wp  ! mueller_matrix_total z11/z12 grid closure (meas 2.2e-3 coarse grid)
+   real(wp), parameter :: TOL_ROTSIGN    = 3.0e-4_wp  ! theta_i=0 rotation-sign reconstruction, ASCII (meas 6.8e-5)
 
    character(len=512) :: table
    type(dust_model_t) :: m
@@ -84,6 +94,11 @@ program test_scatmat_aligned
    call check_roundtrip(nfail)
    call check_symmetry(nfail)
    call check_eta_algebra(nfail)
+   call check_random_absolute_closure(nfail)
+   call check_aligned_closure(nfail)
+   call check_csca_pol(nfail)
+   call check_combined_closure(nfail)
+   call check_rotation_signs(nfail)
    call check_k_consistency(nfail)
    call check_alignment_guard(nfail)
 
@@ -274,6 +289,272 @@ contains
       f1 = scm_csca_tot(ib)*scm_F_tot(is,  1,ib) - scm_csca_ref(ib)*scm_F_ref(is,  1,ib)
       seg = 0.5_wp * (f0 + f1) * (c0 - c1)      ! dcos > 0 as Theta increases
    end function trap_cos
+
+
+   ! ---- 3a. random absolute closure -----------------------------------
+   subroutine check_random_absolute_closure(nf)
+      ! (1/(4 pi)) INT [Csca_tot F_tot]_11 dOmega = Csca_tot, per band. The F
+      ! grid trapezoid (in cos Theta, azimuthal factor 2 pi) recovers the
+      ! alpha1 normalization (1/2) INT F11 dcos = 1, so the 1/(4 pi)-scaled
+      ! absolute integral returns Csca_tot. This is the closure the "Csca F"
+      ! (no 1/(4 pi)) bug violated by exactly 4 pi.
+      integer, intent(inout) :: nf
+      integer  :: ib, is
+      real(wp) :: intf, absol, rel, maxrel
+      logical  :: ok
+      maxrel = 0.0_wp
+      do ib = 1, scm_nband
+         intf = 0.0_wp
+         do is = 2, scm_ntheta
+            intf = intf + ftot11_trap(ib, is)      ! INT F_tot11 dcos(Theta)
+         end do
+         absol = scm_csca_tot(ib) * (2.0_wp*pi*intf) / (4.0_wp*pi)
+         rel   = abs(absol - scm_csca_tot(ib)) / scm_csca_tot(ib)
+         maxrel = max(maxrel, rel)
+      end do
+      ok = (maxrel <= TOL_RAND_CLOS)
+      write(*,'(a)')       ' [3a] random absolute closure (1/4pi) INT Csca_tot F11 dOmega = Csca_tot'
+      write(*,'(a,es10.2,a,es10.2)') '     max rel |closure - Csca_tot| = ', maxrel, &
+           '   tol = ', TOL_RAND_CLOS
+      call verdict(ok, nf)
+   end subroutine check_random_absolute_closure
+
+
+   real(wp) function ftot11_trap(ib, is) result(seg)
+      integer, intent(in) :: ib, is
+      real(wp) :: c0, c1
+      c0 = cos(scm_theta_ran(is-1)*deg2rad)
+      c1 = cos(scm_theta_ran(is)  *deg2rad)
+      seg = 0.5_wp * (scm_F_tot(is-1,1,ib) + scm_F_tot(is,1,ib)) * (c0 - c1)
+   end function ftot11_trap
+
+
+   ! ---- 3b. aligned closure -------------------------------------------
+   subroutine check_aligned_closure(nf)
+      ! Re-integrate the STORED Z11 (es12.4e2, ~5 significant digits) with the
+      ! generator's closure quadrature and compare to scm_csca_al (written from
+      ! the generator's unrounded Z at es16.7). The gap is the ASCII rounding of
+      ! the Z block (~1e-4 relative), not a physics difference.
+      integer, intent(inout) :: nf
+      integer  :: ib, it
+      real(wp) :: reint, stored, maxrel
+      logical  :: ok
+      maxrel = 0.0_wp
+      do ib = 1, scm_nband
+         do it = 1, scm_nti
+            reint  = z_grid_closure_node(it, ib, 1, 1)
+            stored = scm_csca_al(it, ib)
+            if (stored /= 0.0_wp) maxrel = max(maxrel, abs(reint - stored)/abs(stored))
+         end do
+      end do
+      ok = (maxrel <= TOL_ALIGN_CLOS)
+      write(*,'(a)')       ' [3b] aligned closure (re-integrate stored Z11) vs scm_csca_al'
+      write(*,'(a,es10.2,a,es10.2)') '     max rel |reint - stored| = ', maxrel, &
+           '   tol = ', TOL_ALIGN_CLOS
+      call verdict(ok, nf)
+   end subroutine check_aligned_closure
+
+
+   ! ---- 3c. polarized scattering cross section ------------------------
+   subroutine check_csca_pol(nf)
+      ! scattering_cross_sections' optional csca_pol_aligned (from scm_csca_pol_al)
+      ! vs a direct re-integration of Z12 on the same grid: identical to rounding.
+      ! Physical sanity: |Csca_pol| < Csca_al at every theta_i node and band.
+      integer, intent(inout) :: nf
+      integer  :: ib, it
+      real(wp) :: routine_cp, reint_cp, ca, cu, maxmatch, maxratio
+      logical  :: ok
+      maxmatch = 0.0_wp;  maxratio = 0.0_wp
+      do ib = 1, scm_nband
+         do it = 1, scm_nti
+            call scattering_cross_sections(ib, scm_theta_i(it), 1.0_wp, ca, cu, routine_cp)
+            reint_cp = z_grid_closure_node(it, ib, 1, 2)
+            if (reint_cp /= 0.0_wp) then
+               maxmatch = max(maxmatch, abs(routine_cp - reint_cp)/abs(reint_cp))
+            else
+               maxmatch = max(maxmatch, abs(routine_cp - reint_cp))
+            end if
+            if (ca > 0.0_wp) maxratio = max(maxratio, abs(routine_cp)/ca)
+         end do
+      end do
+      ok = (maxmatch <= TOL_CP_MATCH .and. maxratio < 1.0_wp)
+      write(*,'(a)')       ' [3c] Csca,pol: routine vs direct Z12 re-integration; |Cpol| < Csca_al'
+      write(*,'(a,es10.2,a,f8.4)') '     max rel |routine - reint| = ', maxmatch, &
+           '   max |Csca_pol|/Csca_al = ', maxratio
+      call verdict(ok, nf)
+   end subroutine check_csca_pol
+
+
+   ! ---- 3d. combined closure via mueller_matrix_total -----------------
+   subroutine check_combined_closure(nf)
+      ! For eta in {0, 0.37, 1} and theta_i in {25, 60, 120} (one > 90 to exercise
+      ! the fold), integrate z(1,1) and z(1,2) of mueller_matrix_total over the
+      ! (theta_s, phi) grid and compare to the eta algebra:
+      !   INT z11 dOmega = eta Csca_al(theta_i) + (Csca_tot - eta Csca_ref),
+      !   INT z12 dOmega = eta Csca,pol_al(theta_i).
+      ! The error is the Z-grid quadrature of the smooth (forward-peaked) random
+      ! F and the ASCII rounding of the aligned Z; the aligned Csca,pol cancels
+      ! exactly, so the z12 metric isolates the random remainder's zero closure.
+      integer, intent(inout) :: nf
+      integer  :: ib, k, j
+      real(wp) :: etas(3), tis(3), eta, ti, s11, s12, tgt11, tgt12
+      real(wp) :: ca, cu, cp, max11, max12
+      logical  :: ok
+      etas = [0.0_wp, 0.37_wp, 1.0_wp]
+      tis  = [25.0_wp, 60.0_wp, 120.0_wp]
+      ib = 1
+      max11 = 0.0_wp;  max12 = 0.0_wp
+      do k = 1, 3
+         eta = etas(k)
+         do j = 1, 3
+            ti = tis(j)
+            call total_closure(ib, ti, eta, s11, s12)
+            call scattering_cross_sections(ib, ti, eta, ca, cu, cp)
+            tgt11 = ca + cu          ! eta Csca_al + (Csca_tot - eta Csca_ref)
+            tgt12 = cp               ! eta Csca,pol_al
+            if (tgt11 /= 0.0_wp) then
+               max11 = max(max11, abs(s11 - tgt11)/abs(tgt11))
+               max12 = max(max12, abs(s12 - tgt12)/abs(tgt11))   ! normalize z12 to the Csca scale
+            end if
+         end do
+      end do
+      ok = (max11 <= TOL_COMB .and. max12 <= TOL_COMB)
+      write(*,'(a)')       ' [3d] combined closure via mueller_matrix_total (eta=0,0.37,1)'
+      write(*,'(a,es10.2,a,es10.2)') '     max rel z11 closure err = ', max11, &
+           '   max z12/Csca err = ', max12
+      write(*,'(a,es10.2)') '     tol = ', TOL_COMB
+      call verdict(ok, nf)
+   end subroutine check_combined_closure
+
+
+   ! ---- 3e. rotation-sign certification (stored table, theta_i = 0) ----
+   subroutine check_rotation_signs(nf)
+      ! At theta_i = 0 the aligned ensemble is azimuthally symmetric about the
+      ! incidence direction, so the scattering plane contains the axis and
+      ! sigma1 = phi, sigma2 = 0. Hence the stored Z_al(0, theta_s, phi) must
+      ! equal Z_al(0, theta_s, 0) . L(-phi) (L(pi - 0) = L(pi) = I on the left).
+      ! Reconstructing from node reads certifies the rotation-sign convention of
+      ! mueller_matrix_total (only ASCII rounding enters). theta_i = 0 is grid
+      ! node 1 and phi = 0 is grid node 1.
+      !
+      ! The analogous outgoing-pole check at theta_s = 0 is deliberately skipped:
+      ! there the outgoing meridional basis is degenerate (any azimuth), so the
+      ! rotation is a matter of convention rather than a table-certifiable fact;
+      ! the sign is certified here at theta_i = 0 and at general geometry by
+      ! compare_scatmat_aligned Anchor H.
+      integer, intent(inout) :: nf
+      integer  :: ib, is, ip, i, j
+      real(wp) :: zrec(4,4), zplane(4,4), lphi(4,4), f11scale, maxdiff
+      logical  :: ok
+      ib = 1
+      maxdiff = 0.0_wp
+      do is = 1, scm_nts
+         zplane = scm_Z(1, is, 1, :, :, ib)
+         f11scale = max(abs(zplane(1,1)), tiny(1.0_wp))
+         do ip = 1, scm_nphi
+            call stokes_L_local(-scm_phi(ip)*deg2rad, lphi)
+            zrec = matmul(zplane, lphi)
+            do j = 1, 4
+               do i = 1, 4
+                  maxdiff = max(maxdiff, abs(zrec(i,j) - scm_Z(1,is,ip,i,j,ib))/f11scale)
+               end do
+            end do
+         end do
+      end do
+      ok = (maxdiff <= TOL_ROTSIGN)
+      write(*,'(a)')       ' [3e] rotation-sign certification at theta_i = 0 (Z(phi) = Z(0) L(-phi))'
+      write(*,'(a,es10.2,a,es10.2)') '     max |Z_rec - stored|/Z11 = ', maxdiff, &
+           '   tol = ', TOL_ROTSIGN
+      call verdict(ok, nf)
+   end subroutine check_rotation_signs
+
+
+   ! ---- shared quadratures for the absolute-units checks --------------
+   real(wp) function z_grid_closure_node(it, ib, ci, cj) result(cs)
+      ! INT Z(ci,cj) dOmega at theta_i node it, band ib, using the generator's
+      ! closure quadrature (trapezoid in cos(theta_s) of the [0,180] azimuth
+      ! trapezoid, doubled for the phi -> 360-phi mirror).
+      integer, intent(in) :: it, ib, ci, cj
+      integer  :: is
+      real(wp) :: acc, plo, phi_hi, ulo, uhi
+      acc = 0.0_wp
+      plo = azint_z(it, 1, ib, ci, cj)
+      ulo = cos(scm_theta_s(1)*deg2rad)
+      do is = 1, scm_nts - 1
+         phi_hi = azint_z(it, is+1, ib, ci, cj)
+         uhi = cos(scm_theta_s(is+1)*deg2rad)
+         acc = acc + 0.5_wp*(plo + phi_hi)*(ulo - uhi)
+         plo = phi_hi;  ulo = uhi
+      end do
+      cs = 2.0_wp * acc
+   end function z_grid_closure_node
+
+
+   real(wp) function azint_z(it, is, ib, ci, cj) result(v)
+      integer, intent(in) :: it, is, ib, ci, cj
+      integer :: ip
+      v = 0.0_wp
+      do ip = 1, scm_nphi - 1
+         v = v + 0.5_wp*(scm_Z(it,is,ip,ci,cj,ib) + scm_Z(it,is,ip+1,ci,cj,ib)) &
+               * (scm_phi(ip+1) - scm_phi(ip))*deg2rad
+      end do
+   end function azint_z
+
+
+   subroutine total_closure(ib, ti, eta, s11, s12)
+      ! INT z(1,1) dOmega and INT z(1,2) dOmega for mueller_matrix_total at
+      ! incidence ti and scale eta, evaluated on the (theta_s, phi) grid with the
+      ! generator's closure quadrature (both z11 and z12 are even under the phi
+      ! mirror, so the [0,180] azimuth integral is doubled).
+      integer,  intent(in)  :: ib
+      real(wp), intent(in)  :: ti, eta
+      real(wp), intent(out) :: s11, s12
+      real(wp) :: z(4,4), z11g(scm_nts, scm_nphi), z12g(scm_nts, scm_nphi)
+      real(wp) :: acc11, acc12, p11lo, p11hi, p12lo, p12hi, ulo, uhi
+      integer  :: is, ip
+      do is = 1, scm_nts
+         do ip = 1, scm_nphi
+            call mueller_matrix_total(ib, ti, scm_theta_s(is), scm_phi(ip), eta, z)
+            z11g(is,ip) = z(1,1);  z12g(is,ip) = z(1,2)
+         end do
+      end do
+      acc11 = 0.0_wp;  acc12 = 0.0_wp
+      call az_row(z11g(1,:), p11lo);  call az_row(z12g(1,:), p12lo)
+      ulo = cos(scm_theta_s(1)*deg2rad)
+      do is = 1, scm_nts - 1
+         call az_row(z11g(is+1,:), p11hi);  call az_row(z12g(is+1,:), p12hi)
+         uhi = cos(scm_theta_s(is+1)*deg2rad)
+         acc11 = acc11 + 0.5_wp*(p11lo + p11hi)*(ulo - uhi)
+         acc12 = acc12 + 0.5_wp*(p12lo + p12hi)*(ulo - uhi)
+         p11lo = p11hi;  p12lo = p12hi;  ulo = uhi
+      end do
+      s11 = 2.0_wp*acc11;  s12 = 2.0_wp*acc12
+   end subroutine total_closure
+
+
+   subroutine az_row(row, v)
+      real(wp), intent(in)  :: row(:)
+      real(wp), intent(out) :: v
+      integer :: ip
+      v = 0.0_wp
+      do ip = 1, scm_nphi - 1
+         v = v + 0.5_wp*(row(ip) + row(ip+1))*(scm_phi(ip+1) - scm_phi(ip))*deg2rad
+      end do
+   end subroutine az_row
+
+
+   subroutine stokes_L_local(angle, l)
+      ! Stokes rotation L(angle) in the Mishchenko convention (local copy, so the
+      ! rotation-sign check does not reach into the module internals).
+      real(wp), intent(in)  :: angle
+      real(wp), intent(out) :: l(4,4)
+      real(wp) :: c2, s2
+      c2 = cos(2.0_wp*angle);  s2 = sin(2.0_wp*angle)
+      l = 0.0_wp
+      l(1,1) = 1.0_wp;  l(4,4) = 1.0_wp
+      l(2,2) = c2;  l(2,3) =  s2
+      l(3,2) = -s2; l(3,3) =  c2
+   end subroutine stokes_L_local
 
 
    ! ---- 4. K consistency ----------------------------------------------

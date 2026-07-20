@@ -21,10 +21,10 @@ program use_dustlib_scatmat
    ! Division of labor (plan Section 4): SEDust returns the matrices in the grain
    ! frame (z = B-hat); the RT does the meridional-basis rotations, azimuth
    ! sampling, peel-off, and the exp(-K tau) transfer.
-   use constants, only: wp, deg2rad, rad2deg
+   use constants, only: wp, deg2rad, rad2deg, fourpi
    use dust_lib,  only: dust_model_t, build_astrodust, dust_extinction, &
                         scatmat_band, extinction_matrix_aligned, &
-                        mueller_matrix_aligned, mueller_matrix_random, &
+                        mueller_matrix_random, mueller_matrix_total, &
                         scattering_cross_sections, scm_loaded, &
                         scm_nts, scm_nphi, scm_lambda, &
                         scm_theta_s, scm_phi, scm_cext_ref, scm_csca_tot, scm_csca_ref
@@ -51,7 +51,7 @@ program use_dustlib_scatmat
    real(wp) :: eta(2), khat(3), Bhat(3,2)
    real(wp) :: costi, theta_i, kmat(4,4), z(4,4), f_tot(6), f_ref(6)
    real(wp) :: theta_s, phi, big_theta
-   real(wp) :: csca_al, csca_unal, z11_closure, fu11_fwd
+   real(wp) :: csca_al, csca_unal, csca_pol, z11_closure, zunal11_fwd
    logical  :: bad
 
    if (command_argument_count() >= 1) then
@@ -120,17 +120,24 @@ program use_dustlib_scatmat
       kmat(3,3) = kmat(3,3) + (cext_iso_um2 - eta(icell)*scm_cext_ref(iband))
       kmat(4,4) = kmat(4,4) + (cext_iso_um2 - eta(icell)*scm_cext_ref(iband))
 
-      ! Aligned phase matrix at the scattering geometry (reference), scaled by eta.
-      call mueller_matrix_aligned(iband, theta_i, theta_s, phi, z)
-      z = eta(icell) * z
+      ! Combined absolute phase matrix at the scattering geometry:
+      !   z = eta Z_al(theta_i,theta_s,phi) + Z_unal(Theta),
+      !   Z_unal = [Csca_tot F_tot - eta Csca_ref F_ref] / (4 pi),
+      ! in the grain-frame meridional (v,h) basis.  One call returns the whole
+      ! matrix; the RT then rotates it to its own meridional frames.
+      call mueller_matrix_total(iband, theta_i, theta_s, phi, eta(icell), z)
 
-      ! Randomly-oriented remainder in absolute units: Csca_tot F_tot - eta Csca_ref F_ref.
+      ! The unaligned remainder alone, absolute units, at Theta = big_theta: the
+      ! stored F carries the 4 pi-normalization (INT F11 dOmega = 4 pi), so the
+      ! absolute Z_unal,11 divides by 4 pi -- the factor the "Csca F" form dropped.
       call mueller_matrix_random(iband, big_theta, f_tot, f_ref)
-      fu11_fwd = scm_csca_tot(iband)*f_tot(1) - eta(icell)*scm_csca_ref(iband)*f_ref(1)
+      zunal11_fwd = (scm_csca_tot(iband)*f_tot(1) &
+                     - eta(icell)*scm_csca_ref(iband)*f_ref(1)) / fourpi
 
-      ! Scalar scattering cross sections and the Z11 closure of the aligned part.
-      call scattering_cross_sections(iband, theta_i, eta(icell), csca_al, csca_unal)
-      z11_closure = aligned_z11_integral(iband, theta_i, eta(icell))
+      ! Scalar scattering cross sections, including the polarized Csca,pol of the
+      ! aligned part (Peest et al. 2023), and the z11 closure of the full matrix.
+      call scattering_cross_sections(iband, theta_i, eta(icell), csca_al, csca_unal, csca_pol)
+      z11_closure = total_z11_integral(iband, theta_i, eta(icell))
 
       print '(a)', ' ------------------------------------------------------------------'
       print '(a,i0,a,f5.2,a,f6.2,a)', '   cell ', icell, ':  eta = ', eta(icell), &
@@ -139,13 +146,14 @@ program use_dustlib_scatmat
             '   K(1,2)=Cpol = ', kmat(1,2)
       print '(a,es12.4,a,es12.4)', '     K(3,4)=Cbir          = ', kmat(3,4), &
             '   K(4,3)      = ', kmat(4,3)
-      print '(a,es12.4,a,f8.5)', '     aligned Z11(60,45) [um^2/sr/H] = ', z(1,1), &
+      print '(a,es12.4,a,f8.5)', '     total Z11(60,45) [um^2/sr/H] = ', z(1,1), &
             '   -Z12/Z11 = ', -z(1,2)/z(1,1)
-      print '(a,es12.4)', '     unaligned F_unal,11(60) [um^2/sr/H] = ', fu11_fwd
+      print '(a,es12.4)', '     unaligned Z_unal,11(60) [um^2/sr/H] = ', zunal11_fwd
       print '(a,es12.4,a,es12.4)', '     csca_aligned = ', csca_al, &
             '   csca_unaligned = ', csca_unal
-      print '(a,f9.5)', '     Z11 closure (INT Z11 dOmega)/csca_aligned = ', &
-            z11_closure / csca_al
+      print '(a,es12.4)', '     csca_pol (aligned)   = ', csca_pol
+      print '(a,f9.5)', '     z11 closure (INT z11 dOmega)/(csca_al+csca_unal) = ', &
+            z11_closure / (csca_al + csca_unal)
 
       ! Physical sanity, printed and gathered into the exit status.
       if (.not. finite(kmat(1,1)) .or. .not. finite(z(1,1))) bad = .true.
@@ -190,11 +198,13 @@ contains
       v = (1.0_wp - t)*y(lo) + t*y(hi)
    end function interp_lam
 
-   real(wp) function aligned_z11_integral(ib, ti, e) result(s)
-      ! INT Z11 dOmega for the eta-scaled aligned matrix at incidence ti, using
-      ! the exposed theta_s/phi grids. Z11 is even under phi -> 360-phi, so the
-      ! azimuth integral over [0,2pi] is twice the integral over the stored
-      ! [0,180]. Trapezoid with the sin(theta_s) solid-angle weight.
+   real(wp) function total_z11_integral(ib, ti, e) result(s)
+      ! INT z11 dOmega for the COMBINED matrix (mueller_matrix_total) at incidence
+      ! ti and scale e, using the exposed theta_s/phi grids. z11 is even under
+      ! phi -> 360-phi (both the aligned and the random part are), so the azimuth
+      ! integral over [0,2pi] is twice the integral over the stored [0,180].
+      ! Trapezoid with the sin(theta_s) solid-angle weight. It closes to
+      ! csca_al + csca_unal.
       integer,  intent(in) :: ib
       real(wp), intent(in) :: ti, e
       real(wp) :: zmat(4,4), z11(scm_nts, scm_nphi), gts
@@ -202,8 +212,8 @@ contains
       integer  :: is, ip
       do is = 1, scm_nts
          do ip = 1, scm_nphi
-            call mueller_matrix_aligned(ib, ti, scm_theta_s(is), scm_phi(ip), zmat)
-            z11(is, ip) = e * zmat(1,1)
+            call mueller_matrix_total(ib, ti, scm_theta_s(is), scm_phi(ip), e, zmat)
+            z11(is, ip) = zmat(1,1)
          end do
       end do
       ! azimuth trapezoid over [0,180], doubled for [0,360]
@@ -222,6 +232,6 @@ contains
          c1 = phint(is)  *sin(scm_theta_s(is)  *deg2rad)
          s = s + 0.5_wp*(c0 + c1)*(scm_theta_s(is) - scm_theta_s(is-1))*deg2rad
       end do
-   end function aligned_z11_integral
+   end function total_z11_integral
 
 end program use_dustlib_scatmat

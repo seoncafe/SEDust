@@ -7,6 +7,7 @@
 #   make calc_kext_dl07.x        DL07 (WD01 MW) extinction/albedo/<cos>
 #   make calc_polext.x           HD23 polarized extinction per H, vs release
 #   make test_scatmat_aligned.x  aligned-scattering reader/interface checks
+#   make test_scalar_mode.x      scalar-only build mode checks
 #   make use_dustlib_scatmat.x   rt_example aligned-scattering consumer (vs libsedust.a)
 #   make clean / cleanall
 #
@@ -106,6 +107,16 @@ test_scatmat_aligned.x: $(SRC_TSCAT)
 	$(FC) $(FFLAGS) $^ -o $@
 	@echo 'Built: ./test_scatmat_aligned.x'
 
+# Scalar-only build mode checks: a scalar (load_polarized_optics=.false.) and a
+# polarized astrodust build agree on Cext/Cabs/Csca/gbar and the total SED, the
+# scalar build carries no polarized optics and opens no polarized Q table, and a
+# scalar request combined with an explicit polarized path is a contradiction.
+SRC_TSCALAR = $(SRC_PIPE) src/dust_lib.f90 src/test_scalar_mode.f90
+
+test_scalar_mode.x: $(SRC_TSCALAR)
+	$(FC) $(FFLAGS) $^ -o $@
+	@echo 'Built: ./test_scalar_mode.x'
+
 # ---- libsedust.a: the model-agnostic dust-emission library, for a Fortran
 # 3D RT code to link.  Usage from the RT:  use dust_lib ;  link
 #   -L<sed> -lsedust  with the .mod search path  -I<sed>
@@ -131,7 +142,13 @@ clean:
 cleanall: clean
 	rm -f *.a make_enthalpy.x main_astrodust.x main_dl07.x \
 	      calc_kext_dl07.x calc_kext_astrodust.x calc_polext.x \
-	      test_scatmat_aligned.x use_dustlib_scatmat.x
+	      test_scatmat_aligned.x test_scalar_mode.x use_dustlib_scatmat.x
 	rm -f output/astrodust_irem_ours_*.dat output/enthalpy_*.dat
 
 .PHONY: all clean cleanall
+
+# Every executable recipe compiles the shared module sources into this
+# directory, so concurrent targets race on the same .mod files (make -j fails
+# with .mod0 rename errors). Serialize until the build uses one object/module
+# graph in a separate directory.
+.NOTPARALLEL:

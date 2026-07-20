@@ -462,18 +462,30 @@ out once,
 call execute_command_line('gzip -dc "'//trim(gz_file)//'" > "'// &
                           trim(out_file)//'"', exitstat=estat, cmdstat=cstat)
 \end{lstlisting}
-writes \code{q\_jori\_scratch.dat} in the working directory, reads it, and
-deletes it. A fresh clone works with no manual setup step, and neither a 17\,MB
-untracked sibling in \code{data/dielectric} nor a new build dependency is
-created. A path not ending in \code{.gz} is opened directly.
+decompresses to a scratch copy, reads it, and deletes it. A fresh clone works with
+no manual setup step, and neither a 17\,MB untracked sibling in
+\code{data/dielectric} nor a new build dependency is created. A path not ending in
+\code{.gz} is opened directly.
 
-\paragraph{The bug this had.} Shell redirection creates the target file
-\emph{before} \code{gzip} runs, so when decompression failed the early return
-left a zero-length \code{q\_jori\_scratch.dat} behind in the user's working
-directory. The failure path now calls \code{discard\_scratch\_copy} before
-bailing out, like every other error exit. The general shape of the bug, an error
-path that skips the removal the success path performs, is worth watching for in any
-future edit to this reader: it has eight separate early returns.
+\paragraph{The scratch target: \code{TMPDIR}, with the process id.} The scratch
+copy is written under \code{TMPDIR} (else \code{/tmp}), named with the process id:
+\code{q\_jori\_<pid>.dat} for the polarized $Q$ reader (\code{q\_table\_jori}) and
+\code{scatmat\_aligned\_<pid>.dat} for the aligned scattering reader
+(\code{scatmat\_aligned\_mod}); both loaders share the scheme. Naming by process id
+means concurrent MPI ranks never write the same scratch file, and placing it in
+\code{TMPDIR} rather than the launch directory means a read-only launch directory
+is never written to.
+
+\paragraph{The bug this had.} An earlier version wrote a fixed
+\code{q\_jori\_scratch.dat} in the \emph{working} directory. Shell redirection
+creates the target file \emph{before} \code{gzip} runs, so when decompression
+failed the early return left a zero-length \code{q\_jori\_scratch.dat} behind
+there. The failure path now calls \code{discard\_scratch\_copy} before bailing
+out, like every other error exit --- and, since the scratch file moved to
+\code{TMPDIR/q\_jori\_<pid>.dat}, a leaked remnant no longer lands in the user's
+directory at all. The general shape of the bug, an error path that skips the
+removal the success path performs, is worth watching for in any future edit to
+this reader: it has eight separate early returns.
 
 %====================================================================
 \section{Verification}
@@ -888,9 +900,11 @@ carries three blocks, all per H.
 \item \textbf{$F$ block}: $F_{\rm tot}$ (every grain, identical to
       \code{run\_scatmat.f90}) and $F_{\rm ref}$ ($f_{\rm align}$-weighted), the
       six-element random-orientation matrices, $\alpha_1$-normalized so
-      $\tfrac12\int F_{11}\,d\cos\Theta=1$; the header gives $C_{\rm sca,tot}$,
-      $C_{\rm sca,ref}$, $C_{\rm ext,tot}$, $C_{\rm ext,ref}$ to restore absolute
-      units.
+      $\tfrac12\int F_{11}\,d\cos\Theta=1$ (equivalently $\int F_{11}\,d\Omega=
+      4\pi$); the header gives $C_{\rm sca,tot}$, $C_{\rm sca,ref}$,
+      $C_{\rm ext,tot}$, $C_{\rm ext,ref}$, from which the absolute differential
+      matrix is $C_{\rm sca}F/(4\pi)$ ($F_{\rm tot}$ with $C_{\rm sca,tot}$,
+      $F_{\rm ref}$ with $C_{\rm sca,ref}$).
 \item \textbf{$Z$ block}: $Z_{\rm al}=\int da\,n(a)\,f(a)\,Z(a)$, 16 elements,
       $\um^2\,\mathrm{sr}^{-1}$ per H, on
       $\theta_i=0(5)90^\circ$ (19) $\times$ $\theta_s=0(1)180^\circ$ (181)
@@ -902,8 +916,9 @@ enforces, the exact rule for varying the alignment degree cell to cell by a sing
 scalar $\eta$ (the local alignment scale, $f_{\rm cell}=\eta f_{\rm ref}$). The
 aligned matrix scales linearly, $Z_{\rm al,cell}=\eta Z_{\rm al}$; the extinction
 matrix likewise, $K_{\rm al,cell}=\eta K_{\rm al}$; the unaligned remainder
-scattering matrix is $F_{\rm unal}=F_{\rm tot}-\eta F_{\rm ref}$ in absolute units
-(after restoring $C_{\rm sca,tot}$ and $C_{\rm sca,ref}$); and the unaligned
+scattering matrix is $Z_{\rm unal}=[C_{\rm sca,tot}F_{\rm tot}-\eta C_{\rm sca,ref}
+F_{\rm ref}]/(4\pi)$ in absolute units, whose $\int Z_{11}\,d\Omega=C_{\rm sca,tot}
+-\eta C_{\rm sca,ref}$; and the unaligned
 population adds an isotropic $C_{\rm ext,tot}-\eta C_{\rm ext,ref}$ to the
 extinction (its polarized and birefringent parts vanish). All of this is exact by
 the linearity of the size integral in $f_{\rm align}$, so three stored integrals
@@ -925,7 +940,7 @@ except that a \code{scatmat\_path} that fails to load is an error (\code{status 
 polarized-optics table only disables polarized emission. This layer is not
 thread-safe and is called from serial code.
 
-\paragraph{Path queries (pure reads, OpenMP-safe).} Five routines write only their
+\paragraph{Path queries (pure reads, OpenMP-safe).} Six routines write only their
 own outputs and read the loaded arrays, so they are safe to call concurrently from
 photon threads:
 \begin{itemize}
@@ -942,10 +957,26 @@ photon threads:
       scales);
 \item \code{mueller\_matrix\_random(iband, big\_theta, f\_tot, f\_ref)} --- the two
       six-element random-orientation matrices;
+\item \code{mueller\_matrix\_total(iband, theta\_i, theta\_s, phi, eta, z)} --- the
+      recommended host call: the \emph{absolute} combined matrix
+      $z=\eta Z_{\rm al}+L(\pi-\sigma_2)F_{\rm unal}(\Theta)L(-\sigma_1)/(4\pi)$
+      with $F_{\rm unal}=C_{\rm sca,tot}F_{\rm tot}-\eta C_{\rm sca,ref}F_{\rm ref}$,
+      $\cos\Theta=\cos\theta_i\cos\theta_s+\sin\theta_i\sin\theta_s\cos\phi$ and the
+      meridional rotation angles $\sigma_1,\sigma_2$ from
+      \code{meridional\_scattering\_angles} (closed \code{atan2} forms, poles
+      included), so a host need not reassemble the mixture from the arrays;
 \item \code{scattering\_cross\_sections(iband, theta\_i, eta, csca\_aligned,
-      csca\_unaligned)} with $\code{csca\_unaligned}=C_{\rm sca,tot}-\eta\,
-      C_{\rm sca,ref}$.
+      csca\_unaligned [, csca\_pol\_aligned])} with $\code{csca\_unaligned}=
+      C_{\rm sca,tot}-\eta\,C_{\rm sca,ref}$ and the optional
+      $\code{csca\_pol\_aligned}=\eta\,C_{\rm sca,pol,al}(\theta_i)=\eta\int
+      Z_{12}\,d\Omega$, the aligned matrix's polarized scattering cross section
+      (Peest et al.\ 2023; the random remainder integrates to zero), on the same
+      $[0,90^\circ]$ fold.
 \end{itemize}
+\code{scm\_csca\_pol\_al(nti,nband)}, the polarized scattering cross section
+$\int Z_{12}\,d\Omega$ that \code{csca\_pol\_aligned} returns, is formed at load
+time with the generator's own closure quadrature --- the same rule that closes
+$\int Z_{11}\,d\Omega$ to $C_{\rm sca,al}$ --- so it needs no extra file column.
 The loaded grids and arrays are also exposed \code{public, protected}, so a host
 that prefers to inline its own lookups can take them once at startup and never
 call back. The whole cell dependence enters through just two scalars the host
@@ -984,8 +1015,15 @@ birefringence.
 \subsection{Verification}\label{sec:aligned:verif}
 
 Every anchor of the plan passes (Table~\ref{tab:alignverif}). The engine anchors
-(A--G) run at single sizes through \code{compare\_scatmat\_aligned.x}; the library
-checks run on the production table.
+(A--H) run at single sizes through \code{compare\_scatmat\_aligned.x} --- anchor~H
+adds the orientation-averaged amplitude engine at general geometry
+($\theta_i=40^\circ$, $\theta_s=70^\circ$, $\phi\in\{30,120,250\}^\circ$) against
+$L(\pi-\sigma_2)F(\Theta)L(-\sigma_1)$, which a wrong $\sigma$ sign fails at order
+unity to order 30. The library checks, including the failing-tolerance
+certification tests [3a]--[3e] of \code{test\_scatmat\_aligned.x} --- the absolute
+$4\pi$ closure, the $\int Z_{12}$ polarized cross section, the
+\code{mueller\_matrix\_total} closure, and the $\theta_i=0$ rotation sign --- run
+on the production table.
 
 \begin{table}[h]
 \centering
@@ -1004,6 +1042,7 @@ E & $\phi$ mirror & azimuth symmetry & $3.5\times10^{-7}$ \\
   & equatorial mapping & $z\to-z$ symmetry & $8.8\times10^{-16}$ \\
 G & Rayleigh $K(\theta_i)$ vs $\sin^2$ law & extinction-matrix angle law (exact) & $3.3\times10^{-16}$ \\
   & T-matrix $K(\theta_i)$ vs $\sin^2$ law & at $x=0.137$ & $6.3\times10^{-4}$ \\
+H & general geometry & amplitude engine vs $L(\pi\!-\!\sigma_2)F(\Theta)L(-\sigma_1)$, $\theta_i{=}40^\circ,\theta_s{=}70^\circ$; wrong $\sigma$ sign fails O(1)--O(30) & $4.1\times10^{-5}$ \\
 \midrule
 \multicolumn{4}{@{}l}{\emph{Generator (size-integrated)}}\\
 F & $K$ vs independent jori integrals & $C_{\rm ext}$ & $1.6\times10^{-6}$ \\
@@ -1016,10 +1055,17 @@ F & $K$ vs independent jori integrals & $C_{\rm ext}$ & $1.6\times10^{-6}$ \\
   & $\eta$ algebra & linear scaling & residual 0 \\
   & $K(90^\circ)$ vs jori vs \code{dust\_extinction} & $C_{\rm pol}$ / $C_{\rm bir}$ & $1.6\times10^{-5}$ / $8.0\times10^{-5}$ \\
   & \code{rt\_example} closures & end-to-end consumption & $0.997$--$1.001$ \\
+{[3a]} & random absolute closure & $(4\pi)^{-1}\!\int C_{\rm sca,tot}F_{11}\,d\Omega=C_{\rm sca,tot}$ & $3.5\times10^{-4}$ \\
+{[3b]} & stored $Z_{11}$ re-integration & vs the table's $C_{\rm sca,al}$ column (ASCII rounding) & $3.3\times10^{-6}$ \\
+{[3c]} & $C_{\rm sca,pol}$ vs $\int Z_{12}\,d\Omega$ & routine vs direct; $|C_{\rm sca,pol}|/C_{\rm sca,al}\le0.101$ & exact \\
+{[3d]} & \code{mueller\_matrix\_total} closure & $\int z_{11}=\eta C_{\rm sca,al}+C_{\rm sca,tot}-\eta C_{\rm sca,ref}$; $\int z_{12}=\eta C_{\rm sca,pol}$; $\eta\in\{0,0.37,1\}$ & $2.6\!\times\!10^{-4}$ / $7\!\times\!10^{-7}$ \\
+{[3e]} & rotation sign at $\theta_i=0$ & $Z(0;\theta_s,\phi)=Z(0;\theta_s,0)\,L(-\phi)$ & $6.8\times10^{-5}$ \\
 \bottomrule
 \end{tabular}
 \caption{Verification of the aligned scattering matrix, its extinction matrix, and
-the library API. Engine and generator anchors are those of the plan's \S5; the
+the library API. Engine and generator anchors are those of the plan's \S5, plus
+anchor~H (the amplitude engine at general geometry) and the failing-tolerance
+library certification tests [3a]--[3e] of \code{test\_scatmat\_aligned.x}; the
 library checks run on the shipped production table.}
 \label{tab:alignverif}
 \end{table}

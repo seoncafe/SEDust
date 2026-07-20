@@ -20,7 +20,7 @@ module sed_astrodust_mod
    ! limited to a single dust species (astrodust). The stochastic-vs-
    ! equilibrium decision and P(T) solver are unchanged in algorithm.
 
-   use, intrinsic :: iso_fortran_env, only: real64
+   use, intrinsic :: iso_fortran_env, only: real64, error_unit
    use constants,             only: wp
    use sed_mathlib,               only: interp, first_location, last_location
    use radfield,              only: bbody, calc_bbody
@@ -61,6 +61,9 @@ module sed_astrodust_mod
    ! Model-agnostic library API (path B: wraps the untouched solver core).
    public :: dust_model_t, build_astrodust, build_dl07, build_zubko, dust_emission
    public :: build_from_files, dust_emission_single_teq, dust_extinction
+   ! .true. iff the active model was built with polarized optics loaded; lets a
+   ! host tell an intentionally scalar model from a polarized one.
+   public :: dust_has_polarized_optics
    public :: dust_set_alignment, dust_set_alignment_profile
    public :: NLAM, NA, NT, lam, aeff, T_first, dn_ad, dn_pah, initialized
    ! Exposed so that external drivers can cross-check the optics:
@@ -105,6 +108,14 @@ module sed_astrodust_mod
 
    logical :: initialized = .false.
    logical, save :: use_induced_emission = .false.
+
+   ! True after the most recent astrodust build actually loaded the
+   ! orientation-resolved polarized Q table (build_Cpol succeeded). False in an
+   ! intentionally scalar build (load_polarized_optics = .false.), on a failed
+   ! implicit-default load, and for models with no polarized optics (DL07,
+   ! Zubko). build_astrodust reads it to decide whether the populations carry
+   ! polarized optics; dust_has_polarized_optics then reports it off the model.
+   logical, save :: polarized_optics_loaded = .false.
 
    ! dbdis-style photon-energy cutoff in the heuristic GD emission sum:
    ! a grain in a T bin cannot emit a photon more energetic than the bin
@@ -241,7 +252,8 @@ contains
 
    ! =====================================================================
    subroutine sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status, &
-                       qpol_path, qpol_wave_path, qpol_aeff_path, scatmat_path)
+                       qpol_path, qpol_wave_path, qpol_aeff_path, scatmat_path, &
+                       load_polarized_optics)
       character(len=*), intent(in) :: qtable_path, sizedist_path
       integer,          intent(in) :: NT_in
       real(wp),         intent(in) :: T_lo, T_hi
@@ -252,24 +264,56 @@ contains
       !   status = 2  size-distribution load failed
       !   status = 3  aligned scattering table load failed (only when
       !               scatmat_path is supplied)
+      !   status = 4  a polarized Q table explicitly requested via qpol_path
+      !               could not be read (an implicit-default table degrades
+      !               gracefully instead -- an explicit request must not vanish)
+      !   status = 5  load_polarized_optics = .false. was combined with an
+      !               explicit polarized-optics path (qpol_path / qpol_wave_path
+      !               / qpol_aeff_path / scatmat_path) -- a contradictory request
       integer, optional, intent(out) :: status
       ! Orientation-resolved DH21 table and its grid axes, supplying the
-      ! polarized optics. Default to QPOL_*_DEF. A table that cannot be read
-      ! is NOT an error: Cpol and falign_ad stay zero and the run continues
-      ! without polarized emission.
+      ! polarized optics. Default to QPOL_*_DEF. An implicit-default table that
+      ! cannot be read is NOT an error: Cpol and falign_ad stay zero and the run
+      ! continues without polarized emission. A table supplied EXPLICITLY through
+      ! qpol_path that cannot be read IS an error (status 4).
       character(len=*), optional, intent(in) :: qpol_path, qpol_wave_path, &
                                                 qpol_aeff_path
       ! Aligned scattering table (run_scatmat_aligned.x product) for a polarized
       ! RT host. When present it is parsed into scatmat_aligned_mod here at init;
-      ! its failure IS an error (status 3), unlike the polarized-optics table,
-      ! because a host that asked for it depends on it.
+      ! its failure IS an error (status 3), unlike the implicit polarized-optics
+      ! table, because a host that asked for it depends on it.
       character(len=*), optional, intent(in) :: scatmat_path
+      ! Scalar-only switch. Absent or .true.: load the polarized optics as above.
+      ! .false.: the polarized Q table is NEVER opened -- no default-path
+      ! substitution, no decompression scratch file -- and Cpol / Cpol_ext /
+      ! Cbir_ext / falign_ad stay allocated and zero, so the scalar Cext / Cabs /
+      ! Csca / gbar and the SED are identical to a polarized build with zero
+      ! alignment. Combining .false. with an explicit qpol_*/scatmat path is a
+      ! caller contradiction (status 5).
+      logical, optional, intent(in) :: load_polarized_optics
       integer  :: i, ja, jw, jt, is, scstat
       real(wp) :: a_um, x, t, Q_neu, Q_ion
-      logical  :: rok
+      logical  :: rok, want_pol, pol_explicit, pol_loaded
       character(len=512) :: pol_q, pol_w, pol_a
 
       if (present(status)) status = 0
+
+      ! Scalar-only vs polarized: load the polarized optics unless told not to.
+      want_pol = .true.
+      if (present(load_polarized_optics)) want_pol = load_polarized_optics
+      ! A scalar-only build must not also be handed polarized inputs: which does
+      ! the caller mean? Report the contradiction rather than silently guessing.
+      pol_explicit = present(qpol_path) .or. present(qpol_wave_path) .or. &
+                     present(qpol_aeff_path) .or. present(scatmat_path)
+      if (.not. want_pol .and. pol_explicit) then
+         if (present(status)) then
+            status = 5;  return
+         else
+            write(error_unit,'(a)') ' sed_init: load_polarized_optics=.false. '// &
+               'contradicts an explicit polarized-optics path (qpol_*/scatmat)'
+            stop 1
+         end if
+      end if
 
       ! ---- Load Q table and size dist (modules cache their own state) ----
       if (present(status)) then
@@ -346,10 +390,31 @@ contains
       end do
 
       ! ---- Cpol(NLAM, NA), falign_ad(NA) from the DH21 spheroid table ----
-      pol_q = QPOL_Q_DEF;  if (present(qpol_path))      pol_q = qpol_path
-      pol_w = QPOL_W_DEF;  if (present(qpol_wave_path)) pol_w = qpol_wave_path
-      pol_a = QPOL_A_DEF;  if (present(qpol_aeff_path)) pol_a = qpol_aeff_path
-      call build_Cpol(trim(pol_q), trim(pol_w), trim(pol_a))
+      ! Scalar-only build: skip the table entirely (no default-path substitution,
+      ! no decompression scratch file) and leave the polarized arrays allocated
+      ! and zero, exactly as a failed read would.
+      polarized_optics_loaded = .false.
+      if (want_pol) then
+         pol_q = QPOL_Q_DEF;  if (present(qpol_path))      pol_q = qpol_path
+         pol_w = QPOL_W_DEF;  if (present(qpol_wave_path)) pol_w = qpol_wave_path
+         pol_a = QPOL_A_DEF;  if (present(qpol_aeff_path)) pol_a = qpol_aeff_path
+         call build_Cpol(trim(pol_q), trim(pol_w), trim(pol_a), pol_loaded)
+         polarized_optics_loaded = pol_loaded
+         if (.not. pol_loaded .and. present(qpol_path)) then
+            ! An explicitly requested table that cannot be read is an error: the
+            ! capability the caller asked for must not disappear silently. (An
+            ! implicit-default table degrades gracefully in build_Cpol above.)
+            if (present(status)) then
+               status = 4;  return
+            else
+               write(error_unit,'(a)') ' sed_init: explicitly requested '// &
+                  'polarized table could not be read: '//trim(pol_q)
+               stop 1
+            end if
+         end if
+      else
+         Cpol = 0.0_wp;  Cpol_ext = 0.0_wp;  Cbir_ext = 0.0_wp;  falign_ad = 0.0_wp
+      end if
 
       ! ---- aligned scattering table for a polarized RT host (optional) ----
       if (present(scatmat_path)) then
@@ -603,6 +668,7 @@ contains
             log_H_pah_first, log_kappB_pah_first)
       ! DL07 has no polarized optics; drop anything a previous astrodust
       ! init left behind rather than leave stale arrays on the wrong grid.
+      polarized_optics_loaded = .false.
       if (allocated(Cpol)) deallocate(Cpol, Cpol_ext, Cbir_ext, falign_ad)
       ! Likewise the astrodust asymmetry table: DL07 optics carry no <cos> here.
       if (allocated(gsca_ad)) deallocate(gsca_ad)
@@ -1594,7 +1660,7 @@ contains
    end subroutine interp_q_grid
 
 
-   subroutine build_Cpol(q_file, wave_file, aeff_file)
+   subroutine build_Cpol(q_file, wave_file, aeff_file, loaded)
       ! Fill Cpol(NLAM, NA), Cpol_ext(NLAM, NA), Cbir_ext(NLAM, NA) and
       ! falign_ad(NA) from the orientation-resolved DH21 spheroid table:
       !
@@ -1629,7 +1695,11 @@ contains
       ! both averages approach the same Rayleigh limit -- so the mixture is
       ! harmless here. It would NOT be in the ultraviolet, where the median
       ! rises to 0.21% and the worst case to 9.5%.
-      character(len=*), intent(in) :: q_file, wave_file, aeff_file
+      character(len=*), intent(in)  :: q_file, wave_file, aeff_file
+      ! .true. iff the orientation-resolved table was read successfully. .false.
+      ! leaves the polarized arrays allocated and zero (graceful degradation);
+      ! the caller decides whether that is an error (see sed_init status 4).
+      logical,          intent(out) :: loaded
       integer  :: ja, jw
       logical  :: rok
 
@@ -1637,10 +1707,13 @@ contains
       Cpol_ext  = 0.0_wp
       Cbir_ext  = 0.0_wp
       falign_ad = 0.0_wp
+      loaded    = .false.
 
       call load_q_table_jori(q_file, wave_file, aeff_file, ok=rok)
       if (.not. rok) then
-         if (sed_verbose) write(*,'(a,a)') &
+         ! Reported unconditionally (not verbose-gated): a missing polarized
+         ! table silently changes the model's capability, so always say so.
+         write(error_unit,'(a,a)') &
             ' sed_init: no polarized optics (cannot read ', trim(q_file)//')'
          return
       end if
@@ -1679,6 +1752,8 @@ contains
             Cbir_ext(:, ja) = Cbir_ext(:, ja) * PI * (aeff(ja) * UM2CM)**2
          end do
       end if
+
+      loaded = .true.
    end subroutine build_Cpol
 
 
@@ -1834,7 +1909,8 @@ contains
    ! Build the HD23 astrodust model into m. Channels: AD_S1, AD_S2, PAH
    ! (PAH = neutral + cation populations summed into one channel).
    subroutine build_astrodust(m, qtable_path, sizedist_path, NT_in, T_lo, T_hi, status, &
-                              qpol_path, qpol_wave_path, qpol_aeff_path, scatmat_path)
+                              qpol_path, qpol_wave_path, qpol_aeff_path, scatmat_path, &
+                              load_polarized_optics)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: qtable_path, sizedist_path
       integer,            intent(in)  :: NT_in
@@ -1846,35 +1922,39 @@ contains
       !   status = 2  size-distribution load failed
       !   status = 3  aligned scattering table load failed (only when
       !               scatmat_path is supplied)
+      !   status = 4  a polarized Q table explicitly requested via qpol_path
+      !               could not be read (an implicit-default table degrades
+      !               gracefully instead)
+      !   status = 5  load_polarized_optics = .false. combined with an explicit
+      !               polarized-optics path (qpol_*/scatmat) -- a contradiction
       integer, optional,  intent(out) :: status
       ! Orientation-resolved DH21 table + grid axes for the polarized optics,
-      ! forwarded to sed_init. Omit to use the defaults; a table that cannot
-      ! be read leaves the model unpolarized without failing the build.
+      ! forwarded to sed_init. Omit to use the defaults; an implicit-default
+      ! table that cannot be read leaves the model unpolarized without failing
+      ! the build, but an explicit qpol_path that cannot be read fails it
+      ! (status 4).
       character(len=*), optional, intent(in) :: qpol_path, qpol_wave_path, &
                                                 qpol_aeff_path
       ! Aligned scattering table (run_scatmat_aligned.x product) for a polarized
       ! RT host, forwarded to sed_init. Omit to skip it; when supplied its
-      ! failure fails the build (status 3), unlike the polarized-optics table.
+      ! failure fails the build (status 3), unlike the implicit polarized table.
       character(len=*), optional, intent(in) :: scatmat_path
-      character(len=512) :: pol_q, pol_w, pol_a
+      ! Scalar-only switch, forwarded to sed_init. .false. builds a model with
+      ! no polarized optics (the polarized Q table is never opened); combining
+      ! it with an explicit qpol_*/scatmat path is a contradiction (status 5).
+      logical, optional, intent(in) :: load_polarized_optics
 
       if (present(status)) status = 0
 
-      pol_q = QPOL_Q_DEF;  if (present(qpol_path))      pol_q = qpol_path
-      pol_w = QPOL_W_DEF;  if (present(qpol_wave_path)) pol_w = qpol_wave_path
-      pol_a = QPOL_A_DEF;  if (present(qpol_aeff_path)) pol_a = qpol_aeff_path
-
       ! Astrodust/HD23 optics: Nc=417 (rho=2.0), D16 turbostratic graphite.
       nc_coeff = 417.0d0;  nc_integer = .false.;  qpah_use_d03_graphite = .false.
-      if (present(scatmat_path)) then
-         call sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status=status, &
-                       qpol_path=trim(pol_q), qpol_wave_path=trim(pol_w), &
-                       qpol_aeff_path=trim(pol_a), scatmat_path=scatmat_path)  ! sets globals
-      else
-         call sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status=status, &
-                       qpol_path=trim(pol_q), qpol_wave_path=trim(pol_w), &
-                       qpol_aeff_path=trim(pol_a))  ! sets globals
-      end if
+      ! Forward the optional paths straight through -- an absent optional stays
+      ! absent in sed_init -- so sed_init substitutes the defaults and decides
+      ! the explicit-vs-implicit and scalar-vs-polarized behavior from presence.
+      call sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status=status, &
+                    qpol_path=qpol_path, qpol_wave_path=qpol_wave_path, &
+                    qpol_aeff_path=qpol_aeff_path, scatmat_path=scatmat_path, &
+                    load_polarized_optics=load_polarized_optics)  ! sets globals
       if (present(status)) then
          if (status /= 0) return
       end if
@@ -1896,13 +1976,26 @@ contains
       ! Only the astrodust grains are aligned. HD23 take the PAHs to be
       ! unaligned, so the two PAH populations get no polarized optics and
       ! contribute nothing to the polarized emission. The astrodust grains also
-      ! carry all the scattering, so Csca / gsca / Cpol_ext go here alone and
-      ! the PAHs enter dust_extinction through absorption only.
-      call set_pop(m%pops(1), 'sil', 1, dn_ad, Cabs, kappB_first, H_first(:,:,2), &
-                   log_H_first(:,:,2), log_kappB_first, kappCMB, &
-                   Cpol_in=Cpol, falign_in=falign_ad, &
-                   Csca_in=Csca, Cpol_ext_in=Cpol_ext, gsca_in=gsca_ad, &
-                   Cbir_ext_in=Cbir_ext)
+      ! carry all the scattering, so Csca / gsca go here alone and the PAHs enter
+      ! dust_extinction through absorption only.
+      !
+      ! The scattering optics (Csca / gsca) are attached in both cases, so
+      ! Cext / Csca / gbar and the total SED are identical between a polarized
+      ! and a scalar build. The polarized optics (Cpol / Cpol_ext / Cbir_ext /
+      ! falign) are attached only when the orientation-resolved table was
+      ! actually loaded; a scalar-only build or a failed implicit-default load
+      ! leaves the population unpolarized, which dust_has_polarized_optics reports.
+      if (polarized_optics_loaded) then
+         call set_pop(m%pops(1), 'sil', 1, dn_ad, Cabs, kappB_first, H_first(:,:,2), &
+                      log_H_first(:,:,2), log_kappB_first, kappCMB, &
+                      Cpol_in=Cpol, falign_in=falign_ad, &
+                      Csca_in=Csca, Cpol_ext_in=Cpol_ext, gsca_in=gsca_ad, &
+                      Cbir_ext_in=Cbir_ext)
+      else
+         call set_pop(m%pops(1), 'sil', 1, dn_ad, Cabs, kappB_first, H_first(:,:,2), &
+                      log_H_first(:,:,2), log_kappB_first, kappCMB, &
+                      Csca_in=Csca, gsca_in=gsca_ad)
+      end if
       call set_pop(m%pops(2), 'pah', 2, dn_cneu, Cabs_cneu, kappB_cneu, H_pah_first, &
                    log_H_pah_first, log_kappB_cneu, kappCMB_cneu)
       call set_pop(m%pops(3), 'pah', 2, dn_cion, Cabs_cion, kappB_cion, H_pah_first, &
@@ -2653,6 +2746,28 @@ contains
       end if
       deallocate(gnum)
    end subroutine dust_extinction
+
+
+   ! .true. iff the model m carries polarized optics, i.e. at least one
+   ! population has an allocated polarized cross section (Cpol on the emission
+   ! side or Cpol_ext on the extinction side). This distinguishes an
+   ! intentionally scalar-only astrodust model -- one built with
+   ! load_polarized_optics = .false., or an implicit-default build whose table
+   ! was absent -- from a polarized one, and is .false. for models that never
+   ! carry polarized optics (DL07, Zubko). It is independent of the
+   ! aligned-scattering table, whose separate load state is visible as scm_loaded.
+   pure logical function dust_has_polarized_optics(m) result(has)
+      type(dust_model_t), intent(in) :: m
+      integer :: ip
+      has = .false.
+      if (.not. allocated(m%pops)) return
+      do ip = 1, size(m%pops)
+         if (allocated(m%pops(ip)%Cpol) .or. allocated(m%pops(ip)%Cpol_ext)) then
+            has = .true.
+            return
+         end if
+      end do
+   end function dust_has_polarized_optics
 
 
    ! Option 2: a SINGLE equilibrium temperature for the WHOLE model,

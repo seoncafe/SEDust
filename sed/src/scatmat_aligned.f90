@@ -29,11 +29,17 @@ module scatmat_aligned_mod
    ! calling back into the library during transport.
    !
    ! ETA CONTRACT (from the table header). For a cell alignment scale eta the
-   ! aligned optics scale linearly: Z_al,cell = eta Z_al, K_al,cell = eta K_al,
-   ! and the unaligned remainder scattering matrix is
-   !   F_unal = Csca_tot F_tot - eta Csca_ref F_ref   (absolute units),
-   ! the unaligned extinction adding the isotropic Cext_tot - Cext_ref
-   ! (its Cpol = Cbir = 0). The linearity in f_align is exact.
+   ! aligned optics scale linearly: Z_al,cell = eta Z_al, K_al,cell = eta K_al.
+   ! The unaligned remainder differential scattering matrix is
+   !   Z_unal = [Csca_tot F_tot(Theta) - eta Csca_ref F_ref(Theta)] / (4 pi)
+   !            [um^2 sr^-1 per H],
+   ! and its solid-angle integral of element 11 is
+   !   INT Z_unal,11 dOmega = Csca_tot - eta Csca_ref.
+   ! The 1/(4 pi) is REQUIRED: the F matrices are normalized to
+   ! (1/2) INT F11 dcos = 1, i.e. INT F11 dOmega = 4 pi, so Csca F alone (without
+   ! the 1/(4 pi)) integrates to 4 pi Csca and overweights the random matrix by
+   ! exactly 4 pi.  The unaligned extinction adds the isotropic
+   ! Cext_tot - Cext_ref (its Cpol = Cbir = 0). The linearity in f_align is exact.
    !
    ! STOKES BASIS. Mishchenko meridional (v,h) = (theta-hat, phi-hat) of each
    ! propagation direction in the grain frame (z = alignment axis), Q = Iv - Ih.
@@ -43,9 +49,19 @@ module scatmat_aligned_mod
    ! 19*181*37*16*5*8 bytes ~ 81 MB. The F and K arrays add < 0.1 MB.
 
    use, intrinsic :: iso_fortran_env, only: error_unit, int64
-   use constants, only: wp, deg2rad
+   use, intrinsic :: iso_c_binding,   only: c_int
+   use constants, only: wp, deg2rad, rad2deg, pi, fourpi
    implicit none
    private
+
+   interface
+      ! POSIX getpid, used only to name a collision-free decompression scratch
+      ! file so concurrent MPI ranks never write the same path.
+      function c_getpid() bind(c, name="getpid") result(pid)
+         import :: c_int
+         integer(c_int) :: pid
+      end function c_getpid
+   end interface
 
    ! Initialization layer
    public :: load_scatmat_aligned, free_scatmat_aligned
@@ -53,7 +69,7 @@ module scatmat_aligned_mod
    public :: alignment_matches_scatmat
    ! Query layer
    public :: scatmat_band, extinction_matrix_aligned, mueller_matrix_aligned, &
-             mueller_matrix_random, scattering_cross_sections
+             mueller_matrix_random, mueller_matrix_total, scattering_cross_sections
 
    ! ---- read-only storage exposure (public, protected) ------------------
    logical,        protected, public :: scm_loaded = .false.
@@ -76,12 +92,18 @@ module scatmat_aligned_mod
    real(wp), allocatable, protected, public :: scm_cpol_al(:,:)   ! (nti, nband)
    real(wp), allocatable, protected, public :: scm_cbir_al(:,:)   ! (nti, nband)
    real(wp), allocatable, protected, public :: scm_csca_al(:,:)   ! (nti, nband) grid closure
+   ! Polarized scattering cross section Csca,pol(theta_i) = INT Z12 dOmega over
+   ! the aligned Z grid (Peest et al. 2023), computed at load [um^2/H].
+   real(wp), allocatable, protected, public :: scm_csca_pol_al(:,:) ! (nti, nband)
    ! Per-band scalars [um^2/H]
    real(wp), allocatable, protected, public :: scm_cext_tot(:), scm_csca_tot(:)  ! (nband)
    real(wp), allocatable, protected, public :: scm_cext_ref(:), scm_csca_ref(:)  ! (nband)
-   ! Random-orientation matrices (alpha1-normalized: (1/2) INT F11 dcos = 1),
-   ! six elements (11, 22, 33, 44, 12, 34), on the F Theta grid. Restore absolute
-   ! um^2 sr^-1 per H by multiplying F_tot by scm_csca_tot and F_ref by scm_csca_ref.
+   ! Random-orientation matrices (alpha1-normalized: (1/2) INT F11 dcos = 1, i.e.
+   ! INT F11 dOmega = 4 pi), six elements (11, 22, 33, 44, 12, 34), on the F Theta
+   ! grid. The absolute differential scattering matrix [um^2 sr^-1 per H] is
+   ! Csca F / (4 pi) (F_tot with scm_csca_tot, F_ref with scm_csca_ref); the
+   ! 1/(4 pi) turns the 4 pi-normalized F into the matrix whose element 11
+   ! integrates to Csca over the sphere.
    real(wp), allocatable, protected, public :: scm_F_tot(:,:,:)   ! (ntheta, 6, nband)
    real(wp), allocatable, protected, public :: scm_F_ref(:,:,:)   ! (ntheta, 6, nband)
    ! Aligned phase matrix, um^2 sr^-1 per H at the reference alignment (eta=1).
@@ -132,7 +154,7 @@ contains
       gz = .false.
       if (len_trim(path) > 3) gz = (path(len_trim(path)-2:len_trim(path)) == '.gz')
       if (gz) then
-         read_path = 'scatmat_aligned_scratch.dat'
+         read_path = unique_scratch_path()
          call gunzip_to(path, trim(read_path), sub_ok)
          if (.not. sub_ok) then
             call discard_scratch(.true., trim(read_path))
@@ -170,6 +192,9 @@ contains
       ! Precompute the scattering-angle cosine abscissae so path queries do no
       ! trigonometry beyond the linear interpolation weights.
       scm_cos_theta_s = cos(scm_theta_s * deg2rad)
+
+      ! Integrate the aligned Z12 over the sphere to get Csca,pol(theta_i).
+      call aligned_polarized_cross_section()
 
       scm_loaded = .true.
       scm_bytes  = storage_bytes()
@@ -353,6 +378,7 @@ contains
       allocate(scm_cos_theta_s(scm_nts))
       allocate(scm_cext_al(scm_nti, scm_nband), scm_cpol_al(scm_nti, scm_nband), &
                scm_cbir_al(scm_nti, scm_nband), scm_csca_al(scm_nti, scm_nband))
+      allocate(scm_csca_pol_al(scm_nti, scm_nband))
       allocate(scm_cext_tot(scm_nband), scm_csca_tot(scm_nband), &
                scm_cext_ref(scm_nband), scm_csca_ref(scm_nband))
       allocate(scm_F_tot(scm_ntheta, 6, scm_nband), scm_F_ref(scm_ntheta, 6, scm_nband))
@@ -371,6 +397,7 @@ contains
       if (allocated(scm_cpol_al))     deallocate(scm_cpol_al)
       if (allocated(scm_cbir_al))     deallocate(scm_cbir_al)
       if (allocated(scm_csca_al))     deallocate(scm_csca_al)
+      if (allocated(scm_csca_pol_al)) deallocate(scm_csca_pol_al)
       if (allocated(scm_cext_tot))    deallocate(scm_cext_tot)
       if (allocated(scm_csca_tot))    deallocate(scm_csca_tot)
       if (allocated(scm_cext_ref))    deallocate(scm_cext_ref)
@@ -393,6 +420,7 @@ contains
       nb = nb + int(scm_nband, int64) * R8                                    ! lambda
       nb = nb + int(scm_nti + scm_nts + scm_nphi + scm_ntheta + scm_nts, int64) * R8  ! grids + cos
       nb = nb + int(4*scm_nti, int64) * int(scm_nband, int64) * R8            ! K block
+      nb = nb + int(scm_nti, int64) * int(scm_nband, int64) * R8              ! Csca,pol
       nb = nb + 4_int64 * int(scm_nband, int64) * R8                          ! band scalars
       nb = nb + 2_int64 * int(scm_ntheta, int64) * 6_int64 * int(scm_nband, int64) * R8  ! F
       nb = nb + int(scm_nti, int64) * int(scm_nts, int64) * int(scm_nphi, int64) &
@@ -442,11 +470,18 @@ contains
    subroutine scatmat_band(lambda_um, iband, exact)
       ! Nearest stored band to lambda_um, and whether it matched to BAND_TOL.
       ! Hot-path queries then take iband so no wavelength search runs per event.
+      ! With no table loaded there is no band to return: iband = 0, exact =
+      ! .false. (the hot-path queries below assume a loaded table and a valid
+      ! iband and do NOT re-check, so a caller must test iband > 0 here first).
       real(wp), intent(in)  :: lambda_um
       integer,  intent(out) :: iband
       logical,  intent(out) :: exact
       integer  :: k
       real(wp) :: d, dbest
+
+      if (.not. scm_loaded .or. scm_nband < 1) then
+         iband = 0;  exact = .false.;  return
+      end if
 
       iband = 1;  dbest = abs(lambda_um - scm_lambda(1))
       do k = 2, scm_nband
@@ -564,8 +599,10 @@ contains
    subroutine mueller_matrix_random(iband, big_theta, f_tot, f_ref)
       ! The two six-element (11, 22, 33, 44, 12, 34) random-orientation matrices
       ! at scattering angle big_theta [deg], linear interpolation on the
-      ! 1-degree Theta grid. Values are alpha1-normalized as stored; restore
-      ! absolute um^2 sr^-1 per H with f_tot*scm_csca_tot, f_ref*scm_csca_ref.
+      ! 1-degree Theta grid. Values are alpha1-normalized as stored
+      ! (INT F11 dOmega = 4 pi); the absolute differential scattering matrix
+      ! [um^2 sr^-1 per H] is Csca F / (4 pi), i.e. f_tot*scm_csca_tot/(4 pi) and
+      ! f_ref*scm_csca_ref/(4 pi). mueller_matrix_total applies this conversion.
       integer,  intent(in)  :: iband
       real(wp), intent(in)  :: big_theta
       real(wp), intent(out) :: f_tot(6), f_ref(6)
@@ -580,15 +617,81 @@ contains
    end subroutine mueller_matrix_random
 
 
-   subroutine scattering_cross_sections(iband, theta_i, eta, csca_aligned, csca_unaligned)
+   subroutine mueller_matrix_total(iband, theta_i, theta_s, phi, eta, z)
+      ! z(4,4) [um^2 sr^-1 per H]: the ABSOLUTE combined phase matrix at the
+      ! grain-frame geometry (theta_i, theta_s, phi) [deg] and alignment scale
+      ! eta, in the Mishchenko meridional (v,h) = (theta-hat, phi-hat) basis of
+      ! the grain frame (z = alignment axis), Q = Iv - Ih.
+      !
+      !   z = eta Z_al(theta_i, theta_s, phi) + Z_ran(Theta)
+      !
+      ! The aligned part is the interpolated stored matrix (eta = 1 reference)
+      ! scaled by eta.  The unaligned remainder is the random-orientation
+      ! differential scattering matrix rotated into the grain-frame meridional
+      ! bases (Mishchenko, Travis & Lacis 2002, Sect. 4.3):
+      !
+      !   Z_ran = L(pi - sigma2) F_unal(Theta) L(-sigma1) / (4 pi),
+      !   F_unal = Csca_tot F_tot(Theta) - eta Csca_ref F_ref(Theta),
+      !
+      ! with the six stored elements expanded to the block-diagonal 4x4 form
+      ! (F11, F12 with F21 = F12, F22 in the upper-left block; F33, F34,
+      ! F43 = -F34, F44 in the lower-right).  L(x) is the Stokes rotation and
+      ! sigma1, sigma2 are the meridional-to-scattering-plane rotation angles
+      ! (see meridional_scattering_angles).  The deflection (scattering) angle is
+      !   cos(Theta) = cos(theta_i) cos(theta_s)
+      !              + sin(theta_i) sin(theta_s) cos(phi).
+      integer,  intent(in)  :: iband
+      real(wp), intent(in)  :: theta_i, theta_s, phi, eta
+      real(wp), intent(out) :: z(4,4)
+      real(wp) :: z_al(4,4), f_tot(6), f_ref(6), fu(6), fmat(4,4)
+      real(wp) :: l1(4,4), l2(4,4)
+      real(wp) :: sti, cti, sts, cts, cph, cos_th, big_theta, sigma1, sigma2
+
+      ! Aligned part at the eta = 1 reference, then eta-scaled below.
+      call mueller_matrix_aligned(iband, theta_i, theta_s, phi, z_al)
+
+      ! Deflection angle Theta from the grain-frame geometry.
+      sti = sin(theta_i*deg2rad);  cti = cos(theta_i*deg2rad)
+      sts = sin(theta_s*deg2rad);  cts = cos(theta_s*deg2rad)
+      cph = cos(phi*deg2rad)
+      cos_th = cti*cts + sti*sts*cph
+      cos_th = max(-1.0_wp, min(1.0_wp, cos_th))
+      big_theta = acos(cos_th) * rad2deg
+
+      ! Random remainder in absolute units, 4 pi-normalization removed.
+      call mueller_matrix_random(iband, big_theta, f_tot, f_ref)
+      fu(:) = scm_csca_tot(iband)*f_tot(:) - eta*scm_csca_ref(iband)*f_ref(:)
+      fmat = 0.0_wp
+      fmat(1,1) = fu(1);  fmat(2,2) = fu(2);  fmat(3,3) = fu(3);  fmat(4,4) = fu(4)
+      fmat(1,2) = fu(5);  fmat(2,1) = fu(5)
+      fmat(3,4) = fu(6);  fmat(4,3) = -fu(6)
+
+      call meridional_scattering_angles(theta_i, theta_s, phi, sigma1, sigma2)
+      call stokes_rotation_matrix(pi - sigma2, l2)
+      call stokes_rotation_matrix(-sigma1,     l1)
+
+      z = eta*z_al + matmul(l2, matmul(fmat, l1)) / fourpi
+   end subroutine mueller_matrix_total
+
+
+   subroutine scattering_cross_sections(iband, theta_i, eta, csca_aligned, &
+                                        csca_unaligned, csca_pol_aligned)
       ! csca_aligned   = eta * Csca_al(theta_i)   [um^2/H], the fixed-orientation
       !                  aligned scattering cross section at incidence theta_i
       !                  (grid closure INT Z11 dOmega), folded to [0,90].
       ! csca_unaligned = Csca_tot - eta * Csca_ref [um^2/H], the random remainder
       !                  (theta_i-independent).
+      ! csca_pol_aligned (optional) = eta * Csca,pol_al(theta_i) [um^2/H], the
+      !                  polarized scattering cross section INT Z12 dOmega of the
+      !                  aligned part (Peest et al. 2023).  The random remainder
+      !                  contributes zero to INT Z12 dOmega, so this is the whole
+      !                  of Csca,pol.  Csca,pol_al is EVEN under
+      !                  theta_i -> 180-theta_i (the equatorial reflection maps
+      !                  the ensemble to itself), so it uses the same fold.
       integer,  intent(in)  :: iband
       real(wp), intent(in)  :: theta_i, eta
       real(wp), intent(out) :: csca_aligned, csca_unaligned
+      real(wp), intent(out), optional :: csca_pol_aligned
       integer  :: il
       real(wp) :: ti, t
 
@@ -597,6 +700,9 @@ contains
       call bracket(scm_theta_i, scm_nti, ti, il, t)
       csca_aligned   = eta * ((1.0_wp-t)*scm_csca_al(il, iband) + t*scm_csca_al(il+1, iband))
       csca_unaligned = scm_csca_tot(iband) - eta*scm_csca_ref(iband)
+      if (present(csca_pol_aligned)) &
+         csca_pol_aligned = eta * ((1.0_wp-t)*scm_csca_pol_al(il, iband) &
+                                   + t*scm_csca_pol_al(il+1, iband))
    end subroutine scattering_cross_sections
 
 
@@ -645,6 +751,139 @@ contains
       z(3,1) = -z(3,1);  z(3,2) = -z(3,2)
       z(4,1) = -z(4,1);  z(4,2) = -z(4,2)
    end subroutine flip_offdiagonal_blocks
+
+
+   pure subroutine meridional_scattering_angles(theta_i_deg, theta_s_deg, phi_deg, &
+                                                sigma1, sigma2)
+      ! Meridional-to-scattering-plane Stokes rotation angles [rad] for the
+      ! phase-matrix construction Z = L(pi - sigma2) F(Theta) L(-sigma1) at
+      ! grain-frame incidence (theta_i, azimuth 0) and scattering (theta_s, phi),
+      ! all in degrees (Mishchenko, Travis & Lacis 2002, Sect. 4.3).  sigma1
+      ! rotates the incidence meridional plane into the scattering plane; sigma2
+      ! rotates the scattering plane into the outgoing meridional plane.  For
+      ! phi in (180,360) both flip sign, which reproduces the off-diagonal-block
+      ! sign flip of the phi mirror.
+      !
+      ! Closed forms from the spherical triangle (pole, incidence, scattering),
+      ! written so the single poles need no branches:
+      !   sigma1 = atan2( sin(theta_s) sin(phi),
+      !                   cos(theta_i) sin(theta_s) cos(phi)
+      !                 - sin(theta_i) cos(theta_s) )
+      !   sigma2 = atan2(-sin(theta_i) sin(phi),
+      !                   cos(theta_i) sin(theta_s)
+      !                 - sin(theta_i) cos(theta_s) cos(phi) )
+      ! For sin(theta_i) > 0 these agree with the textbook ratios
+      ! (cos sigma1 proportional to cos(theta_i) cos(Theta) - cos(theta_s), etc.);
+      ! at the poles they give the azimuth-limit convention of the stored table:
+      !   theta_i = 0   : sigma1 = phi,      sigma2 = 0
+      !   theta_i = 180 : sigma1 = pi - phi, sigma2 = pi (= 0 for L)
+      !   theta_s = 0   : sigma1 = pi (= 0), L(pi - sigma2) -> L(-phi)
+      ! The signs are CERTIFIED, not transcribed: check [3e] of
+      ! test_scatmat_aligned pins the theta_i = 0 slice of the stored table and
+      ! Anchor H of compare_scatmat_aligned certifies arbitrary geometry against
+      ! the orientation-averaged amplitude engine.
+      !
+      ! Only the doubly degenerate arguments (both atan2 arguments underflow:
+      ! incidence and scattering both along the axis, or exactly forward/back
+      ! scattering at general theta_i) fall back to sigma = 0; there F(0)/F(180)
+      ! has F12 = F34 = 0 and the residual rotation is a basis convention on a
+      ! set of zero solid angle.
+      real(wp), intent(in)  :: theta_i_deg, theta_s_deg, phi_deg
+      real(wp), intent(out) :: sigma1, sigma2
+      real(wp), parameter :: EPS = 1.0e-30_wp
+      real(wp) :: ti, ts, ph, sti, cti, sts, cts, sph, cph
+      real(wp) :: y1, x1, y2, x2
+
+      ti = theta_i_deg*deg2rad;  ts = theta_s_deg*deg2rad;  ph = phi_deg*deg2rad
+      sti = sin(ti);  cti = cos(ti)
+      sts = sin(ts);  cts = cos(ts)
+      sph = sin(ph);  cph = cos(ph)
+
+      y1 =  sts*sph;   x1 = cti*sts*cph - sti*cts
+      y2 = -sti*sph;   x2 = cti*sts - sti*cts*cph
+
+      if (abs(y1) + abs(x1) < EPS) then
+         sigma1 = 0.0_wp
+      else
+         sigma1 = atan2(y1, x1)
+      end if
+      if (abs(y2) + abs(x2) < EPS) then
+         sigma2 = 0.0_wp
+      else
+         sigma2 = atan2(y2, x2)
+      end if
+   end subroutine meridional_scattering_angles
+
+
+   pure subroutine stokes_rotation_matrix(angle, l)
+      ! Stokes rotation L(angle) in the Mishchenko sign convention:
+      !   L = [[1,0,0,0],[0,cos2a,sin2a,0],[0,-sin2a,cos2a,0],[0,0,0,1]].
+      real(wp), intent(in)  :: angle       ! [rad]
+      real(wp), intent(out) :: l(4,4)
+      real(wp) :: c2, s2
+      c2 = cos(2.0_wp*angle);  s2 = sin(2.0_wp*angle)
+      l = 0.0_wp
+      l(1,1) = 1.0_wp;  l(4,4) = 1.0_wp
+      l(2,2) = c2;  l(2,3) =  s2
+      l(3,2) = -s2; l(3,3) =  c2
+   end subroutine stokes_rotation_matrix
+
+
+   subroutine aligned_polarized_cross_section()
+      ! scm_csca_pol_al(theta_i) = INT Z12 dOmega over the stored aligned Z grid,
+      ! with the generator's closure quadrature (scattering_cross_section_from_grid
+      ! in aligned_population_optics.f90): trapezoid in cos(theta_s) of the [0,180]
+      ! azimuth trapezoid, doubled for the phi -> 360-phi mirror.  Z12 lies in the
+      ! diagonal 2x2 block, so it is EVEN under the mirror and the doubling holds.
+      ! This is Peest et al. (2023) Csca,pol(theta_i) for the polarized albedo;
+      ! the random remainder integrates to zero here (azimuthal symmetry of the
+      ! random ensemble about the propagation direction), so it is the whole of
+      ! Csca,pol.
+      integer  :: ib, it, is
+      real(wp) :: acc, pint_lo, pint_hi, u_lo, u_hi
+      do ib = 1, scm_nband
+         do it = 1, scm_nti
+            acc     = 0.0_wp
+            pint_lo = azimuth_trapezoid_z12(it, 1, ib)
+            u_lo    = cos(scm_theta_s(1)*deg2rad)
+            do is = 1, scm_nts - 1
+               pint_hi = azimuth_trapezoid_z12(it, is+1, ib)
+               u_hi    = cos(scm_theta_s(is+1)*deg2rad)
+               acc     = acc + 0.5_wp*(pint_lo + pint_hi)*(u_lo - u_hi)
+               pint_lo = pint_hi;  u_lo = u_hi
+            end do
+            scm_csca_pol_al(it, ib) = 2.0_wp*acc
+         end do
+      end do
+   end subroutine aligned_polarized_cross_section
+
+
+   real(wp) function azimuth_trapezoid_z12(it, is, ib) result(val)
+      ! INT_0^pi Z12(phi) dphi [rad] at fixed (theta_i node it, theta_s node is,
+      ! band ib), trapezoid over the stored azimuth grid.
+      integer, intent(in) :: it, is, ib
+      integer :: ip
+      val = 0.0_wp
+      do ip = 1, scm_nphi - 1
+         val = val + 0.5_wp*(scm_Z(it,is,ip,1,2,ib) + scm_Z(it,is,ip+1,1,2,ib)) &
+                   * (scm_phi(ip+1) - scm_phi(ip))*deg2rad
+      end do
+   end function azimuth_trapezoid_z12
+
+
+   function unique_scratch_path() result(p)
+      ! Collision-free decompression target: TMPDIR (else /tmp) plus the process
+      ! id, so concurrent MPI ranks never share the scratch name and a read-only
+      ! launch directory is never written.
+      character(len=512) :: p
+      character(len=512) :: tmpdir
+      character(len=32)  :: pidstr
+      integer :: stat
+      call get_environment_variable('TMPDIR', tmpdir, status=stat)
+      if (stat /= 0 .or. len_trim(tmpdir) == 0) tmpdir = '/tmp'
+      write(pidstr,'(i0)') int(c_getpid())
+      p = trim(tmpdir)//'/scatmat_aligned_'//trim(pidstr)//'.dat'
+   end function unique_scratch_path
 
 
    pure logical function rel_close(a, b)

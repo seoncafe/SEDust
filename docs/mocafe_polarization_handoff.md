@@ -58,20 +58,22 @@ to MoCafe — see §4 and the user manual §6.7).
 ### Aligned scattering optics (µm² per H; note the unit change)
 
 ```fortran
-call scatmat_band(lambda_um, iband, exact)                    ! pick the band once
-call extinction_matrix_aligned(iband, theta_i, eta, kmat)     ! kmat(4,4)  [um^2/H]
-call mueller_matrix_aligned(iband, theta_i, theta_s, phi, z)  ! z(4,4) [um^2 sr^-1/H], eta=1
-call mueller_matrix_random(iband, big_theta, f_tot, f_ref)    ! 6-elt random matrices
-call scattering_cross_sections(iband, theta_i, eta, csca_aligned, csca_unaligned)
+call scatmat_band(lambda_um, iband, exact)                       ! pick the band once
+call extinction_matrix_aligned(iband, theta_i, eta, kmat)        ! kmat(4,4)  [um^2/H]
+call mueller_matrix_total(iband, theta_i, theta_s, phi, eta, z)  ! z(4,4) [um^2 sr^-1/H], ABSOLUTE (recommended)
+call mueller_matrix_aligned(iband, theta_i, theta_s, phi, z)     ! z(4,4) [um^2 sr^-1/H], aligned only, eta=1
+call mueller_matrix_random(iband, big_theta, f_tot, f_ref)       ! 6-elt random matrices, alpha1-normalized
+call scattering_cross_sections(iband, theta_i, eta, csca_aligned, csca_unaligned [, csca_pol_aligned])
 ```
 
 | call | in | out (units) |
 |---|---|---|
 | `scatmat_band` | `lambda_um` [µm] | `iband`; `exact` (`.true.` if matched to 1e-3) |
 | `extinction_matrix_aligned` | `iband`, `theta_i` [deg, 0–180 folded to 0–90], `eta` | `kmat(4,4)` [µm²/H] |
-| `mueller_matrix_aligned` | `iband`, `theta_i`, `theta_s` [deg, 0–180], `phi` [deg, 0–360] | `z(4,4)` [µm² sr⁻¹/H] at `eta=1` |
-| `mueller_matrix_random` | `iband`, `big_theta` [deg] | `f_tot(6)`, `f_ref(6)`, α₁-normalized |
-| `scattering_cross_sections` | `iband`, `theta_i`, `eta` | `csca_aligned`, `csca_unaligned` [µm²/H] |
+| `mueller_matrix_total` | `iband`, `theta_i`, `theta_s` [deg], `phi` [deg], `eta` | `z(4,4)` [µm² sr⁻¹/H], **absolute** (recommended) |
+| `mueller_matrix_aligned` | `iband`, `theta_i`, `theta_s` [deg, 0–180], `phi` [deg, 0–360] | `z(4,4)` [µm² sr⁻¹/H], aligned only at `eta=1` |
+| `mueller_matrix_random` | `iband`, `big_theta` [deg] | `f_tot(6)`, `f_ref(6)`, α₁-normalized (∫F₁₁dΩ = 4π) |
+| `scattering_cross_sections` | `iband`, `theta_i`, `eta` | `csca_aligned`, `csca_unaligned`, opt. `csca_pol_aligned` [µm²/H] |
 
 `kmat` structure: diagonal `eta*Cext_al`; `K(1,2)=K(2,1)=eta*Cpol_al` (dichroism);
 `K(3,4)=eta*Cbir_al`, `K(4,3)=-eta*Cbir_al` (birefringence), in the Mishchenko
@@ -84,9 +86,12 @@ meridional basis (`Q = Iv - Ih`) of the grain frame.
 ### Exposed storage (public, protected) for hosts that inline lookups
 
 `scm_lambda`, `scm_theta_i`, `scm_theta_s`, `scm_phi`, `scm_theta_ran`,
-`scm_cext_tot`, `scm_csca_tot`, `scm_cext_ref`, `scm_csca_ref`, `scm_F_tot`,
-`scm_F_ref`, `scm_Z`, and the sizes `scm_nband`, `scm_nti`, `scm_nts`,
-`scm_nphi`, `scm_ntheta`, plus the flag `scm_loaded`.
+the K-block arrays `scm_cext_al`, `scm_cpol_al`, `scm_cbir_al`, `scm_csca_al`
+and the polarized scattering cross section `scm_csca_pol_al` (all `(nti, nband)`),
+the band scalars `scm_cext_tot`, `scm_csca_tot`, `scm_cext_ref`, `scm_csca_ref`,
+the random matrices `scm_F_tot`, `scm_F_ref` (α₁-normalized; the absolute
+differential matrix is `Csca F / (4 pi)`), `scm_Z`, and the sizes `scm_nband`,
+`scm_nti`, `scm_nts`, `scm_nphi`, `scm_ntheta`, plus the flag `scm_loaded`.
 
 ---
 
@@ -97,8 +102,16 @@ meridional basis (`Q = Iv - Ih`) of the grain frame.
    call build_astrodust(m, qtab, sizedist, NT, T_lo, T_hi, status=st, &
                         qpol_path=QPOL, scatmat_path=SCATMAT)
    ```
-   `scatmat_path` failing to load is an error (`st = 3`); a missing `qpol_path`
-   only disables polarized emission. Check `st == 0` and `scm_loaded`.
+   `scatmat_path` failing to load is an error (`st = 3`); an explicit `qpol_path`
+   that cannot be read is `st = 4` (an implicit default degrades gracefully to an
+   unpolarized model, now with an unconditional stderr message); `st = 5` flags a
+   contradiction — `load_polarized_optics=.false.` combined with an explicit
+   `qpol_*`/`scatmat_path`. Check `st == 0` and `scm_loaded`;
+   `dust_has_polarized_optics(m)` reports whether the model carries polarized
+   optics at all. For a scalar-only run pass `load_polarized_optics=.false.`: the
+   polarized `Q` table is never opened, `Cpol`/`Cpol_ext`/`Cbir_ext`/`falign` stay
+   zero, and the scalar `Cext`/`Cabs`/`Csca`/`gbar` and total SED come back
+   bit-identical to a polarized build at zero alignment.
 2. Optionally set the alignment: `dust_set_alignment(m, f_max, a_align, alpha)` or
    `dust_set_alignment_profile(m, aeff_in, falign_in)`. **Heed status code 4**: it
    means the loaded scattering table's recorded profile differs from the one just
@@ -120,6 +133,33 @@ This layer is **not** thread-safe. Do it before the photon loop.
 
 `eta` is the cell's alignment field; `theta_i = acos(k-hat . B-hat)`.
 
+### The combined phase matrix (recommended)
+
+`mueller_matrix_total(iband, theta_i, theta_s, phi, eta, z)` returns the
+**absolute** combined phase matrix `z(4,4)` [µm² sr⁻¹ per H] at the grain-frame
+geometry, with both populations already assembled:
+
+```
+z = eta*Z_al  +  L(pi - sigma2) F_unal(Theta) L(-sigma1) / (4 pi)
+F_unal(Theta) = Csca_tot*F_tot(Theta) - eta*Csca_ref*F_ref(Theta)
+```
+
+The deflection angle is
+`cos Theta = cos(theta_i) cos(theta_s) + sin(theta_i) sin(theta_s) cos(phi)`, and
+the meridional rotation angles (closed forms, poles included) are
+
+```
+sigma1 = atan2( sin(theta_s) sin(phi),  cos(theta_i) sin(theta_s) cos(phi) - sin(theta_i) cos(theta_s) )
+sigma2 = atan2(-sin(theta_i) sin(phi),  cos(theta_i) sin(theta_s) - sin(theta_i) cos(theta_s) cos(phi) )
+```
+
+`L` is the Stokes rotation; `F_tot`, `F_ref` are the α₁-normalized random matrices
+(∫F₁₁dΩ = 4π), so the `/(4 pi)` restores absolute µm² sr⁻¹ per H. **Use this call
+instead of reconstructing the mixture from the public arrays** — it is the single
+place the normalization and the rotation signs are certified (checks [3d], [3e],
+Anchor H). Rotate the photon Stokes vector into and out of the grain frame
+(`z = B-hat`) around it, and sample directions from `z11` as usual.
+
 ### Extinction matrix, with the double-counting subtraction
 
 The isotropic `Cext` from `dust_extinction` already contains the aligned
@@ -140,30 +180,43 @@ Implemented literally in `use_dustlib_scatmat.f90` (add the scalar
 ### Population selection
 
 ```fortran
-call scattering_cross_sections(iband, theta_i, eta, csca_aligned, csca_unaligned)
+call scattering_cross_sections(iband, theta_i, eta, csca_aligned, csca_unaligned &
+                               [, csca_pol_aligned])
 ```
 `csca_aligned = eta*Csca_al(theta_i)`; `csca_unaligned = Csca_tot - eta*Csca_ref`.
 Their sum is the total scattering cross section, and the ratio gives the albedo
 and the probability that an interaction is with the aligned versus the unaligned
-population.
+population. The optional `csca_pol_aligned = eta*Csca,pol_al(theta_i)` is the
+polarized scattering cross section `INT Z12 dOmega` of the aligned matrix (Peest
+et al. 2023); the random remainder contributes zero to it by azimuthal symmetry,
+so it is all of `Csca,pol`. It is what a polarization-dependent albedo needs,
+`Lambda = [Csca + Csca,pol Q/I] / [Cext + Cpol Q/I]`, so an incident Stokes vector
+carrying a `Q/I` component gets the correct scattering-versus-absorption split.
 
 ### Scattering
+
+The recommended route is `mueller_matrix_total` above, which returns the absolute
+combined matrix directly. If a host instead treats the two populations apart:
 
 - **Aligned population.** Rotate the photon Stokes vector into the grain frame
   (`z = B-hat`) using the meridional rotation, sample `(theta_s, phi)` from the
   `Z_al,11` sky brightness, apply the full 4×4 `Z_al` (scaled by `eta`), rotate
   back out. `mueller_matrix_aligned` returns `Z_al` at `eta=1`; scale it yourself.
 - **Unaligned population.** Work in the scattering plane exactly as the existing
-  random-orientation `scatmat` file is used: `mueller_matrix_random` returns
-  `f_tot`, `f_ref`; the absolute remainder matrix is
-  `F_unal = Csca_tot*f_tot - eta*Csca_ref*f_ref` (six elements
-  `F11 F22 F33 F44 F12 F34`).
+  random-orientation `scatmat` file is used: `mueller_matrix_random` returns the
+  α₁-normalized `f_tot`, `f_ref` (∫F₁₁dΩ = 4π). The absolute remainder matrix is
+  `Z_unal(Theta) = [Csca_tot*f_tot - eta*Csca_ref*f_ref] / (4 pi)` (six elements
+  `F11 F22 F33 F44 F12 F34`), whose element-11 solid-angle integral is
+  `Csca_tot - eta*Csca_ref`. The `1/(4 pi)` is essential: without it the remainder
+  is overweighted by exactly 4π relative to the aligned `Z_al`, whose stored matrix
+  already integrates to `Csca_al`.
 
 ### Peel-off
 
-Evaluate the same phase matrix (`Z_al` for the aligned case in the grain frame,
-`F_unal` in the scattering plane for the unaligned case) at the forced scattering
-geometry toward the observer, and weight by the albedo.
+Evaluate the same phase matrix at the forced scattering geometry toward the
+observer and weight by the albedo — `mueller_matrix_total` at the peel-off
+`(theta_s, phi)` gives it in one call, or `Z_al` (grain frame) and `Z_unal`
+(scattering plane) separately if the populations are handled apart.
 
 ### Emission source term
 
@@ -202,13 +255,18 @@ UBVRI file; a list of wavelengths writes those bands.
 
 - **Initialization is serial, once.** `load_scatmat_aligned` (via `scatmat_path`),
   the size integrals, and `free_scatmat_aligned` mutate module state and must run
-  from serial code before the photon loop.
+  from serial code before the photon loop. A gzipped table is decompressed to a
+  scratch copy under `TMPDIR` (else `/tmp`) named with the process id
+  (`scatmat_aligned_<pid>.dat`, and `q_jori_<pid>.dat` for the polarized `Q`
+  table) and deleted after the read, so concurrent MPI ranks never collide and a
+  read-only launch directory is never written.
 - **Path queries are concurrent.** `scatmat_band`, `extinction_matrix_aligned`,
-  `mueller_matrix_aligned`, `mueller_matrix_random`, `scattering_cross_sections`,
-  and `dust_extinction` are pure reads — they write only their own output
-  arguments, do no I/O and no allocation — so they are safe to call from OpenMP
-  photon threads. The generator's OpenMP correctness (1-thread vs N-thread bitwise
-  identical) is already verified; the library layer adds no shared state.
+  `mueller_matrix_aligned`, `mueller_matrix_random`, `mueller_matrix_total`,
+  `scattering_cross_sections`, and `dust_extinction` are pure reads — they write
+  only their own output arguments, do no I/O and no allocation — so they are safe
+  to call from OpenMP photon threads. The generator's OpenMP correctness (1-thread
+  vs N-thread bitwise identical) is already verified; the library layer adds no
+  shared state.
 
 ---
 
@@ -227,9 +285,11 @@ Grids: `theta_i` 0(5)90 (19), `theta_s` 0(1)180 (181), `phi` 0(5)180 (37). Block
 header scalars per band: `Cext_tot`, `Csca_tot`, `Cext_ref`, `Csca_ref` [µm²/H].
 
 **Eta contract.** `Z_al,cell = eta*Z_al`; `K_al,cell = eta*K_al`; the unaligned
-remainder is `F_unal = Csca_tot*F_tot - eta*Csca_ref*F_ref` (absolute units); the
-unaligned population adds an isotropic `Cext_tot - eta*Cext_ref` (its `Cpol` and
-`Cbir` are zero). Exact by the linearity of the size integral in `f_align`.
+remainder matrix is `Z_unal = [Csca_tot*F_tot - eta*Csca_ref*F_ref] / (4 pi)`
+(absolute units; the `1/(4 pi)` turns the α₁-normalized `F` into a matrix whose
+element 11 integrates to `Csca_tot - eta*Csca_ref` over the sphere); the unaligned
+population adds an isotropic `Cext_tot - eta*Cext_ref` (its `Cpol` and `Cbir` are
+zero). Exact by the linearity of the size integral in `f_align`.
 
 **Symmetries** (used to reconstruct the unstored ranges; the library does this):
 - `phi → 360-phi`: the two off-diagonal 2×2 blocks (elements 13,14,23,24,31,32,41,42)
@@ -249,7 +309,7 @@ SEDust returns the matrices in the grain frame; everything below is MoCafe's:
    the grain frame (`z = B-hat`) before an aligned scatter and back out after it;
    the position-angle rotation that splits polarization into `Q` and `U`.
 2. **Direction sampling.** Drawing `(theta_s, phi)` from `Z_al,11` (aligned) or
-   `Theta` from `F_unal,11` (unaligned), with the peel-off/forced-scattering
+   `Theta` from `Z_unal,11` (unaligned), with the peel-off/forced-scattering
    bookkeeping.
 3. **The `exp(-K tau)` transfer step.** Prefer the Peest et al. (2023) closed
    form for a segment of constant density and field: `I`/`Q` evolve through

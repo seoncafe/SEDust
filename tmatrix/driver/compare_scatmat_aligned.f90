@@ -20,6 +20,11 @@ program compare_scatmat_aligned
    !     same f_align-weighted integrals of the 4-block jori table, at 0.55 um.
    !   G Rayleigh K sin^2 law: dipole forward amplitudes exactly, and the
    !     T-matrix forward amplitudes near x = 0.137 to a few percent.
+   !   H meridional rotation at general geometry: 4 pi <Z>/Csca_random from the
+   !     orientation-averaged amplitude engine at arbitrary (theta_i, theta_s,
+   !     phi) against L(pi - sigma2) F(Theta) L(-sigma1) built with the SAME
+   !     rotation logic mueller_matrix_total uses (the definitive sign
+   !     certification for the aligned-scattering library).
    !
    ! Runs from tmatrix/.  Dielectric index, shape flags, and tolerances match
    ! run_scatmat.f90 (eps_ba = 1.4, oblate NP = -1, DDELT = 1e-3, NDGS = 2).
@@ -76,6 +81,7 @@ program compare_scatmat_aligned
    call anchor_e()
    call anchor_f()
    call anchor_g()
+   call anchor_h()
 
    write(*,'(a)') '======================================================================'
    if (nfail_total == 0) then
@@ -669,6 +675,182 @@ contains
 
 
    ! ==================================================================
+   ! Anchor H: meridional rotation certified at general geometry.
+   ! ==================================================================
+   subroutine anchor_h()
+      ! For each single size (Anchor C list) and a spread of scattering
+      ! geometries -- including phi > 180 (the sign flip) and a near-degenerate
+      ! phi ~ 1 deg -- the orientation-averaged Mueller matrix, the ground truth
+      ! that already contains the rotations,
+      !   fmod = 4 pi <Z>(theta_i, theta_s, phi) / Csca_random,
+      ! is compared to
+      !   L(pi - sigma2) F(Theta) L(-sigma1)
+      ! with F(Theta) the block-diagonal GSP scattering matrix
+      ! (scatmat_from_moments, interpolated to Theta) and sigma1, sigma2 from the
+      ! SAME logic mueller_matrix_total uses (meridional_rotations below is a
+      ! sibling copy).  A wrong sign convention fails here: this is the definitive
+      ! certification for the aligned-scattering library's random remainder.
+      ! NF fixes the F(Theta) evaluation grid (0.005 deg step): the anchor
+      ! geometries put Theta off any coarser grid, and linear interpolation of
+      ! the oscillatory x ~ 3.4 scattering matrix on a 0.05 deg grid costs up to
+      ! ~8e-5 in the normalized measure.  The ~4e-5 residual that remains at
+      ! 0.005 deg is insensitive to both further F-grid refinement and
+      ! orientation-quadrature doubling (identical to 7 digits), i.e. it is the
+      ! common truncation floor of the two representations, not a rotation
+      ! residual: a wrong sigma sign fails this anchor at O(1)-O(30).
+      integer,  parameter :: NCP = 2, NG = 4, NF = 36001
+      real(wp), parameter :: CP_A(NCP) = (/ 0.10_wp, 0.30_wp /)
+      real(wp), parameter :: CP_L(NCP) = (/ 0.55_wp, 0.55_wp /)
+      real(wp), parameter :: GTI(NG) = (/  40.0_wp,  40.0_wp,  40.0_wp, 40.0_wp /)
+      real(wp), parameter :: GTS(NG) = (/  70.0_wp,  70.0_wp,  70.0_wp, 70.0_wp /)
+      real(wp), parameter :: GPH(NG) = (/  30.0_wp, 120.0_wp, 250.0_wp,  1.0_wp /)
+      real(wp), parameter :: TOL_H   = 5.0e-5_wp
+      integer  :: ic, k, i, j, nmax, lmax, nb, na
+      real(wp) :: a, lam, area, csca_rand, qsca_rand, maxe, locmax
+      real(wp) :: qext_o(3), qsca_o(3), qabs_o(3)
+      real(wp) :: a1(NPL), a2(NPL), a3(NPL), a4(NPL), b1(NPL), b2(NPL)
+      real(wp) :: thf(NF), f11(NF), f22(NF), f33(NF), f44(NF), f12(NF), f34(NF)
+      real(wp) :: zbar(4,4), fmod(4,4), fmat(4,4), rhs(4,4), l1(4,4), l2(4,4)
+      real(wp) :: cos_th, big_theta, sigma1, sigma2, ff(6), dummy
+      logical  :: ok
+
+      write(*,'(a)') '----------------------------------------------------------------------'
+      write(*,'(a)') ' Anchor H: 4 pi <Z>(ti,ts,phi)/Csca_random vs L(pi-s2) F(Theta) L(-s1)'
+      write(*,'(a,es8.1,a)') '   general geometry; certifies sigma1, sigma2 signs [tol ', TOL_H, ' norm]'
+      maxe = 0.0_wp
+      do ic = 1, NCP
+         a = CP_A(ic);  lam = CP_L(ic)
+         call solve_full(a, lam, nmax, qext_o, qsca_o, qabs_o, &
+                         a1, a2, a3, a4, b1, b2, lmax, qsca_rand, ok)
+         if (.not. ok) then
+            write(*,'(a,f6.3,a,f6.3)') '   T-matrix did not converge at a=', a, ' lam=', lam
+            nfail_total = nfail_total + 1;  cycle
+         end if
+         area      = PI*a*a
+         csca_rand = qsca_rand*area
+         nb = 2*nmax + 2;  na = 4*nmax + 4
+         call scatmat_from_moments(a1, a2, a3, a4, b1, b2, lmax, NF, &
+                                   thf, f11, f22, f33, f44, f12, f34)
+         write(*,'(a,f6.3,a,f6.4,a,i0,a,i0,a,i0)') '   a_eff=', a, ' um  lam=', lam, &
+              ' um   NMAX=', nmax, '   nBETA=', nb, '  nALPHA=', na
+         do k = 1, NG
+            cos_th = cos(GTI(k)*DEG)*cos(GTS(k)*DEG) &
+                   + sin(GTI(k)*DEG)*sin(GTS(k)*DEG)*cos(GPH(k)*DEG)
+            cos_th    = max(-1.0_wp, min(1.0_wp, cos_th))
+            big_theta = acos(cos_th)/DEG
+
+            ! Ground truth: orientation-averaged Z at the general geometry.
+            call orient_average_z_general(nmax, lam, GTI(k), GTS(k), GPH(k), nb, na, zbar)
+            fmod = 4.0_wp*PI*zbar/csca_rand
+
+            ! Reference: block-diagonal F(Theta) rotated into the meridional bases.
+            call interp_scatmat(thf, f11, f22, f33, f44, f12, f34, NF, big_theta, ff)
+            fmat = 0.0_wp
+            fmat(1,1) = ff(1);  fmat(2,2) = ff(2);  fmat(3,3) = ff(3);  fmat(4,4) = ff(4)
+            fmat(1,2) = ff(5);  fmat(2,1) = ff(5)
+            fmat(3,4) = ff(6);  fmat(4,3) = -ff(6)
+            call meridional_rotations(GTI(k), GTS(k), GPH(k), sigma1, sigma2)
+            call stokes_L(PI - sigma2, l2)
+            call stokes_L(-sigma1,     l1)
+            rhs = matmul(l2, matmul(fmat, l1))
+
+            locmax = 0.0_wp
+            do j = 1, 4
+               do i = 1, 4
+                  locmax = max(locmax, helem(fmod(i,j), rhs(i,j), ff(1)))
+               end do
+            end do
+            maxe = max(maxe, locmax)
+            write(*,'(a,f5.1,a,f5.1,a,f6.1,a,f6.1,a,es10.2)') '     ti=', GTI(k), &
+                 ' ts=', GTS(k), ' phi=', GPH(k), ' Theta=', big_theta, &
+                 ' deg  max err=', locmax
+         end do
+      end do
+      dummy = chk_rel('   Anchor H max normalized error', maxe, 0.0_wp, TOL_H)
+   end subroutine anchor_h
+
+
+   real(wp) function helem(val, ref, f11r) result(e)
+      ! Anchor-H element error: relative where |ref| > 1e-3 F11, else absolute
+      ! normalized to F11 -- the same measure as chk_elem, returned silently so a
+      ! single verdict covers the whole matrix.
+      real(wp), intent(in) :: val, ref, f11r
+      if (abs(ref) > 1.0e-3_wp*f11r) then
+         e = abs(val/ref - 1.0_wp)
+      else
+         e = abs(val - ref) / f11r
+      end if
+   end function helem
+
+
+   subroutine interp_scatmat(th, f11, f22, f33, f44, f12, f34, n, target, ff)
+      ! Linear interpolation of the six GSP scattering-matrix elements to the
+      ! scattering angle target [deg] on the uniform grid th (0..180, n points).
+      real(wp), intent(in)  :: th(:), f11(:), f22(:), f33(:), f44(:), f12(:), f34(:)
+      integer,  intent(in)  :: n
+      real(wp), intent(in)  :: target
+      real(wp), intent(out) :: ff(6)
+      integer  :: lo
+      real(wp) :: step, t
+      step = th(2) - th(1)
+      lo = int(target/step) + 1
+      if (lo < 1)   lo = 1
+      if (lo > n-1) lo = n-1
+      t = (target - th(lo)) / (th(lo+1) - th(lo))
+      ff(1) = (1.0_wp-t)*f11(lo) + t*f11(lo+1)
+      ff(2) = (1.0_wp-t)*f22(lo) + t*f22(lo+1)
+      ff(3) = (1.0_wp-t)*f33(lo) + t*f33(lo+1)
+      ff(4) = (1.0_wp-t)*f44(lo) + t*f44(lo+1)
+      ff(5) = (1.0_wp-t)*f12(lo) + t*f12(lo+1)
+      ff(6) = (1.0_wp-t)*f34(lo) + t*f34(lo+1)
+   end subroutine interp_scatmat
+
+
+   pure subroutine meridional_rotations(theta_i_deg, theta_s_deg, phi_deg, sigma1, sigma2)
+      ! Sibling copy of scatmat_aligned_mod's meridional_scattering_angles (this
+      ! repo keeps sibling copies rather than sharing across the sed/tmatrix split):
+      ! the meridional-to-scattering-plane Stokes rotation angles [rad] for
+      ! Z = L(pi - sigma2) F(Theta) L(-sigma1), incidence azimuth 0.  Closed
+      ! forms handle the single poles without branches; signs and degenerate
+      ! limits documented at the library site, certified by Anchor H here.
+      real(wp), intent(in)  :: theta_i_deg, theta_s_deg, phi_deg
+      real(wp), intent(out) :: sigma1, sigma2
+      real(wp), parameter :: EPS = 1.0e-30_wp
+      real(wp) :: ti, ts, ph, sti, cti, sts, cts, sph, cph
+      real(wp) :: y1, x1, y2, x2
+      ti = theta_i_deg*DEG;  ts = theta_s_deg*DEG;  ph = phi_deg*DEG
+      sti = sin(ti);  cti = cos(ti)
+      sts = sin(ts);  cts = cos(ts)
+      sph = sin(ph);  cph = cos(ph)
+      y1 =  sts*sph;   x1 = cti*sts*cph - sti*cts
+      y2 = -sti*sph;   x2 = cti*sts - sti*cts*cph
+      if (abs(y1) + abs(x1) < EPS) then
+         sigma1 = 0.0_wp
+      else
+         sigma1 = atan2(y1, x1)
+      end if
+      if (abs(y2) + abs(x2) < EPS) then
+         sigma2 = 0.0_wp
+      else
+         sigma2 = atan2(y2, x2)
+      end if
+   end subroutine meridional_rotations
+
+
+   pure subroutine stokes_L(angle, l)
+      ! Stokes rotation L(angle) in the Mishchenko convention (sibling copy).
+      real(wp), intent(in)  :: angle
+      real(wp), intent(out) :: l(4,4)
+      real(wp) :: c2, s2
+      c2 = cos(2.0_wp*angle);  s2 = sin(2.0_wp*angle)
+      l = 0.0_wp
+      l(1,1) = 1.0_wp;  l(4,4) = 1.0_wp
+      l(2,2) = c2;  l(2,3) =  s2
+      l(3,2) = -s2; l(3,3) =  c2
+   end subroutine stokes_L
+
+
+   ! ==================================================================
    ! jori-table reader (per-orientation) and log-a interpolation
    ! ==================================================================
    subroutine read_qjori_perori(qfile, wavefile, aefffile, lam_j, aeff_j, &
@@ -887,6 +1069,40 @@ contains
       end do
       deallocate(bx, bw)
    end subroutine orient_average_z
+
+
+   subroutine orient_average_z_general(nmax, lam, theta_i, theta_s, phi, nb, na, zbar)
+      ! Orientation average of the fixed-orientation Mueller matrix at ARBITRARY
+      ! incidence (theta_i, azimuth 0) and scattering (theta_s, phi), over the
+      ! grain axis direction: Gauss-Legendre in cos(BETA) with nb nodes and
+      ! uniform ALPHA with na nodes (the same scheme as orient_average_z, which
+      ! is the theta_i = 0, phi = 0 special case).  The ensemble average obeys
+      ! the rotation identity Z = L(pi - sigma2) F(Theta) L(-sigma1), which
+      ! Anchor H checks.
+      integer,  intent(in)  :: nmax, nb, na
+      real(wp), intent(in)  :: lam, theta_i, theta_s, phi
+      real(wp), intent(out) :: zbar(4,4)
+      real(wp), allocatable :: bx(:), bw(:)
+      integer  :: ib, ia
+      real(wp) :: beta_deg, alpha_deg, wb, z(4,4)
+      complex(wp) :: vv, vh, hv, hh
+
+      allocate(bx(nb), bw(nb))
+      call gauss(nb, 0, 0, bx, bw)
+      zbar = 0.0_wp
+      do ib = 1, nb
+         beta_deg = acos(bx(ib)) / DEG
+         wb = 0.5_wp * bw(ib)
+         do ia = 1, na
+            alpha_deg = real(ia-1, kind=wp) * 360.0_wp / real(na, kind=wp)
+            call ampl(nmax, lam, theta_i, theta_s, 0.0_wp, phi, &
+                      alpha_deg, beta_deg, vv, vh, hv, hh)
+            call mueller_from_amplitude(vv, vh, hv, hh, z)
+            zbar = zbar + (wb / real(na, kind=wp)) * z
+         end do
+      end do
+      deallocate(bx, bw)
+   end subroutine orient_average_z_general
 
 
    subroutine mueller_from_amplitude(s11, s12, s21, s22, z)
