@@ -70,6 +70,11 @@ cd ../mc && make && ./main_mc_sed.x run_sed.nml
 # regenerating the T-matrix Q table (optional; the table ships with SEDust)
 cd ../tmatrix && make && ./run_tmatrix.x test   # then ./run_tmatrix.x for the full sweep
 
+# orientation-resolved (polarized) Q table from first principles
+./run_q_jori.x test                             # sample + full-sweep time estimate
+# full sweep is ~16 h on one core; parallelize over wavelength windows:
+#   ./run_q_jori.x range 1 400   (etc.)  then  ./run_q_jori.x merge output/...jw*.dat
+
 # scattering matrix of randomly oriented grains (five optical bands ship with SEDust)
 ./run_scatmat.x 0.55                            # one wavelength; ./run_scatmat.x all for the grid
 ```
@@ -102,8 +107,9 @@ the stochastic solve; the gate propagates forward in grain size.
 ## Polarization
 
 For the astrodust model SEDust also computes the polarized cross sections of
-aligned spheroidal grains, from the orientation-resolved Draine & Hensley
-(2021) table that ships in `data/dielectric/`. Two quantities are available:
+aligned spheroidal grains, from an orientation-resolved spheroid table. By
+default this is the Draine & Hensley (2021) table that ships in
+`data/dielectric/`. Two quantities are available:
 
 | Quantity | Where |
 |---|---|
@@ -122,6 +128,21 @@ file entirely.
 The computed polarized extinction reproduces the released
 `polarized_extinction.dat` to a median of 0.03%. The polarized emission
 fraction reaches 17.2% at 154 um and 19.2% at 850 um.
+
+The orientation-resolved table itself can also be regenerated from the astrodust
+dielectric function with SEDust's own T-matrix engine, so the polarized optics
+need not be taken from the release file. Each of the three size-parameter regimes
+is computed from first principles — the Rayleigh polarizability, the
+fixed-orientation amplitude matrix (optical theorem for extinction, phase-matrix
+integral for scattering), and a projected-area-plus-Fresnel geometric-optics
+limit — and matches the release to a few parts in 10^4 wherever grains carry
+weight. Fed through `calc_polext`, the regenerated table reproduces
+`polarized_extinction.dat` to a median of 0.06%, computed with no recourse to the
+release optics. `tmatrix/run_q_jori.x` writes the table (a drop-in for the
+release format); `oriented_cross_sections` is the same computation for a single
+grain and wavelength, for an arbitrary point or a shape the table does not cover.
+To use the regenerated table in a run, pass its path as `qpol_path` to
+`build_astrodust` or `sed_init`; the default stays the release table.
 
 The alignment efficiency `f_align(a)` can be replaced on an existing model
 with `dust_set_alignment` (the HD23 power law) or `dust_set_alignment_profile`
@@ -173,4 +194,4 @@ Rebuild any of them with `pdflatex <name>.tex` (run twice for cross-references).
 
 ---
 
-Last updated: 2026-07-20 14:12 KST
+Last updated: 2026-07-20 14:22 KST
