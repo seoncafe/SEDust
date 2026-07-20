@@ -22,13 +22,14 @@ OMPFLAGS = -fopenmp
 
 SED_DIR = ../sed/src
 
-SHARED_BASE = $(SED_DIR)/constants.f90 $(SED_DIR)/mathlib.f90
+SHARED_BASE = $(SED_DIR)/constants.f90 $(SED_DIR)/sed_mathlib.f90
 SHARED_GRA  = $(SED_DIR)/q_graphite_d16_sphere.f90
 SHARED_RAD  = $(SED_DIR)/radfield.f90
 SHARED_ENT  = $(SED_DIR)/enthalpy_v2.f90 $(SED_DIR)/enthalpy_astrodust.f90
 
 # Astrodust pipeline modules pulled in for the SED comparison
 SED_PIPELINE = $(SED_DIR)/size_dist.f90 $(SED_DIR)/q_table.f90 \
+               $(SED_DIR)/q_table_jori.f90 \
                $(SED_DIR)/mie.f90 $(SED_DIR)/q_graphite.f90 \
                $(SED_DIR)/q_graphite_d16.f90 $(SED_DIR)/qpah.f90 \
                $(SED_DIR)/p_sub.f90 $(SED_DIR)/stoch_qm.f90 \
@@ -56,15 +57,20 @@ SRC_PT_COMPARE_ALL = $(SHARED_BASE) $(SHARED_GRA) $(SHARED_RAD) $(SHARED_ENT) \
 
 all: main_mc.x main_mc_sed.x main_pT_compare.x
 
-main_mc.x: $(SRC_MC_ALL)
+# The drivers write here; git carries no empty directory, so a fresh clone
+# would otherwise reach the end of a run and fail on the first open().
+output:
+	@mkdir -p output
+
+main_mc.x: $(SRC_MC_ALL) | output
 	$(FC) $(FFLAGS) $^ -o $@
 	@echo 'Built: ./main_mc.x'
 
-main_mc_sed.x: $(SRC_MC_SED_ALL)
+main_mc_sed.x: $(SRC_MC_SED_ALL) | output
 	$(FC) $(FFLAGS) $(OMPFLAGS) $^ -o $@
 	@echo 'Built: ./main_mc_sed.x (OpenMP)'
 
-main_pT_compare.x: $(SRC_PT_COMPARE_ALL)
+main_pT_compare.x: $(SRC_PT_COMPARE_ALL) | output
 	$(FC) $(FFLAGS) $(OMPFLAGS) $^ -o $@
 	@echo 'Built: ./main_pT_compare.x'
 

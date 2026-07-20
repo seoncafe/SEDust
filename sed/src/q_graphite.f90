@@ -13,7 +13,7 @@ module q_graphite_mod
    ! Q_abs = (1/3) Q_∥ + (2/3) Q_⊥.
 
    use constants, only: wp
-   use mathlib,   only: interp
+   use sed_mathlib,   only: interp
    use mie_mod,   only: mie
    implicit none
    private

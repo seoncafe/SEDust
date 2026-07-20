@@ -12,7 +12,7 @@ module q_silicate_mod
    ! silicate Mie call.
 
    use constants, only: wp
-   use mathlib,   only: interp
+   use sed_mathlib,   only: interp
    use mie_mod,   only: mie
    implicit none
    private

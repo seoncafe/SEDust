@@ -1,4 +1,4 @@
-module mathlib
+module sed_mathlib
   use, intrinsic :: iso_fortran_env, only: real32, real64, int32, int64
   implicit none
   private sp,dp,wp, PI, TWOPI
@@ -204,4 +204,4 @@ contains
   return
   end function logadd_many
   !--------------------
-end module mathlib
+end module sed_mathlib

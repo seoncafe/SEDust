@@ -144,7 +144,7 @@ module dust_lib
    ! is untouched; this module only re-exports the model API and adds the
    ! table/interpolation layer.
    use constants,         only: wp
-   use mathlib,           only: locate
+   use sed_mathlib,           only: locate
    use sed_astrodust_mod, only: dust_model_t, &
                                 build_astrodust, build_dl07, build_zubko, build_from_files, &
                                 dust_emission, dust_emission_single_teq, &
