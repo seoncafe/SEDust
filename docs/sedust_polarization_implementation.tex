@@ -724,17 +724,27 @@ and trend; its size-parameter region carries no astrodust weight.}
 
 These are limits of the published optics, not of the code.
 
-\paragraph{No circular polarization or birefringence.} The table stores
-$Q_{\rm ext}$, $Q_{\rm abs}$ and $Q_{\rm sca}$ only, none of which is a phase
-retardation, so $C_{\rm circ}$ cannot be formed from it and is set to zero.
-Since \S\ref{sec:firstprinciples} the fixed-orientation amplitude matrix
-\emph{is} computed here (Mishchenko's \code{AMPL}, extracted into
-\code{tmatrix/src/ampl\_oriented.f}), but only its imaginary part in the forward
-direction is used, for the extinction cross section. The birefringence is the
-difference of the complex forward amplitudes for the two linear polarizations;
-forming it would extend the oriented pipeline to output that complex amplitude
-rather than the real $Q$ it now reduces to. It is no longer a matter of bringing
-new code into the build.
+\paragraph{Birefringence is now computed; the release table has none.} The
+release table stores $Q_{\rm ext}$, $Q_{\rm abs}$ and $Q_{\rm sca}$ only, no phase
+retardation, so from it $C_{\rm circ}=0$. The first-principles route of
+\S\ref{sec:firstprinciples} already evaluates the fixed-orientation amplitude
+matrix (Mishchenko's \code{AMPL}, in \code{tmatrix/src/ampl\_oriented.f}) and used
+only its imaginary forward part, for extinction. Keeping the real part as well
+costs nothing --- it comes from the same amplitude call --- and gives the
+birefringence, the phase retardation that couples $U$ and $V$. It is stored as an
+optional 4th block of the regenerated table, $Q_{\rm re}(\mathrm{jori})=
+(4\pi/k)\,\mathrm{Re}[S_{\rm fwd}]/(\pi a^2)$, the real twin of $Q_{\rm ext}$, from
+which $C_{\rm bir}=\tfrac12(Q_{{\rm re},3}-Q_{{\rm re},2})\,\pi a^2$. The reader
+exposes it as \code{qbir\_ext} with a \code{has\_bir} flag that stays \code{.false.}
+for an older 3-block table, so nothing about the default path changes. No astrodust
+reference for the birefringence exists, so it is certified internally by
+Kramers-Kronig: $\mathrm{Re}$ and $\mathrm{Im}$ of the forward-amplitude difference
+are a Hilbert pair, and the directly computed birefringence agrees with the Hilbert
+transform of the already-validated dichroism to a median $\sim0.1\%$ over the
+interior of the grid (the transform itself self-tests to $2\times10^{-5}$ on a
+Lorentz oscillator; the residual is the finite-range truncation). What remains is to
+return it through \code{dust\_extinction} and to consume it in the $U\leftrightarrow V$
+transfer term, both on the host side.
 
 \paragraph{No scattering matrix for aligned grains.} The release gives the
 integrated $Q_{\rm sca}$ with no angular information, so scattering by an

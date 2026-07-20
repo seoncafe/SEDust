@@ -547,9 +547,14 @@ polarization fraction of a real line of sight.
 \item \textbf{PAHs contribute zero} ($f_{\rm align}=0$, an HD23 assumption).
       The polarized emission therefore vanishes in the mid infrared, where
       stochastically heated PAHs dominate.
-\item \textbf{No circular polarization.} The released optics table carries
-      $Q_{\rm ext}$, $Q_{\rm abs}$ and $Q_{\rm sca}$ but no phase retardation,
-      so $C_{\rm circ}$ cannot be formed and must be set to zero.
+\item \textbf{Circular polarization: available only from the regenerated table.}
+      The released optics table carries $Q_{\rm ext}$, $Q_{\rm abs}$ and
+      $Q_{\rm sca}$ but no phase retardation, so with it $C_{\rm circ}=0$. The
+      regenerated orientation-resolved table (\S\ref{sec:pol:source}) adds a
+      birefringence block, and \code{q\_table\_jori} exposes it as
+      \code{qbir\_ext} (with a \code{has\_bir} flag); \code{dust\_extinction} does
+      not yet return it, so consuming it in the $U\leftrightarrow V$ transfer term
+      is currently the host's responsibility.
 \item \textbf{No scattering by aligned grains.} The release gives the
       integrated $Q_{\rm sca}$ with no angular information, so a Mueller matrix
       for an aligned spheroid cannot be built from it.

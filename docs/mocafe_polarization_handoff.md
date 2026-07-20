@@ -146,14 +146,16 @@ model itself.
 
 These are limits of the optics as published, not of the implementation.
 
-**No circular polarization or birefringence.** The table stores `Q_ext`, `Q_abs`
-and `Q_sca` only. None of them is a phase retardation, so `C_circ` cannot be built from
-the table and is set to zero. The fixed-orientation amplitude matrix is now computed here
-(Mishchenko's `AMPL`, in `tmatrix/src/ampl_oriented.f`), but only its imaginary part in
-the forward direction is used, for extinction. Birefringence is the real part of the same
-forward-amplitude difference between the two linear polarizations; forming it means
-extending the oriented pipeline to keep that complex amplitude rather than the real `Q` it
-now reduces to, not bringing new code into the build.
+**Birefringence (circular polarization) is now computed; the release table has none.**
+The release table stores `Q_ext`, `Q_abs` and `Q_sca` only, no phase retardation, so from
+it `C_circ = 0`. But the regenerated orientation-resolved table now carries a 4th block:
+the real part of the forward-amplitude difference, whose imaginary part already gave the
+dichroism. From it `C_bir = 0.5*(Qre3 - Qre2)` is the birefringence cross section (the
+`U <-> V` phase retardation). It is certified internally by Kramers-Kronig against the
+dichroism to ~0.1% (no external benchmark exists), and `q_table_jori` exposes it as
+`qbir_ext` with a `has_bir` flag (`.false.` for an older 3-block table). Still open: the
+release-format default carries no birefringence, `dust_extinction` does not yet return it,
+and using it in the `U <-> V` transfer term is the RT code's job.
 
 **No scattering matrix for aligned grains.** The release gives the integrated `Q_sca`
 with no angular information, so scattering by an aligned spheroid cannot be modeled from
@@ -209,7 +211,9 @@ Work units, in order:
    applying `sin^2(gamma)`, the turbulent factor, and the position angle. With no
    extinction this already produces a polarization map worth inspecting on its own.
 4. Apply the extinction matrix along the line of sight using the Peest closed form, with
-   `C_ext` and `C_polext` from the table and `C_circ = 0`.
+   `C_ext` and `C_polext` from the table. Set `C_circ = 0` unless the run uses the
+   regenerated 4-block table, whose `qbir_ext` supplies the birefringence for the
+   `U <-> V` term.
 5. Validate. Run the Peest analytic benchmarks first, since they isolate the transfer
    solver from the dust model, then compare against the HAWC+ 154 um maps of NGC 891.
    Kim et al. (2023) needed turbulent depolarization in the disk, so a model that gets

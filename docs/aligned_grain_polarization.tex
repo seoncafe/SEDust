@@ -755,9 +755,10 @@ dielectric function itself; the default polarized optics still read the release
 table, but they no longer have to. A T-matrix run is therefore useful not only
 for the scattering matrix (\S\ref{sec:optical}, now done for five optical bands)
 and for exploring other axial ratios or compositions, but for the polarized cross
-sections directly. Circular polarization remains unavailable: neither the release
-table nor the regenerated one stores a phase lag, only $Q_{\rm ext}$, $Q_{\rm abs}$
-and $Q_{\rm sca}$, so \Ccirc\ cannot be built from either.
+sections directly. The release table carries only $Q_{\rm ext}$, $Q_{\rm abs}$ and
+$Q_{\rm sca}$, so from it \Ccirc\ is zero; the regenerated table adds a birefringence
+block (the real part of the forward-amplitude difference) from which \Ccirc\ follows,
+certified by Kramers-Kronig against the dichroism.
 
 The structural entry point was \code{grain\_pop\_t} in
 \code{sed/src/dust\_model\_mod.f90}: adding a \code{Cpol(NLAM,NA)}
@@ -1213,10 +1214,11 @@ $Z(\lambda,\theta)$, aligned orientation &
   not yet formed. Aligned spheroids scatter anisotropically with respect
   to $\mathbf{B}$, which spherical Mie cannot represent. \\
 \Ccirc &
-  SEDust & later &
-  Absent from the release. Birefringence converts $U$ into $V$; the
-  2018 model had none either, so this matters only once a circular
-  observable is in scope. \\
+  SEDust & done (optics) &
+  Birefringence converts $U$ into $V$. Absent from the release, but now
+  computed as the real part of the forward-amplitude difference and stored
+  in the regenerated table; Kramers-Kronig certified. Returning it through
+  \code{dust\_extinction} and consuming it in transfer is still to do. \\
 Averaging convention &
   SEDust & low &
   Mixed, exact average for \Cabs\ vs.\ MPFA for \Cpol. The disagreement
@@ -1297,16 +1299,20 @@ item is dismissed as infeasible. There is no shortcut through published
 data: the HD21 release carries integrated $Q_{\rm ext}$, $Q_{\rm abs}$
 and $Q_{\rm sca}$ only, with no scattering matrix at any orientation.
 
-\paragraph{Birefringence comes free with the aligned calculation
-(later).} \Ccirc\ is likewise absent from the release, but it does not
-need a separate computation. In the forward-scattering amplitude the
-difference $S_{\theta\theta} - S_{\phi\phi}$ carries dichroism in its
-imaginary part and birefringence in its real part, so a fixed-orientation
-amplitude run yields \Cpol\ and \Ccirc\ from one output. Whoever does
-the aligned scattering matrix gets \Ccirc\ at no additional cost, which
-is why the two belong together whenever they are done. They can be
-deferred for now: the 2018 model had no birefringence either, and the
-observable being updated is linear polarization.
+\paragraph{Birefringence came free with the aligned extinction, as
+predicted.} \Ccirc\ is absent from the release but needs no separate
+computation. In the forward-scattering amplitude the difference
+$S_{\theta\theta} - S_{\phi\phi}$ carries dichroism in its imaginary part
+and birefringence in its real part, so the fixed-orientation amplitude run
+already done for \Cpol\ yields \Ccirc\ from the same output. Keeping the
+real part is now implemented: the regenerated table carries it as a 4th
+block, and it is certified by Kramers-Kronig against the dichroism to a
+median $\sim0.1\%$ over the interior of the grid, the only check available
+since the release publishes no birefringence. What is still deferred is
+returning it through \code{dust\_extinction} and using it in the
+$U\leftrightarrow V$ transfer term; the aligned scattering matrix, a
+separate and larger item, is where any remaining circular-polarization work
+belongs.
 
 \paragraph{The averaging conventions do not match, but not yet
 critically.} SEDust builds \Cabs\ from the exact orientation average of

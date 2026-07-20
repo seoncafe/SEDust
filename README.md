@@ -156,11 +156,18 @@ computed, by `tmatrix/run_scatmat.x`, and stored for five optical bands
 `F11 F22 F33 F44 F12 F34`. Run `./run_scatmat.x all` for the full wavelength
 grid if more bands are needed.
 
-Circular polarization is not available, because the released table carries no
-phase lag, and scattering by *aligned* grains is not modeled — the matrix
-above is the random-orientation one. Neither limits far-infrared or
-submillimeter polarized emission, where scattering is negligible. The PAH
-component is treated as unaligned, and the DL07 and Zubko models have no
+The birefringence that converts linear into circular polarization on propagation
+is the real part of the same forward-amplitude difference whose imaginary part
+gives the dichroism, and it comes for free from the fixed-orientation amplitude
+already computed. The regenerated table stores it as an optional 4th block, from
+which the birefringence cross section follows; since no astrodust reference for it
+exists, it is certified internally by Kramers-Kronig against the dichroism to a
+median of about 0.1%. The released table carries none (circular polarization is
+then zero), `dust_extinction` does not yet return it, and consuming it in the
+transfer is the RT code's task. Scattering by *aligned* grains is not modeled —
+the scattering matrix above is the random-orientation one; this does not limit
+far-infrared or submillimeter polarized emission, where scattering is negligible.
+The PAH component is treated as unaligned, and the DL07 and Zubko models have no
 polarized optics.
 
 ## Documentation
@@ -194,4 +201,4 @@ Rebuild any of them with `pdflatex <name>.tex` (run twice for cross-references).
 
 ---
 
-Last updated: 2026-07-20 16:29 KST
+Last updated: 2026-07-20 16:33 KST
