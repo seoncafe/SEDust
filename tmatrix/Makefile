@@ -48,6 +48,7 @@ SRC_COMM = ../sed/src/constants.f90 \
            driver/read_index.f90 driver/asymptotic_optics.f90
 SRC_Q    = $(SRC_COMM) driver/run_tmatrix.f90
 SRC_SM   = $(SRC_COMM) ../sed/src/size_dist.f90 driver/run_scatmat.f90
+SRC_CMP  = $(SRC_COMM) driver/compare_rayleigh_jori.f90
 
 all: run_tmatrix.x run_scatmat.x
 
@@ -68,11 +69,20 @@ run_scatmat.x: $(SRC_TM) $(SRC_SM)
 	@echo 'Built: ./run_scatmat.x'
 	@echo 'Smoke test:  ./run_scatmat.x test'
 
+# Stage-A check: oriented Rayleigh Q_abs vs the HD23 orientation-resolved
+# table over the small-x subset.  No T-matrix core is needed.
+compare_rayleigh_jori.x: $(SRC_CMP)
+	@mkdir -p build/cmp
+	$(FC) $(FFLAGS) -Isrc -Jbuild/cmp $^ $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./compare_rayleigh_jori.x'
+	@echo 'Run:   ./compare_rayleigh_jori.x'
+
 clean:
 	rm -f *.o *.mod
 	rm -rf build
 
 cleanall: clean
-	rm -f run_tmatrix.x run_scatmat.x
+	rm -f run_tmatrix.x run_scatmat.x compare_rayleigh_jori.x
 
 .PHONY: all clean cleanall

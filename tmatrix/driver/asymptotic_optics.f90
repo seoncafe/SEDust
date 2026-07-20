@@ -35,7 +35,8 @@ module asymptotic_optics
 contains
 
    subroutine rayleigh_limit(a_eff, lam, n_r, k_i, eps_ba, qext, qsca, walb, asymm, &
-                               al1, al2, al3, al4, be1, be2, lmax)
+                               al1, al2, al3, al4, be1, be2, lmax, &
+                               qext_ori, qabs_ori, qsca_ori)
       ! Spheroid Rayleigh polarizability + random-orientation average.
       ! Follows Draine (1992), in F90 / double precision.
       !
@@ -51,6 +52,17 @@ contains
       ! where Q_a is for E parallel to symmetry axis and Q_b for E perp.
       !
       ! In the dipole regime g -> 0 (symmetric scattering pattern).
+      !
+      ! Optional orientation-resolved outputs qext_ori/qabs_ori/qsca_ori
+      ! (dimensioned 3, indexed by jori) return the per-orientation cross
+      ! sections that the random average above is built from, in the
+      ! convention documented in sed/src/q_table_jori.f90:
+      !   jori=1: k || a           -> E always transverse to the axis -> Q_b
+      !   jori=2: k perp a, E || a  -> E along the axis               -> Q_a
+      !   jori=3: k perp a, E perp a-> E transverse to the axis       -> Q_b
+      ! In the Rayleigh limit jori=1 and jori=3 are identical (both see the
+      ! transverse polarizability alpha_b), and (Q1+Q2+Q3)/3 reproduces the
+      ! averaged qext/qsca returned above exactly.
       real(wp), intent(in)  :: a_eff, lam, n_r, k_i, eps_ba
       real(wp), intent(out) :: qext, qsca, walb, asymm
       ! Optional: analytic scattering-matrix expansion coefficients (see
@@ -58,6 +70,8 @@ contains
       ! least 3.
       real(wp), optional, intent(out) :: al1(:), al2(:), al3(:), al4(:), be1(:), be2(:)
       integer,  optional, intent(out) :: lmax
+      ! Optional: orientation-resolved cross sections, arrays of length 3.
+      real(wp), optional, intent(out) :: qext_ori(:), qabs_ori(:), qsca_ori(:)
       real(wp)    :: axrat, e2, e, ala, alb, fac
       real(wp)    :: qabs_a, qabs_b, qsca_a, qsca_b, qabs
       complex(wp) :: eps, alpha_a, alpha_b
@@ -102,6 +116,21 @@ contains
       qext = qabs + qsca
       walb = qsca / qext
       asymm = 0.0_wp
+
+      ! Orientation-resolved cross sections (index = jori).  These are the
+      ! same qabs_a/qabs_b/qsca_a/qsca_b that the average above collapses:
+      ! E along the axis (a) at jori=2, E transverse (b) at jori=1 and 3.
+      if (present(qabs_ori)) then
+         qabs_ori(1) = qabs_b;  qabs_ori(2) = qabs_a;  qabs_ori(3) = qabs_b
+      end if
+      if (present(qsca_ori)) then
+         qsca_ori(1) = qsca_b;  qsca_ori(2) = qsca_a;  qsca_ori(3) = qsca_b
+      end if
+      if (present(qext_ori)) then
+         qext_ori(1) = qabs_b + qsca_b
+         qext_ori(2) = qabs_a + qsca_a
+         qext_ori(3) = qabs_b + qsca_b
+      end if
 
       if (present(al1)) call rayleigh_matrix_expansion(alpha_a, alpha_b, &
                              al1, al2, al3, al4, be1, be2, lmax)
