@@ -22,7 +22,7 @@ module sed_astrodust_mod
 
    use, intrinsic :: iso_fortran_env, only: real64
    use constants,             only: wp
-   use mathlib,               only: interp, first_location, last_location
+   use sed_mathlib,               only: interp, first_location, last_location
    use radfield,              only: bbody, calc_bbody
    use p_sub,                 only: p_sub_setup, calc_Teq, calc_P
    use q_table_mod,           only: load_q_table, &

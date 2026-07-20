@@ -20,7 +20,7 @@ module p_sub
 
    use, intrinsic :: iso_fortran_env, only: real64
    use constants, only: wp
-   use mathlib,   only: interp, logadd
+   use sed_mathlib,   only: interp, logadd
    implicit none
    private
    public :: p_sub_setup, calc_Teq, calc_P

@@ -1751,7 +1751,7 @@ contains
                               teq, eeq, eeqss, &
                               a_cm, grain_type, &
                               emission_out, solved)
-      use mathlib, only: interp
+      use sed_mathlib, only: interp
       implicit none
       integer,          intent(in)  :: nlam, nt_wide
       real(wp),         intent(in)  :: lam_um(nlam), cabs_cm2(nlam)

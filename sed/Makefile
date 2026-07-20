@@ -30,7 +30,7 @@ FFLAGS  = -O3 -ffree-line-length-none $(WARN)
 FFLAGS += -fopenmp
 
 # ---- source groups, in dependency order ------------------------------
-SRC_BASE    = src/constants.f90 src/mathlib.f90
+SRC_BASE    = src/constants.f90 src/sed_mathlib.f90
 
 # DL07-support modules (also used by sed_astrodust.f90, so required by every
 # target that links it): PAH ionization (WD01b charging), WD01/DL07 size
