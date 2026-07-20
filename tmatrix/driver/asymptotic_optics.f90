@@ -44,7 +44,7 @@ contains
 
    subroutine rayleigh_limit(a_eff, lam, n_r, k_i, eps_ba, qext, qsca, walb, asymm, &
                                al1, al2, al3, al4, be1, be2, lmax, &
-                               qext_ori, qabs_ori, qsca_ori)
+                               qext_ori, qabs_ori, qsca_ori, qre_ori)
       ! Spheroid Rayleigh polarizability + random-orientation average.
       ! Follows Draine (1992), in F90 / double precision.
       !
@@ -71,6 +71,13 @@ contains
       ! In the Rayleigh limit jori=1 and jori=3 are identical (both see the
       ! transverse polarizability alpha_b), and (Q1+Q2+Q3)/3 reproduces the
       ! averaged qext/qsca returned above exactly.
+      !
+      ! Optional qre_ori (length 3) is the birefringence twin of qabs_ori: the
+      ! REAL part of the same dipole forward-scattering response whose
+      ! imaginary part is the extinction/absorption.  It uses fac*Re(alpha)
+      ! where qabs uses fac*Im(alpha), with the same fac, so 0.5*(qre(3)-qre(2))
+      ! = 0.5*fac*(Re alpha_b - Re alpha_a) is the closed-form Rayleigh
+      ! birefringence and jori=1 = jori=3 identically.
       real(wp), intent(in)  :: a_eff, lam, n_r, k_i, eps_ba
       real(wp), intent(out) :: qext, qsca, walb, asymm
       ! Optional: analytic scattering-matrix expansion coefficients (see
@@ -80,8 +87,10 @@ contains
       integer,  optional, intent(out) :: lmax
       ! Optional: orientation-resolved cross sections, arrays of length 3.
       real(wp), optional, intent(out) :: qext_ori(:), qabs_ori(:), qsca_ori(:)
+      real(wp), optional, intent(out) :: qre_ori(:)
       real(wp)    :: axrat, e2, e, ala, alb, fac
       real(wp)    :: qabs_a, qabs_b, qsca_a, qsca_b, qabs
+      real(wp)    :: qre_a, qre_b
       complex(wp) :: eps, alpha_a, alpha_b
       real(wp), parameter :: PI = acos(-1.0_wp)
 
@@ -113,6 +122,10 @@ contains
       qabs_a = fac * aimag(alpha_a)
       qabs_b = fac * aimag(alpha_b)
 
+      ! Birefringence twin: real part of the same dipole response, same fac.
+      qre_a  = fac * real(alpha_a, kind=wp)
+      qre_b  = fac * real(alpha_b, kind=wp)
+
       ! Q_sca = (128 pi^4 / (3 lam^4 a_eff^2)) * |alpha|^2
       fac    = 128.0_wp * PI**4 / (3.0_wp * lam**4 * a_eff*a_eff)
       qsca_a = fac * (real(alpha_a)**2 + aimag(alpha_a)**2)
@@ -138,6 +151,12 @@ contains
          qext_ori(1) = qabs_b + qsca_b
          qext_ori(2) = qabs_a + qsca_a
          qext_ori(3) = qabs_b + qsca_b
+      end if
+      ! Birefringence twin (real part of the forward-amplitude response), same
+      ! jori mapping as qabs_ori: transverse alpha_b at jori=1,3, axial
+      ! alpha_a at jori=2, so 0.5*(qre(3)-qre(2)) is the Rayleigh birefringence.
+      if (present(qre_ori)) then
+         qre_ori(1) = qre_b;  qre_ori(2) = qre_a;  qre_ori(3) = qre_b
       end if
 
       if (present(al1)) call rayleigh_matrix_expansion(alpha_a, alpha_b, &
@@ -205,7 +224,7 @@ contains
 
    subroutine geometric_optics_limit(a_eff, lam, n_r, k_i, eps_ba, qext, qsca, walb, asymm, &
                                al1, al2, al3, al4, be1, be2, lmax, &
-                               qext_ori, qabs_ori, qsca_ori)
+                               qext_ori, qabs_ori, qsca_ori, qre_ori)
       ! Geometric-optics limit, x = 2 pi a_eff / lambda >> 1 (used for x > 50).
       !
       ! Averaged (equal-volume sphere) outputs -- UNCHANGED from the original
@@ -260,6 +279,11 @@ contains
       real(wp), optional, intent(out) :: al1(:), al2(:), al3(:), al4(:), be1(:), be2(:)
       integer,  optional, intent(out) :: lmax
       real(wp), optional, intent(out) :: qext_ori(:), qabs_ori(:), qsca_ori(:)
+      ! Birefringence twin: at geometric-optics order the extinction paradox is
+      ! polarization-independent (Q_ext(2) = Q_ext(3)), so the birefringence
+      ! 0.5*(qre(3)-qre(2)) vanishes.  This is a documented approximation valid
+      ! in the x > 50 region, which carries negligible astrodust weight.
+      real(wp), optional, intent(out) :: qre_ori(:)
       real(wp) :: x, qabs
       real(wp) :: qe_o(3), qa_o(3)
       complex(wp) :: m
@@ -300,6 +324,8 @@ contains
          if (present(qabs_ori)) qabs_ori(1:3) = qa_o
          if (present(qsca_ori)) qsca_ori(1:3) = qe_o - qa_o
       end if
+      ! Birefringence vanishes at geometric-optics order (see declaration).
+      if (present(qre_ori)) qre_ori(1:3) = 0.0_wp
    end subroutine geometric_optics_limit
 
 

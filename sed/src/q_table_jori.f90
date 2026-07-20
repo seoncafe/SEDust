@@ -7,9 +7,12 @@ module q_table_jori_mod
    !
    !   12 header lines, then free-format values in the order
    !     ((Q(jw,jr,jori), jw=0,1128), jr=0,168), jori=1,3
-   !   written once for Q_ext, once for Q_abs, once for Q_sca.
-   !   On disk each record holds the 169 sizes of one (jw, jori) pair, so
-   !   the stream is read as 3 quantities x 3 orientations x 1129 records.
+   !   written once for Q_ext, once for Q_abs, once for Q_sca, and
+   !   optionally a 4th time for Q_re (the real-part forward-amplitude twin
+   !   of Q_ext).  On disk each record holds the 169 sizes of one (jw, jori)
+   !   pair, so the stream is read as 3 (or 4) quantities x 3 orientations
+   !   x 1129 records.  A 3-block table without Q_re still loads: has_bir is
+   !   then .false. and qbir_ext is left unallocated.
    !
    !   jori=1: k || a          (a = spheroid symmetry axis)
    !   jori=2: k perp a, E || a
@@ -25,6 +28,11 @@ module q_table_jori_mod
    !
    !   Q_pol = 0.5 * (Q(jori=3) - Q(jori=2))      polarization cross section
    !   Q_ran = (Q(1) + Q(2) + Q(3)) / 3           random-orientation average
+   !
+   ! and, when the optional Q_re block is present (has_bir = .true.),
+   !
+   !   Q_bir = 0.5 * (Q_re(jori=3) - Q_re(jori=2))  birefringence (U<->V phase
+   !                                                retardation on propagation)
    !
    ! and a cross section follows from C = Q * pi * a_eff^2 with a_eff in cm.
    !
@@ -43,6 +51,7 @@ module q_table_jori_mod
    public :: load_q_table_jori, falign_hd23, falign_powerlaw
    public :: nj_lam, nj_aeff, lam_j, aeff_j
    public :: qpol_ext, qpol_abs, qran_ext, qran_abs, qran_sca
+   public :: qbir_ext, has_bir
    public :: A_ALIGN, ALPHA_ALIGN, FMAX_ALIGN
 
    integer, parameter :: wp = real64
@@ -65,6 +74,11 @@ module q_table_jori_mod
    real(wp), allocatable :: qext_j(:,:,:), qabs_j(:,:,:), qsca_j(:,:,:)  ! (NLAM, NA, 3)
    real(wp), allocatable :: qpol_ext(:,:), qpol_abs(:,:)       ! (NLAM, NA)
    real(wp), allocatable :: qran_ext(:,:), qran_abs(:,:), qran_sca(:,:)
+   ! Birefringence 0.5*(Q_re(jori=3)-Q_re(jori=2)), formed from the optional
+   ! 4th (Q_re) block when present.  has_bir is .false. for an older 3-block
+   ! table, in which case qbir_ext is left unallocated.
+   real(wp), allocatable :: qbir_ext(:,:)                      ! (NLAM, NA)
+   logical  :: has_bir = .false.
 
 contains
 
@@ -117,6 +131,7 @@ contains
       logical  :: gz, sub_ok
       real(wp) :: xextra
       real(wp), allocatable :: row(:)
+      real(wp), allocatable :: qre_j(:,:,:)      ! (NLAM, NA, 3), optional 4th block
       character(len=512)    :: read_path, line
 
       if (present(ok)) ok = .true.
@@ -222,7 +237,49 @@ contains
          end do
       end do
 
-      ! Reject a file that carries more than the expected payload.
+      ! ---- optional 4th block: Q_re (birefringence twin) -------------
+      ! A 4-block table carries a further Q_re block in the same
+      ! (jori, jw) nesting; its real-part forward amplitude gives the
+      ! birefringence 0.5*(Qre3-Qre2).  An older 3-block table hits EOF right
+      ! here: leave qbir_ext unallocated and has_bir = .false.
+      read(u,*,iostat=ios) row(1:nj_aeff)
+      if (is_iostat_end(ios)) then
+         has_bir = .false.
+      else if (ios /= 0) then
+         close(u);  call discard_scratch_copy(gz, trim(read_path))
+         call bail('read error probing the Q_re block')
+         return
+      else
+         allocate(qre_j(nj_lam, nj_aeff, NORI))
+         ! The record just read is (jori = 1, jw = 1).
+         if (.not. row_is_finite(row, nj_aeff)) then
+            close(u);  call discard_scratch_copy(gz, trim(read_path))
+            call bail('non-finite Q_re value')
+            return
+         end if
+         qre_j(1, :, 1) = row(1:nj_aeff)
+         do jori = 1, NORI
+            do jw = 1, nj_lam
+               if (jori == 1 .and. jw == 1) cycle
+               read(u,*,iostat=ios) row(1:nj_aeff)
+               if (ios /= 0) then
+                  close(u);  call discard_scratch_copy(gz, trim(read_path))
+                  call bail('read error in Q_re block')
+                  return
+               end if
+               if (.not. row_is_finite(row, nj_aeff)) then
+                  close(u);  call discard_scratch_copy(gz, trim(read_path))
+                  call bail('non-finite Q_re value')
+                  return
+               end if
+               qre_j(jw, :, jori) = row(1:nj_aeff)
+            end do
+         end do
+         has_bir = .true.
+      end if
+
+      ! Reject a file that carries more than the expected payload, checked after
+      ! whichever block was last (the 3rd for an old table, the 4th otherwise).
       read(u,*,iostat=ios) xextra
       if (ios == 0) then
          close(u);  call discard_scratch_copy(gz, trim(read_path))
@@ -239,9 +296,15 @@ contains
       qran_abs = (qabs_j(:,:,1) + qabs_j(:,:,2) + qabs_j(:,:,3)) / 3.0_wp
       qran_sca = (qsca_j(:,:,1) + qsca_j(:,:,2) + qsca_j(:,:,3)) / 3.0_wp
 
-      ! The three orientations enter the optics only through Q_pol and Q_ran,
-      ! so once those are formed the orientation-resolved table is spent and
-      ! its ~13.7 MB are returned here rather than at unload.
+      if (has_bir) then
+         allocate(qbir_ext(nj_lam, nj_aeff))
+         qbir_ext = 0.5_wp * (qre_j(:,:,3) - qre_j(:,:,2))
+         deallocate(qre_j)
+      end if
+
+      ! The three orientations enter the optics only through Q_pol, Q_ran and
+      ! the birefringence, so once those are formed the orientation-resolved
+      ! table is spent and its ~13.7 MB are returned here rather than at unload.
       if (allocated(qext_j)) deallocate(qext_j)
       if (allocated(qabs_j)) deallocate(qabs_j)
       if (allocated(qsca_j)) deallocate(qsca_j)
@@ -262,6 +325,20 @@ contains
          end if
       end subroutine bail
 
+      logical function row_is_finite(v, n)
+         ! .true. iff v(1:n) are all finite.
+         real(wp), intent(in) :: v(:)
+         integer,  intent(in) :: n
+         integer :: k
+         row_is_finite = .true.
+         do k = 1, n
+            if (.not. ieee_is_finite(v(k))) then
+               row_is_finite = .false.
+               return
+            end if
+         end do
+      end function row_is_finite
+
    end subroutine load_q_table_jori
 
 
@@ -277,6 +354,8 @@ contains
       if (allocated(qran_ext)) deallocate(qran_ext)
       if (allocated(qran_abs)) deallocate(qran_abs)
       if (allocated(qran_sca)) deallocate(qran_sca)
+      if (allocated(qbir_ext)) deallocate(qbir_ext)
+      has_bir = .false.
       nj_lam = 0;  nj_aeff = 0
    end subroutine free_state
 

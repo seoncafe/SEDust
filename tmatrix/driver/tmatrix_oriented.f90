@@ -75,7 +75,7 @@ module tmatrix_oriented
 contains
 
    subroutine oriented_cross_sections(a_eff, lam, m, eps_ba, np, ddelt, ndgs, &
-                                      qext_ori, qabs_ori, qsca_ori, flag)
+                                      qext_ori, qabs_ori, qsca_ori, flag, qre_ori)
       ! First-principles direct computation of the orientation-resolved optics
       ! Q_ext, Q_abs, Q_sca (jori = 1, 2, 3) of one astrodust spheroid at one
       ! (a_eff, lambda) node.  It selects the physical regime from the size
@@ -122,11 +122,17 @@ contains
       !                20    geometric-optics (large-x) limit
       !                IERR+10   T-matrix IERR /= 0, x < 1  -> Rayleigh fallback
       !                IERR+20   T-matrix IERR /= 0, x >= 1 -> geometric optics
+      !   qre_ori(3)  optional birefringence twin of extinction: the REAL part
+      !               of the forward-amplitude response whose imaginary part
+      !               gives Q_ext.  0.5*(qre(3)-qre(2)) is the birefringence
+      !               (U<->V phase retardation), the real-part analog of the
+      !               polarized extinction 0.5*(qext(3)-qext(2)).
       real(wp),    intent(in)  :: a_eff, lam, eps_ba, ddelt
       complex(wp), intent(in)  :: m
       integer,     intent(in)  :: np, ndgs
       real(wp),    intent(out) :: qext_ori(3), qabs_ori(3), qsca_ori(3)
       integer,     intent(out) :: flag
+      real(wp),    intent(out), optional :: qre_ori(3)
 
       real(wp), parameter :: PI = acos(-1.0_wp)
       real(wp) :: x, n_r, k_i
@@ -139,23 +145,27 @@ contains
 
       if (x < X_SMALL) then
          call rayleigh_limit(a_eff, lam, n_r, k_i, eps_ba, qext, qsca, walb, asymm, &
-                             qext_ori=qext_ori, qabs_ori=qabs_ori, qsca_ori=qsca_ori)
+                             qext_ori=qext_ori, qabs_ori=qabs_ori, qsca_ori=qsca_ori, &
+                             qre_ori=qre_ori)
          flag = 10
       else if (x > X_LARGE) then
          call geometric_optics_limit(a_eff, lam, n_r, k_i, eps_ba, qext, qsca, walb, asymm, &
-                             qext_ori=qext_ori, qabs_ori=qabs_ori, qsca_ori=qsca_ori)
+                             qext_ori=qext_ori, qabs_ori=qabs_ori, qsca_ori=qsca_ori, &
+                             qre_ori=qre_ori)
          flag = 20
       else
          call tmatrix_oriented_cross(a_eff, lam, m, eps_ba, np, ddelt, ndgs, &
-                                     qext_ori, qsca_ori, qabs_ori, ierr)
+                                     qext_ori, qsca_ori, qabs_ori, ierr, qre_ori=qre_ori)
          if (ierr /= 0) then
             if (x < 1.0_wp) then
                call rayleigh_limit(a_eff, lam, n_r, k_i, eps_ba, qext, qsca, walb, asymm, &
-                                   qext_ori=qext_ori, qabs_ori=qabs_ori, qsca_ori=qsca_ori)
+                                   qext_ori=qext_ori, qabs_ori=qabs_ori, qsca_ori=qsca_ori, &
+                                   qre_ori=qre_ori)
                flag = ierr + 10
             else
                call geometric_optics_limit(a_eff, lam, n_r, k_i, eps_ba, qext, qsca, walb, asymm, &
-                                   qext_ori=qext_ori, qabs_ori=qabs_ori, qsca_ori=qsca_ori)
+                                   qext_ori=qext_ori, qabs_ori=qabs_ori, qsca_ori=qsca_ori, &
+                                   qre_ori=qre_ori)
                flag = ierr + 20
             end if
          else
@@ -230,7 +240,7 @@ contains
 
 
    subroutine tmatrix_oriented_cross(a_eff, lam, m, eps_ba, np, ddelt, ndgs, &
-                                     qext_ori, qsca_ori, qabs_ori, ierr, qmult)
+                                     qext_ori, qsca_ori, qabs_ori, ierr, qre_ori, qmult)
       ! Orientation-resolved extinction, scattering, and absorption cross
       ! sections in the T-matrix regime.  One T-matrix solve is shared: the
       ! extinction comes from the forward-amplitude optical theorem (exactly
@@ -251,12 +261,18 @@ contains
       ! OUTPUT
       !   qext_ori(3), qsca_ori(3), qabs_ori(3)  Q = C/(pi a_eff^2), jori index
       !   ierr        status from TMD_ONE_SCATMAT (0 = converged); on nonzero
-      !               return all three arrays are left at 0
+      !               return all arrays are left at 0
+      !   qre_ori(3)  optional birefringence twin of qext_ori: the REAL part of
+      !               the SAME forward amplitude used for extinction, with the
+      !               same optical-theorem prefactor cext_fac = 4 pi / k.  No
+      !               extra AMPL call -- it reads real() of the vv/hh already
+      !               evaluated for qext_ori.
       real(wp),    intent(in)  :: a_eff, lam, eps_ba, ddelt
       complex(wp), intent(in)  :: m
       integer,     intent(in)  :: np, ndgs
       real(wp),    intent(out) :: qext_ori(3), qsca_ori(3), qabs_ori(3)
       integer,     intent(out) :: ierr
+      real(wp),    intent(out), optional :: qre_ori(3)
       integer,     intent(in), optional :: qmult
 
       integer, parameter :: NPL = 201            ! matches tmd.par.f (NPN2+1)
@@ -272,6 +288,7 @@ contains
       external :: tmd_one_scatmat, ampl
 
       qext_ori = 0.0_wp;  qsca_ori = 0.0_wp;  qabs_ori = 0.0_wp
+      if (present(qre_ori)) qre_ori = 0.0_wp
       mult = 1
       if (present(qmult)) mult = max(1, qmult)
 
@@ -286,14 +303,21 @@ contains
       cext_fac = 2.0_wp * lam                    ! optical-theorem 4 pi / k
       area     = PI * a_eff * a_eff
 
-      ! Extinction: forward-amplitude optical theorem, per jori.
+      ! Extinction: forward-amplitude optical theorem, per jori.  The real part
+      ! of the same forward amplitude gives the birefringence twin qre_ori,
+      ! read off here with no extra AMPL call.
       call ampl(nmax_tm, lam, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
                 0.0_wp, 0.0_wp, vv, vh, hv, hh)
       qext_ori(1) = cext_fac * aimag(vv) / area
+      if (present(qre_ori)) qre_ori(1) = cext_fac * real(vv, kind=wp) / area
       call ampl(nmax_tm, lam, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
                 0.0_wp, 90.0_wp, vv, vh, hv, hh)
       qext_ori(2) = cext_fac * aimag(vv) / area
       qext_ori(3) = cext_fac * aimag(hh) / area
+      if (present(qre_ori)) then
+         qre_ori(2) = cext_fac * real(vv, kind=wp) / area
+         qre_ori(3) = cext_fac * real(hh, kind=wp) / area
+      end if
 
       ! Scattering: integrate the fixed-orientation phase matrix.  BETA = 0
       ! gives jori=1 (V incidence); BETA = 90 gives jori=2 (V) and jori=3 (H).

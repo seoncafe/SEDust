@@ -56,6 +56,8 @@ SRC_CMP3 = $(SRC_COMM) driver/tmatrix_oriented.f90 \
            driver/compare_tmatrix_abs.f90
 SRC_CMP4 = $(SRC_COMM) driver/tmatrix_oriented.f90 \
            driver/compare_go_jori.f90
+SRC_CMP5 = $(SRC_COMM) driver/tmatrix_oriented.f90 \
+           driver/compare_birefringence.f90
 
 all: run_tmatrix.x run_scatmat.x run_q_jori.x
 
@@ -129,12 +131,24 @@ compare_go_jori.x: $(SRC_TM) $(SRC_CMP4)
 	@echo 'Built: ./compare_go_jori.x'
 	@echo 'Run:   ./compare_go_jori.x'
 
+# Birefringence certification: the real part of the forward-amplitude
+# difference (circular-polarization optic) reconstructed from the T-matrix,
+# checked internally against the imaginary part by Kramers-Kronig, plus the
+# Rayleigh-analytic, continuity, and stored-precision anchors.
+compare_birefringence.x: $(SRC_TM) $(SRC_CMP5)
+	@mkdir -p build/cmp5
+	$(FC) $(FFLAGS) -Isrc -Jbuild/cmp5 $^ $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./compare_birefringence.x'
+	@echo 'Run:   ./compare_birefringence.x'
+
 clean:
 	rm -f *.o *.mod
 	rm -rf build
 
 cleanall: clean
 	rm -f run_tmatrix.x run_scatmat.x run_q_jori.x compare_rayleigh_jori.x \
-	      compare_tmatrix_jori.x compare_tmatrix_abs.x compare_go_jori.x
+	      compare_tmatrix_jori.x compare_tmatrix_abs.x compare_go_jori.x \
+	      compare_birefringence.x
 
 .PHONY: all clean cleanall
