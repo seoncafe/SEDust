@@ -82,3 +82,9 @@ cleanall: clean
 	      output/mc_sed_*.dat output/pT_compare_*.dat
 
 .PHONY: all clean cleanall
+
+# Every executable recipe compiles the shared module sources into this
+# directory, so concurrent targets race on the same .mod files (make -j fails
+# with .mod0 rename errors). Serialize until the build uses one object/module
+# graph in a separate directory.
+.NOTPARALLEL:

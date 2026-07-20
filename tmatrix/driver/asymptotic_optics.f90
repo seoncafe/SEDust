@@ -1,35 +1,34 @@
-module fallback
-   ! Convergence-failure fallbacks for the T-matrix sweep.
+module asymptotic_optics
+   ! Closed-form asymptotic limits of the optical response of a spheroid,
+   ! covering the two size-parameter regimes in which the random-orientation
+   ! T-matrix solver is either unnecessary or unreliable.
+   ! x = 2 pi a_eff / lambda throughout.
    !
-   ! Two regimes the random-orientation T-matrix solver does not handle
-   ! reliably:
-   !
-   !   - small  x = 2 pi a_eff / lambda  (x < x_small_lim, default 0.1):
+   !   - rayleigh_limit, valid for x << 1 (used for x < 0.1):
    !       Rayleigh-limit polarizability for an oblate/prolate spheroid,
    !       random-orientation averaged, following Draine (1992).
    !       Closes a ~6% systematic vs HD23 release at
    !       long wavelengths that an isotropic Mie sphere would leave open.
    !
-   !   - large x (x > x_large_lim, default 50):
-   !       geometric-optics limit. Q_ext -> 2 and Q_abs = 1 - exp(-4 k x),
+   !   - geometric_optics_limit, valid for x >> 1 (used for x > 50):
+   !       Q_ext -> 2 and Q_abs = 1 - exp(-4 k x),
    !       Q_sca = Q_ext - Q_abs, g approximately 0 (no preferred direction
    !       for randomly oriented large opaque grains in the GO limit; this
    !       is a deliberate over-simplification, justified by the fact that
    !       the FIR/sub-mm SED has J_lambda ~ 0 here so cross-section
    !       errors do not propagate to the final SED).
    !
-   ! Both fallbacks return a single set of Q_ext, Q_sca, albedo, g and a
-   ! flag value identifying which fallback was used.
+   ! Both return a single set of Q_ext, Q_sca, albedo, g.
 
    use, intrinsic :: iso_fortran_env, only: real64
    use constants, only: wp
    implicit none
    private
-   public :: fallback_small_x, fallback_large_x
+   public :: rayleigh_limit, geometric_optics_limit
 
 contains
 
-   subroutine fallback_small_x(a_eff, lam, n_r, k_i, eps_ba, qext, qsca, walb, asymm)
+   subroutine rayleigh_limit(a_eff, lam, n_r, k_i, eps_ba, qext, qsca, walb, asymm)
       ! Spheroid Rayleigh polarizability + random-orientation average.
       ! Follows Draine (1992), in F90 / double precision.
       !
@@ -91,10 +90,10 @@ contains
       qext = qabs + qsca
       walb = qsca / qext
       asymm = 0.0_wp
-   end subroutine fallback_small_x
+   end subroutine rayleigh_limit
 
 
-   subroutine fallback_large_x(a_eff, lam, n_r, k_i, qext, qsca, walb, asymm)
+   subroutine geometric_optics_limit(a_eff, lam, n_r, k_i, qext, qsca, walb, asymm)
       ! Geometric-optics limit. Q_ext = 2 (extinction paradox), and
       ! Q_abs from a single chord through a sphere of radius a_eff:
       !     Q_abs = 1 - exp(-4 k x), with k = Im(m), x = 2 pi a / lambda.
@@ -105,7 +104,7 @@ contains
       real(wp) :: x, qabs
       real(wp), parameter :: PI = acos(-1.0_wp)
       ! n_r is unused in this crude approximation; included in the
-      ! signature for symmetry with fallback_small_x and to allow a
+      ! signature for symmetry with rayleigh_limit and to allow a
       ! future refinement (Fresnel-based reflection / refraction).
       associate (dummy => n_r); end associate
       x = 2.0_wp * PI * a_eff / lam
@@ -114,6 +113,6 @@ contains
       qsca = qext - qabs
       walb = qsca / qext
       asymm = 0.0_wp
-   end subroutine fallback_large_x
+   end subroutine geometric_optics_limit
 
-end module fallback
+end module asymptotic_optics

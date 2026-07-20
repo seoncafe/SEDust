@@ -264,6 +264,54 @@ nonzero value only names the failing stage: the contract is simply
 \end{itemize}
 
 %====================================================================
+\section{Computing extinction}\label{sec:ext}
+
+\code{dust\_extinction} is the extinction counterpart of \code{dust\_emission}:
+a transfer code takes its opacity from the same model object, and on the same
+wavelength grid \code{m\%lam}, as its emission.
+
+\begin{lstlisting}
+call dust_extinction(m, Cext, Cabs, Csca [, gbar] [, status])
+\end{lstlisting}
+\begin{itemize}
+\item \code{Cext}, \code{Cabs}, \code{Csca} \code{(m\%NLAM)}: extinction,
+      absorption and scattering cross sections per H atom [\,cm$^2$/H\,], with
+      $C_{\rm ext} = C_{\rm abs} + C_{\rm sca}$.
+\item \code{gbar(m\%NLAM)} (optional): the scattering-weighted asymmetry
+      $\langle\cos\theta\rangle$, and $0$ where nothing scatters.
+\item \code{status} (optional): error report; see \S\ref{sec:status}.
+      It is $0$ on success and $1$ if an output array is not of size
+      \code{m\%NLAM}.
+\end{itemize}
+
+\noindent Each output is the plain binned sum over every population of the
+model, since ${\rm d}n(a)$ already carries the bin width:
+\begin{align*}
+C_{\rm abs}(\lambda) &= \sum_{\rm pop}\sum_a {\rm d}n(a)\,C_{\rm abs}(\lambda,a), \\
+C_{\rm sca}(\lambda) &= \sum_{\rm pop}\sum_a {\rm d}n(a)\,C_{\rm sca}(\lambda,a), \\
+\langle\cos\theta\rangle &= \frac{\sum {\rm d}n\,C_{\rm sca}\,g}{\sum {\rm d}n\,C_{\rm sca}}.
+\end{align*}
+A population that carries no scattering optics contributes zero to those terms.
+In the astrodust model the PAHs are exactly that case: they enter through
+absorption only, and the astrodust grains carry all the scattering and the
+asymmetry.
+
+The values agree with the corresponding columns of
+\code{data/kext\_astrodust\_MW.dat} to the precision with which that file is
+written (the cross sections to a few parts in $10^{8}$; the albedo and
+$\langle\cos\theta\rangle$ to the file's six written decimals), because both
+evaluate the same size integral over the same optics. The difference is that
+the accessor returns the result on \code{m\%lam} directly, so a host using its
+own wavelength grid need not interpolate off the grid the driver happened to
+write.
+
+\paragraph{Astrodust only for scattering.} \code{build\_dl07},
+\code{build\_zubko} and \code{build\_from\_files} do not populate the
+extinction-side scattering optics, so for those models \code{Csca} and
+\code{gbar} come back as zeros while \code{Cabs} (and hence \code{Cext}) is
+still the correct absorption sum.
+
+%====================================================================
 \section{The model object and accessors}
 
 \begin{lstlisting}

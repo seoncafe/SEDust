@@ -15,6 +15,8 @@ module dust_model_mod
    !   T_first  [K]       temperature grid (NT)
    !   dn       [1/H]     number of grains per H atom in each size bin (NA)
    !   Cabs/Csca[cm^2]    absorption/scattering cross section (NLAM, NA)
+   !   gsca               scattering asymmetry <cos> (NLAM, NA), read only by
+   !                      dust_extinction
    !   kappB    [..]      Planck-integral table used by calc_P/calc_Teq (NT, NA)
    !   H        [erg]     grain enthalpy (NT, NA)
    !   kappCMB  [..]      CMB-pumped term for calc_P (NA)
@@ -32,6 +34,10 @@ module dust_model_mod
       real(wp), allocatable :: aeff(:)              ! (NA) [um] effective-radius grid
       real(wp), allocatable :: dn(:)                ! (NA)
       real(wp), allocatable :: Cabs(:,:), Csca(:,:) ! (NLAM, NA)
+      ! Scattering asymmetry <cos>, read only by dust_extinction. Left
+      ! unallocated for a population that does not scatter (the PAHs), which is
+      ! how the extinction size integral recognizes a zero contribution.
+      real(wp), allocatable :: gsca(:,:)            ! (NLAM, NA) scattering asymmetry <cos>
       real(wp), allocatable :: kappB(:,:), log_kappB(:,:)   ! (NT, NA)
       real(wp), allocatable :: H(:,:),     log_H(:,:)       ! (NT, NA)
       real(wp), allocatable :: kappCMB(:)           ! (NA)
@@ -82,6 +88,7 @@ contains
       if (allocated(p%dn))        deallocate(p%dn)
       if (allocated(p%Cabs))      deallocate(p%Cabs)
       if (allocated(p%Csca))      deallocate(p%Csca)
+      if (allocated(p%gsca))      deallocate(p%gsca)
       if (allocated(p%kappB))     deallocate(p%kappB)
       if (allocated(p%log_kappB)) deallocate(p%log_kappB)
       if (allocated(p%H))         deallocate(p%H)

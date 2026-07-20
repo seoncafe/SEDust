@@ -2,10 +2,10 @@
 #
 # Builds run_tmatrix.x by linking:
 #   src/tmd_one.f            TMD_ONE wrapper + Mishchenko inner subroutines
-#   src/lpd.f                bundled LAPACK
+#   src/lpd.f                LAPACK routines
 #   ../sed/src/constants.f90 working precision
 #   driver/read_index.f90    dielectric-function reader
-#   driver/fallback.f90      analytic Rayleigh / geometric-optics limits
+#   driver/asymptotic_optics.f90  analytic Rayleigh / geometric-optics limits
 #   driver/run_tmatrix.f90   driver
 #
 # Run:
@@ -39,7 +39,7 @@ endif
 
 SRC_TM  = src/tmd_one.f src/lpd.f
 SRC_F90 = ../sed/src/constants.f90 \
-          driver/read_index.f90 driver/fallback.f90 driver/run_tmatrix.f90
+          driver/read_index.f90 driver/asymptotic_optics.f90 driver/run_tmatrix.f90
 
 run_tmatrix.x: $(SRC_TM) $(SRC_F90)
 	$(FC) $(FFLAGS) -Isrc $^ $(LDFLAGS) -o $@

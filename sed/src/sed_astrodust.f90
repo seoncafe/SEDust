@@ -28,7 +28,8 @@ module sed_astrodust_mod
    use q_table_mod,           only: load_q_table, &
                                     qt_n_lam=>n_lam, qt_n_aeff=>n_aeff, &
                                     qt_lam=>lam_t, qt_aeff=>aeff_t, &
-                                    qt_qext=>qext, qt_qabs=>qabs, qt_qsca=>qsca
+                                    qt_qext=>qext, qt_qabs=>qabs, qt_qsca=>qsca, &
+                                    qt_gpar=>gpar
    use size_dist_mod,         only: load_size_dist, sd_n=>n_size, &
                                     sd_aeff=>a_dist, sd_dn=>dn_ad, &
                                     sd_dn_pah=>dn_pah, sd_fion=>f_ion
@@ -52,10 +53,10 @@ module sed_astrodust_mod
    public :: sed_init_dl07, sed_solve_dl07
    ! Model-agnostic library API (path B: wraps the untouched solver core).
    public :: dust_model_t, build_astrodust, build_dl07, build_zubko, dust_emission
-   public :: build_from_files, dust_emission_single_teq
+   public :: build_from_files, dust_emission_single_teq, dust_extinction
    public :: NLAM, NA, NT, lam, aeff, T_first, dn_ad, dn_pah, initialized
    ! Exposed so that external drivers can cross-check the optics:
-   public :: Cabs, Csca, Cabs_pah, kappB_first, kappB_pah_first
+   public :: Cabs, Csca, gsca_ad, Cabs_pah, kappB_first, kappB_pah_first
    ! Charge-resolved PAH cross sections and number densities (neutral/cation),
    ! exposed so the MC SED builder can reproduce the same charge blend as
    ! the production sed_solve_pah (it loops both charge states).
@@ -120,6 +121,11 @@ module sed_astrodust_mod
    real(wp), allocatable :: dn_ad(:)            ! [1/H per bin] (NA)
    real(wp), allocatable :: Cabs(:,:)           ! [cm^2] (NLAM, NA)
    real(wp), allocatable :: Csca(:,:)           ! [cm^2] (NLAM, NA)
+   ! Scattering asymmetry <cos> of the astrodust grains, taken from the same
+   ! T-matrix Q table as Cabs/Csca and interpolated onto the size grid the same
+   ! way. Only the extinction path (dust_extinction) uses it; the emission
+   ! solver never needs it. Allocated by sed_init, dropped by sed_init_dl07.
+   real(wp), allocatable :: gsca_ad(:,:)        ! (NLAM, NA)
    real(wp), allocatable :: kappB_first(:,:)    ! integral C_abs * B_lam dlam (NT, NA), wide grid
    real(wp), allocatable :: H_first(:,:,:)      ! enthalpy U(T, a, stage) (NT, NA, 2), wide grid
    real(wp), allocatable :: kappCMB(:)          ! 2.9 K CMB integral (NA)
@@ -234,6 +240,10 @@ contains
       allocate(lam(NLAM), aeff(NA), T_first(NT), dn_ad(NA))
       allocate(Cabs(NLAM, NA), Csca(NLAM, NA), kappB_first(NT, NA), &
                H_first(NT, NA, NSTAGE), kappCMB(NA))
+      ! Astrodust asymmetry table, allocated under its own guard because
+      ! sed_init_dl07 drops it independently of the lam-guarded arrays above.
+      if (allocated(gsca_ad)) deallocate(gsca_ad)
+      allocate(gsca_ad(NLAM, NA))
       allocate(log_T_first(NT), log_H_first(NT, NA, NSTAGE), &
                log_kappB_first(NT, NA))
       allocate(dn_pah(NA), Cabs_pah(NLAM, NA), kappB_pah_first(NT, NA), &
@@ -272,6 +282,9 @@ contains
          x = log(a_um)
          call interp_q_grid(x, qt_aeff, qt_qabs, Cabs(:, ja))
          call interp_q_grid(x, qt_aeff, qt_qsca, Csca(:, ja))
+         ! Asymmetry <cos> comes from the same table on the same grid, but it
+         ! is already dimensionless -- no pi a^2 conversion.
+         call interp_q_grid(x, qt_aeff, qt_gpar, gsca_ad(:, ja))
          ! Convert Q -> C: C = pi * (a_cm)^2 * Q
          Cabs(:, ja) = Cabs(:, ja) * PI * (a_um * UM2CM)**2
          Csca(:, ja) = Csca(:, ja) * PI * (a_um * UM2CM)**2
@@ -513,6 +526,9 @@ contains
             log_T_first, log_H_first, log_kappB_first, &
             dn_pah, Cabs_pah, kappB_pah_first, H_pah_first, kappCMB_pah, &
             log_H_pah_first, log_kappB_pah_first)
+      ! DL07 optics carry no astrodust asymmetry table; drop anything a previous
+      ! astrodust init left behind rather than leave a stale array on the wrong grid.
+      if (allocated(gsca_ad)) deallocate(gsca_ad)
       allocate(lam(NLAM), aeff(NA), T_first(NT), dn_ad(NA))
       allocate(Cabs(NLAM, NA), Csca(NLAM, NA), kappB_first(NT, NA), &
                H_first(NT, NA, NSTAGE), kappCMB(NA))
@@ -1551,13 +1567,18 @@ contains
 
    ! Copy one population's arrays (from the module globals) into a grain_pop_t.
    subroutine set_pop(p, gtype, chan, dn_in, Cabs_in, kappB_in, H_in, &
-                      log_H_in, log_kappB_in, kappCMB_in)
+                      log_H_in, log_kappB_in, kappCMB_in, Csca_in, gsca_in)
       type(grain_pop_t), intent(inout) :: p
       character(len=*),  intent(in)    :: gtype
       integer,           intent(in)    :: chan
       real(wp),          intent(in)    :: dn_in(:), kappCMB_in(:)
       real(wp),          intent(in)    :: Cabs_in(:,:), kappB_in(:,:), H_in(:,:)
       real(wp),          intent(in)    :: log_H_in(:,:), log_kappB_in(:,:)
+      ! Extinction-side optics, read only by dust_extinction. Each is optional
+      ! and independent: a population that does not scatter (the PAHs) simply
+      ! leaves them out and contributes zero to those terms of the size integral.
+      ! The emission path never touches them.
+      real(wp), optional, intent(in)   :: Csca_in(:,:), gsca_in(:,:)
       p%grain_type = gtype
       p%out_channel = chan
       p%aeff      = aeff          ! [um] module-global size grid (set by sed_init)
@@ -1568,6 +1589,8 @@ contains
       p%log_H     = log_H_in
       p%log_kappB = log_kappB_in
       p%kappCMB   = kappCMB_in
+      if (present(Csca_in)) p%Csca = Csca_in
+      if (present(gsca_in)) p%gsca = gsca_in
    end subroutine set_pop
 
 
@@ -1608,8 +1631,11 @@ contains
       m%channel_name = [character(len=16):: 'AD', 'PAH']
 
       allocate(m%pops(3))
+      ! The astrodust grains carry all the scattering, so Csca / gsca go to this
+      ! population alone; the PAHs enter dust_extinction through absorption only.
       call set_pop(m%pops(1), 'sil', 1, dn_ad, Cabs, kappB_first, H_first(:,:,2), &
-                   log_H_first(:,:,2), log_kappB_first, kappCMB)
+                   log_H_first(:,:,2), log_kappB_first, kappCMB, &
+                   Csca_in=Csca, gsca_in=gsca_ad)
       call set_pop(m%pops(2), 'pah', 2, dn_cneu, Cabs_cneu, kappB_cneu, H_pah_first, &
                    log_H_pah_first, log_kappB_cneu, kappCMB_cneu)
       call set_pop(m%pops(3), 'pah', 2, dn_cion, Cabs_cion, kappB_cion, H_pah_first, &
@@ -2213,6 +2239,88 @@ contains
       if (present(lamI_chan)) lamI_chan = Jchan
       deallocate(Jout_pop, Jchan)
    end subroutine dust_emission
+
+
+   ! Size-distribution-integrated extinction of the (active) model m, per H
+   ! atom. This is the extinction twin of dust_emission: an RT host gets its
+   ! opacity from the same model object it gets its emission from, on the
+   ! model's own wavelength grid, instead of parsing a precomputed table.
+   !
+   ! The size integral is the plain binned sum over each population, because
+   ! dn(a) already carries the bin width:
+   !   C_abs/H  = sum_pop sum_a dn(a) * Cabs(lambda, a)
+   !   C_sca/H  = sum_pop sum_a dn(a) * Csca(lambda, a)
+   !   C_ext/H  = C_abs/H + C_sca/H
+   !   <cos>    = sum dn * Csca * g  /  sum dn * Csca      (scattering-weighted)
+   ! A population whose Csca / gsca are unallocated contributes zero to those
+   ! terms; in the astrodust model the PAHs are exactly that case, so they enter
+   ! through absorption only and the astrodust grains carry all the scattering.
+   !
+   ! Units: all cross sections [cm^2/H]; gbar dimensionless.
+   ! REQUIRES: m is the most recently built model (its grids == the globals).
+   subroutine dust_extinction(m, Cext, Cabs, Csca, gbar, status)
+      type(dust_model_t), intent(in)  :: m
+      real(wp),           intent(out) :: Cext(:), Cabs(:), Csca(:)   ! (NLAM) [cm^2/H]
+      ! Scattering-weighted asymmetry; 0 where nothing scatters.
+      real(wp), optional, intent(out) :: gbar(:)                     ! (NLAM)
+      ! Optional error report (0 = success). When present, a size mismatch is
+      ! reported through it instead of stopping the process; when absent such a
+      ! call stops the run, matching dust_emission.
+      !   status = 1  an output array is not of size m%NLAM
+      integer,  optional, intent(out) :: status
+      real(wp), allocatable :: gnum(:)
+      integer :: ip, ja, jw, na_p
+      logical :: bad
+
+      if (present(status)) status = 0
+
+      bad = size(Cext) /= m%NLAM .or. size(Cabs) /= m%NLAM .or. size(Csca) /= m%NLAM
+      if (present(gbar)) bad = bad .or. size(gbar) /= m%NLAM
+      if (bad) then
+         if (present(status)) then
+            status = 1;  return
+         else
+            write(*,'(a,i0)') 'dust_extinction: output arrays must be of size m%NLAM=', m%NLAM
+            stop 1
+         end if
+      end if
+
+      allocate(gnum(m%NLAM))
+      Cabs = 0.0_wp;  Csca = 0.0_wp;  gnum = 0.0_wp
+
+      do ip = 1, size(m%pops)
+         na_p = size(m%pops(ip)%dn)
+         do ja = 1, na_p
+            do jw = 1, m%NLAM
+               Cabs(jw) = Cabs(jw) + m%pops(ip)%dn(ja) * m%pops(ip)%Cabs(jw, ja)
+            end do
+         end do
+         if (allocated(m%pops(ip)%Csca)) then
+            do ja = 1, na_p
+               do jw = 1, m%NLAM
+                  Csca(jw) = Csca(jw) + m%pops(ip)%dn(ja) * m%pops(ip)%Csca(jw, ja)
+               end do
+            end do
+            if (allocated(m%pops(ip)%gsca)) then
+               do ja = 1, na_p
+                  do jw = 1, m%NLAM
+                     gnum(jw) = gnum(jw) + m%pops(ip)%dn(ja) &
+                                * m%pops(ip)%Csca(jw, ja) * m%pops(ip)%gsca(jw, ja)
+                  end do
+               end do
+            end if
+         end if
+      end do
+
+      Cext = Cabs + Csca
+      if (present(gbar)) then
+         gbar = 0.0_wp
+         do jw = 1, m%NLAM
+            if (Csca(jw) > 0.0_wp) gbar(jw) = gnum(jw) / Csca(jw)
+         end do
+      end if
+      deallocate(gnum)
+   end subroutine dust_extinction
 
 
    ! Option 2: a SINGLE equilibrium temperature for the WHOLE model,
