@@ -60,11 +60,109 @@ module tmatrix_oriented
 
    use, intrinsic :: iso_fortran_env, only: real64
    use constants, only: wp
+   use asymptotic_optics, only: rayleigh_limit, geometric_optics_limit
    implicit none
    private
    public :: tmatrix_oriented_ext, tmatrix_oriented_cross
+   public :: oriented_cross_sections
+
+   ! Size-parameter regime boundaries, x = 2 pi a_eff / lambda.  Identical to
+   ! the values in driver/run_tmatrix.f90 so the orientation-resolved sweep
+   ! dispatches on exactly the same thresholds as the random-orientation one.
+   real(wp), parameter :: X_SMALL = 0.1_wp    ! below: Rayleigh dipole limit
+   real(wp), parameter :: X_LARGE = 50.0_wp   ! above: geometric-optics limit
 
 contains
+
+   subroutine oriented_cross_sections(a_eff, lam, m, eps_ba, np, ddelt, ndgs, &
+                                      qext_ori, qabs_ori, qsca_ori, flag)
+      ! First-principles direct computation of the orientation-resolved optics
+      ! Q_ext, Q_abs, Q_sca (jori = 1, 2, 3) of one astrodust spheroid at one
+      ! (a_eff, lambda) node.  It selects the physical regime from the size
+      ! parameter x = 2 pi a_eff / lambda and calls the matching closed-form or
+      ! T-matrix routine, returning the pre-average cross sections that the
+      ! random-orientation average is built from:
+      !
+      !   x < 0.1        rayleigh_limit          (Rayleigh dipole polarizability)
+      !   0.1 <= x <= 50 tmatrix_oriented_cross  (T-matrix + angular integral)
+      !   x > 50         geometric_optics_limit  (projected area + Fresnel)
+      !
+      ! On a T-matrix non-convergence the result is redirected to whichever
+      ! closed-form limit x is nearer to (Rayleigh for x < 1, geometric optics
+      ! otherwise), exactly as run_tmatrix.f90 does for the random quantities.
+      !
+      ! jori convention (a = spheroid symmetry axis, from q_table_jori.f90):
+      !   jori=1: k || a          jori=2: k perp a, E || a
+      !                           jori=3: k perp a, E perp a
+      !
+      ! This is the SHARED CORE.  It is used both by the table generator
+      ! run_q_jori.f90 (which sweeps the full DH21 grid and writes the
+      ! orientation-resolved table) and for on-the-fly evaluation at an
+      ! arbitrary (a_eff, lambda), or for a shape or porosity that has no
+      ! precomputed table.
+      !
+      ! It MUST NOT be called inside a radiative-transfer loop over grid cells:
+      ! each call is a full T-matrix solve plus an angular integral, and the
+      ! Mishchenko engine keeps its state in COMMON blocks that are not
+      ! thread-safe.  The production hot path reads the precomputed table
+      ! through sed/src/q_table_jori.f90 and interpolates.
+      !
+      ! INPUT
+      !   a_eff, lam  equivalent-volume-sphere radius and wavelength [microns]
+      !   m           complex refractive index (Im >= 0 for absorption)
+      !   eps_ba      aspect ratio b/a (Mishchenko convention; > 1 oblate)
+      !   np          shape flag (-1 spheroid, -2 cylinder, >=0 Chebyshev)
+      !   ddelt       T-matrix convergence tolerance
+      !   ndgs        Gauss-quadrature multiplier for the T-matrix solve
+      ! OUTPUT
+      !   qext_ori(3), qabs_ori(3), qsca_ori(3)  Q = C/(pi a_eff^2), jori index
+      !   flag        which branch ran, mirroring run_tmatrix.f90:
+      !                 0    T-matrix converged
+      !                10    Rayleigh (small-x) limit
+      !                20    geometric-optics (large-x) limit
+      !                IERR+10   T-matrix IERR /= 0, x < 1  -> Rayleigh fallback
+      !                IERR+20   T-matrix IERR /= 0, x >= 1 -> geometric optics
+      real(wp),    intent(in)  :: a_eff, lam, eps_ba, ddelt
+      complex(wp), intent(in)  :: m
+      integer,     intent(in)  :: np, ndgs
+      real(wp),    intent(out) :: qext_ori(3), qabs_ori(3), qsca_ori(3)
+      integer,     intent(out) :: flag
+
+      real(wp), parameter :: PI = acos(-1.0_wp)
+      real(wp) :: x, n_r, k_i
+      real(wp) :: qext, qsca, walb, asymm
+      integer  :: ierr
+
+      n_r = real(m, kind=wp)
+      k_i = abs(aimag(m))
+      x   = 2.0_wp * PI * a_eff / lam
+
+      if (x < X_SMALL) then
+         call rayleigh_limit(a_eff, lam, n_r, k_i, eps_ba, qext, qsca, walb, asymm, &
+                             qext_ori=qext_ori, qabs_ori=qabs_ori, qsca_ori=qsca_ori)
+         flag = 10
+      else if (x > X_LARGE) then
+         call geometric_optics_limit(a_eff, lam, n_r, k_i, eps_ba, qext, qsca, walb, asymm, &
+                             qext_ori=qext_ori, qabs_ori=qabs_ori, qsca_ori=qsca_ori)
+         flag = 20
+      else
+         call tmatrix_oriented_cross(a_eff, lam, m, eps_ba, np, ddelt, ndgs, &
+                                     qext_ori, qsca_ori, qabs_ori, ierr)
+         if (ierr /= 0) then
+            if (x < 1.0_wp) then
+               call rayleigh_limit(a_eff, lam, n_r, k_i, eps_ba, qext, qsca, walb, asymm, &
+                                   qext_ori=qext_ori, qabs_ori=qabs_ori, qsca_ori=qsca_ori)
+               flag = ierr + 10
+            else
+               call geometric_optics_limit(a_eff, lam, n_r, k_i, eps_ba, qext, qsca, walb, asymm, &
+                                   qext_ori=qext_ori, qabs_ori=qabs_ori, qsca_ori=qsca_ori)
+               flag = ierr + 20
+            end if
+         else
+            flag = 0
+         end if
+      end if
+   end subroutine oriented_cross_sections
 
    subroutine tmatrix_oriented_ext(a_eff, lam, m, eps_ba, np, ddelt, ndgs, &
                                    qext_ori, ierr)

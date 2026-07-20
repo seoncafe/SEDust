@@ -78,7 +78,7 @@ this note \\
 \end{table}
 
 %====================================================================
-\section{The data source}
+\section{The data source}\label{sec:source}
 
 Everything polarized derives from one file, the orientation-resolved
 Draine \& Hensley (2021) astrodust spheroid table:
@@ -539,16 +539,202 @@ model, requiring its own revalidation against the extinction and emission
 constraints HD23 fit.
 
 %====================================================================
+\section{First-principles orientation-resolved optics}\label{sec:firstprinciples}
+
+The table of \S\ref{sec:source} is Draine \& Hensley's precomputed one. SEDust
+can now regenerate the same orientation-resolved cross sections from the
+astrodust dielectric function with its own T-matrix engine, so the polarized
+optics no longer have to be taken on trust from the release file. The
+random-orientation optics were already SEDust's own (the \code{q\_astrodust}
+table read by \code{q\_table}); this closes the remaining gap, the
+orientation-resolved part read by \code{q\_table\_jori}.
+
+Recall the three orientations of the incident wave relative to the spheroid
+symmetry axis $\hat a$: $\mathrm{jori}=1$ is $\mathbf{k}\parallel\hat a$;
+$\mathrm{jori}=2$ is $\mathbf{k}\perp\hat a$ with $\mathbf{E}\parallel\hat a$;
+$\mathrm{jori}=3$ is $\mathbf{k}\perp\hat a$ with $\mathbf{E}\perp\hat a$. The
+polarized and mean combinations are
+$Q_{\rm pol}=\tfrac12(Q_3-Q_2)$ and $Q_{\rm ran}=\tfrac13(Q_1+Q_2+Q_3)$.
+
+The optics are reached two ways. The \emph{table} is loaded once and
+interpolated: this is the production path, fast and safe to call from many
+threads. The \emph{direct} routine \code{oriented\_cross\_sections} computes one
+node from first principles; it is the shared core the table generator loops
+over, and it also serves an arbitrary $(a,\lambda)$ or a shape or porosity for
+which no table exists. It must not be called from inside a loop over
+radiative-transfer cells: each call is a full T-matrix solve plus an angular
+integral, and the Mishchenko routines carry their state in \code{COMMON} blocks
+and are not thread-safe.
+
+\subsection{Rayleigh regime, $x<0.1$}
+
+In the electrostatic limit the oblate spheroid has a diagonal polarizability
+$\boldsymbol\alpha=\mathrm{diag}(\alpha_a,\alpha_b,\alpha_b)$, with $\alpha_a$
+for $\mathbf{E}$ along the symmetry axis and $\alpha_b$ for $\mathbf{E}$
+transverse, set by the depolarization factors $L_a,L_b$ of the spheroid through
+$\alpha_i\propto(\varepsilon-1)/[\,1+(\varepsilon-1)L_i\,]$. Absorption and
+scattering follow as $Q_{\rm abs}\propto\mathrm{Im}\,\alpha$ and
+$Q_{\rm sca}\propto|\alpha|^2$. The three orientations sample exactly these two
+polarizabilities: $\mathrm{jori}=1$ and $3$ present the transverse $\alpha_b$
+(the field is transverse to $\hat a$ in both), $\mathrm{jori}=2$ presents
+$\alpha_a$. So the orientation-resolved cross sections are the two polarization
+components the random average $(\alpha_a+2\alpha_b)/3$ is already built from;
+extracting them before the average is analytic and exact, and $Q(\mathrm{jori}=1)$
+equals $Q(\mathrm{jori}=3)$ identically. \code{rayleigh\_limit} returns them
+through optional arguments, leaving its averaged outputs untouched.
+
+\subsection{T-matrix regime, $0.1\le x\le 50$}
+
+The T-matrix $\mathbf{T}$ is a property of the particle alone --- size, shape,
+refractive index --- independent of orientation and of the incidence and
+scattering directions. SEDust solves it once for each wavelength and radius with
+Mishchenko's \code{tmd\_one\_scatmat}. Two orientation-resolved quantities are
+then read off the same $\mathbf{T}$.
+
+\paragraph{Extinction, from the optical theorem.} Mishchenko's \code{AMPL}
+evaluates the fixed-orientation amplitude matrix
+$\mathbf{S}(\mathbf{k}\!\to\!\mathbf{k}')$ from the stored $\mathbf{T}$ for a
+particle placed at chosen Euler angles. Taking the scattering direction equal to
+the incidence direction (forward) and applying the optical theorem,
+$C_{\rm ext}=(4\pi/k)\,\mathrm{Im}\,S_{\rm fwd}$ for the incident polarization,
+gives $C_{\rm ext}$ for each orientation: the symmetry axis is placed along
+$\mathbf{k}$ ($\mathrm{jori}=1$) or across it ($\mathrm{jori}=2,3$) and the
+co-polar forward amplitude is read ($S_{\theta\theta}$ for $\mathbf{E}$ along
+$\hat\theta$, $S_{\phi\phi}$ for $\hat\phi$).
+
+\paragraph{Scattering, from the phase-matrix integral.} The same \code{AMPL},
+swept over all scattering directions at fixed incidence, gives the differential
+scattering cross section $|\mathbf{S}|^2$; the scattering cross section is its
+integral over the sphere,
+$C_{\rm sca}=\int(|S_{\theta\leftarrow p}|^2+|S_{\phi\leftarrow p}|^2)\,
+d\Omega$ for incident polarization $p$, and absorption follows by conservation,
+$C_{\rm abs}=C_{\rm ext}-C_{\rm sca}$. The fixed-orientation scattered intensity
+is a trigonometric polynomial of degree ${\sim}2N_{\max}$ in $\cos\theta$ and in
+$\phi$, so Gauss--Legendre nodes in $\cos\theta$ ($N_{\max}+2$ of them) and a
+uniform azimuth grid ($2N_{\max}+2$ points) integrate it to machine precision.
+
+\paragraph{An engine subtlety.} Mishchenko's random-orientation expansion
+\code{GSP} reuses the \code{/TMAT/} storage as scratch through an
+\code{EQUIVALENCE} and so destroys the T-matrix it reads. The amplitude
+evaluation needs that same T-matrix afterward, so \code{tmd\_one\_scatmat} keeps
+an intact copy in a second common block and restores \code{/TMAT/} after
+\code{GSP}. Without this the oriented cross sections came out as garbage
+(negative $C_{\rm ext}$). This corrects a premise stated in the planning note,
+that the converged T-matrix simply remains available after the solve.
+
+\subsection{Geometric-optics regime, $x>50$}
+
+Here the T-matrix does not converge and an asymptotic model is used. Extinction
+is the extinction paradox, $C_{\rm ext}\to 2A_{\rm proj}$, twice the geometric
+shadow. For an oblate spheroid of equatorial semi-axis $a_s$ and symmetry
+semi-axis $c$ ($a_s/c=b/a$), the shadow is $\pi a_s^2$ when $\mathbf{k}$ is along
+the symmetry axis ($\mathrm{jori}=1$) and $\pi a_s c$ when it is across
+($\mathrm{jori}=2,3$), giving $Q_{\rm ext}(1)=2(b/a)^{2/3}$ and
+$Q_{\rm ext}(2)=Q_{\rm ext}(3)=2(b/a)^{-1/3}$. The shadow depends on the
+direction of $\mathbf{k}$ relative to the axis but not on the incident
+polarization, so extinction carries no polarization at this order.
+
+The polarization in this regime is carried by absorption. In the opaque limit,
+where a refracted ray is fully absorbed --- valid when
+$\mathrm{Im}(m)\,x\gg1$ --- the absorptivity of an illuminated surface element is
+one minus its Fresnel power reflectance, and that reflectance is
+polarization-dependent ($R_s\neq R_p$ away from normal incidence). Integrating
+over the illuminated half of the spheroid,
+\[
+  C_{{\rm abs},p}=\int_{\rm illum}
+    \bigl[\,1-\bigl(|\hat e\!\cdot\!\hat s|^2 R_s(\theta_i)
+                   +|\hat e\!\cdot\!\hat p|^2 R_p(\theta_i)\bigr)\bigr]
+    \,dA_{\rm proj},
+\]
+where $\theta_i$ is the local angle of incidence and $\hat s,\hat p$ the local
+senkrecht and parallel directions. The two grain-frame polarizations
+($\hat e=\hat a$ versus $\hat e\perp\hat a$) project differently onto the local
+$\hat s,\hat p$ basis as they sweep the curved surface, and that is the whole
+source of the dichroism. A purely geometric ray treatment, with no Fresnel
+coefficients, would give no polarization at all; the surface reflectance is what
+makes the regime dichroic, and it is needed to match the release, which carries
+a real absorption dichroism there --- about $3\%$ of the mean, and
+\emph{growing} with size parameter, the wave-optics signature a ray limit cannot
+reproduce. This is a deliberate approximation, documented at the code site with
+its opaque-limit domain of validity; it would matter for a size distribution
+with large-grain weight, which the astrodust distribution does not have.
+
+\subsection{Dispatch, generation, and drop-in}
+
+\code{oriented\_cross\_sections} selects the regime by $x$ and returns the
+oriented $(Q_{\rm ext},Q_{\rm abs},Q_{\rm sca})$ for one node, with the same
+branch boundaries and fallbacks as the random-orientation driver. \code{run\_q\_jori.x}
+loops it over the DH21 grid and writes the table in the exact stream the release
+reader expects (\S\ref{sec:source}), so the result is a drop-in:
+\code{sed\_init} and \code{build\_astrodust} already take an optional
+\code{qpol\_path} that defaults to the release file, and pointing it at the
+regenerated table switches the polarized optics to SEDust's own with no code
+change. A full sweep is dominated by the T-matrix nodes (of order 16~hours on
+one core), so the driver has a wavelength-window \code{range} mode for
+process-level parallelism and a \code{merge} mode that reassembles the windows
+--- a window is not a contiguous slice of the stream, because the wavelength
+index runs innermost.
+
+\subsection{How far it has been checked}\label{sec:fpcheck}
+
+Each regime was compared node by node against the release table
+(Table~\ref{tab:fpcheck}). Across the Rayleigh and T-matrix regimes --- every
+wavelength and radius that carries astrodust weight --- the reconstruction
+matches the release to a median of a few parts in $10^4$, in both the mean and
+the polarized cross sections. The geometric-optics region agrees only coarsely,
+as an asymptotic model should: the mean absorption to about ten percent and the
+dichroism to about three-quarters of the release value, both with the correct
+sign and size-parameter trend. It joins the T-matrix continuously across $x=50$
+in sign and ordering, and it carries negligible weight in the size integral.
+
+End to end, feeding the regenerated table through \code{calc\_polext} reproduces
+the released polarized extinction to a median of $0.06\%$ over
+$\lambda\ge0.11\um$, against $0.03\%$ for the release table itself; the two agree
+with each other to a median of $0.02\%$ at the level of the observable. So the
+few-parts-in-$10^4$ reconstruction error at the level of a single cross section
+survives the size integral as a few parts in $10^4$ in the polarized extinction,
+computed entirely from the astrodust dielectric function with no recourse to the
+release optics.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{llll}
+\toprule
+Regime & $x$ & Quantity & median $|{\rm ours}/{\rm HD23}-1|$ \\
+\midrule
+Rayleigh  & $<0.1$      & $Q_{\rm ran}$ (abs) & $2.3\times10^{-4}$ \\
+          &             & $Q_{\rm pol}$ (abs) & $3.7\times10^{-4}$ \\
+T-matrix  & $0.1$--$50$ & $Q_{\rm ran}$ (ext) & $2.1\times10^{-4}$ \\
+          &             & $Q_{\rm pol}$ (ext) & $8.4\times10^{-4}$ \\
+          &             & $Q_{\rm ran}$ (abs) & $1.9\times10^{-4}$ \\
+          &             & $Q_{\rm pol}$ (abs) & $7.6\times10^{-4}$ \\
+GO        & $>50$       & $Q_{\rm ran}$ (abs) & $9.3\times10^{-2}$ \\
+          &             & $Q_{\rm pol}$ (abs) & $3.3\times10^{-1}$ \\
+\bottomrule
+\end{tabular}
+\caption{Node-by-node reconstruction against the HD23 release table. The
+geometric-optics dichroism is at $\sim0.75$ of the release with matching sign
+and trend; its size-parameter region carries no astrodust weight.}
+\label{tab:fpcheck}
+\end{table}
+
+%====================================================================
 \section{Limits and extension paths}
 
 These are limits of the published optics, not of the code.
 
-\paragraph{No circular polarization or birefringence.} The table header offers
+\paragraph{No circular polarization or birefringence.} The table stores
 $Q_{\rm ext}$, $Q_{\rm abs}$ and $Q_{\rm sca}$ only, none of which is a phase
-retardation, so $C_{\rm circ}$ cannot be formed and must be set to zero.
-Obtaining it means computing the fixed-orientation amplitude matrix ourselves.
-\code{tmatrix/src/ampld.lp.f} exists in the tree for exactly this and is
-currently excluded from the build.
+retardation, so $C_{\rm circ}$ cannot be formed from it and is set to zero.
+Since \S\ref{sec:firstprinciples} the fixed-orientation amplitude matrix
+\emph{is} computed here (Mishchenko's \code{AMPL}, extracted into
+\code{tmatrix/src/ampl\_oriented.f}), but only its imaginary part in the forward
+direction is used, for the extinction cross section. The birefringence is the
+difference of the complex forward amplitudes for the two linear polarizations;
+forming it would extend the oriented pipeline to output that complex amplitude
+rather than the real $Q$ it now reduces to. It is no longer a matter of bringing
+new code into the build.
 
 \paragraph{No scattering matrix for aligned grains.} The release gives the
 integrated $Q_{\rm sca}$ with no angular information, so scattering by an

@@ -47,6 +47,7 @@ SRC_TM   = src/tmd_one.f src/lpd.f src/ampl_oriented.f
 SRC_COMM = ../sed/src/constants.f90 \
            driver/read_index.f90 driver/asymptotic_optics.f90
 SRC_Q    = $(SRC_COMM) driver/run_tmatrix.f90
+SRC_QJ   = $(SRC_COMM) driver/tmatrix_oriented.f90 driver/run_q_jori.f90
 SRC_SM   = $(SRC_COMM) ../sed/src/size_dist.f90 driver/run_scatmat.f90
 SRC_CMP  = $(SRC_COMM) driver/compare_rayleigh_jori.f90
 SRC_CMP2 = $(SRC_COMM) driver/tmatrix_oriented.f90 \
@@ -56,7 +57,7 @@ SRC_CMP3 = $(SRC_COMM) driver/tmatrix_oriented.f90 \
 SRC_CMP4 = $(SRC_COMM) driver/tmatrix_oriented.f90 \
            driver/compare_go_jori.f90
 
-all: run_tmatrix.x run_scatmat.x
+all: run_tmatrix.x run_scatmat.x run_q_jori.x
 
 # Each executable is compiled in its own directory so that the two builds do
 # not fight over .mod files of the shared modules.
@@ -74,6 +75,18 @@ run_scatmat.x: $(SRC_TM) $(SRC_SM)
 	@echo
 	@echo 'Built: ./run_scatmat.x'
 	@echo 'Smoke test:  ./run_scatmat.x test'
+
+# Orientation-resolved Q table for the polarization channel: sweeps the DH21
+# grid through oriented_cross_sections and writes the file q_table_jori.f90
+# reads.  Shares the T-matrix core and the asymptotic limits with the two
+# executables above.
+run_q_jori.x: $(SRC_TM) $(SRC_QJ)
+	@mkdir -p build/qj
+	$(FC) $(FFLAGS) -Isrc -Jbuild/qj $^ $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./run_q_jori.x'
+	@echo 'Smoke test:  ./run_q_jori.x test'
+	@echo 'Full sweep:  ./run_q_jori.x'
 
 # Stage-A check: oriented Rayleigh Q_abs vs the HD23 orientation-resolved
 # table over the small-x subset.  No T-matrix core is needed.
@@ -121,7 +134,7 @@ clean:
 	rm -rf build
 
 cleanall: clean
-	rm -f run_tmatrix.x run_scatmat.x compare_rayleigh_jori.x \
+	rm -f run_tmatrix.x run_scatmat.x run_q_jori.x compare_rayleigh_jori.x \
 	      compare_tmatrix_jori.x compare_tmatrix_abs.x compare_go_jori.x
 
 .PHONY: all clean cleanall
