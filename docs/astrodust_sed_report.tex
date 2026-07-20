@@ -1,0 +1,1743 @@
+\documentclass{kiseon_memo}
+
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{siunitx}
+\usepackage{microtype}
+\usepackage{hyperref}
+\sloppy
+
+\title{Reproducing the Hensley \& Draine (2023) Astrodust SED}
+\author{Kwang-il Seon}
+\date{2026 May 16}
+
+\newcommand{\Cabs}{\ensuremath{C_{\rm abs}}}
+\newcommand{\Qabs}{\ensuremath{Q_{\rm abs}}}
+\newcommand{\Qext}{\ensuremath{Q_{\rm ext}}}
+\newcommand{\Qsca}{\ensuremath{Q_{\rm sca}}}
+\newcommand{\Teq}{\ensuremath{T_{\rm eq}}}
+\newcommand{\Nh}{\ensuremath{N_{\rm H}}}
+\newcommand{\lamIlam}{\ensuremath{\lambda I_\lambda}}
+\newcommand{\fc}{\ensuremath{f_{C}^{\rm vol}}}
+\newcommand{\umass}{\ensuremath{\,\mu{\rm m}}}
+\newcommand{\HD}[1]{HD23~#1}
+
+% The kiseon_memo class (mathrsfs + amssymb + kotex + explicit
+% \DeclareMathAlphabet for \mathbf/\mathit/\mathbit) sits at the 16
+% math-family limit; using \mathbf here overflows it ("Too many math
+% alphabets"). Route \mathbf through \boldsymbol, which reuses the bold
+% math version instead of allocating a new family. Vectors and bold
+% emphasis render the same to the eye (bold italic for letters).
+\let\mathbf\boldsymbol
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+
+This memo documents the construction of an astrodust thermal emission
+pipeline that reproduces the Hensley \& Draine (2023, ApJ 948, 55;
+hereafter HD23) ``astrodust'' model from first principles, working
+from the published dielectric function (Draine \& Hensley
+2021a, ApJ 909, 94, hereafter DH21a) and size distribution. The
+deliverable is a Fortran library callable from a 3D radiative-transfer
+driver per cell, with the per-H emission expressed in HD23 units
+(\si{erg.s^{-1}.sr^{-1}} per H atom).
+
+The pipeline consists of five phases:
+\begin{itemize}
+  \item[A.] Random-orientation T-matrix sweep on the DH21 native grid
+        (169 sizes $\times$ 1129 wavelengths) producing
+        \Qabs($\lambda, a$), \Qsca($\lambda, a$), and the asymmetry
+        parameter $g$.
+  \item[B.] Optical-depth verification:
+        $\tau_{\rm Ad}/N_H = \sum_a (dn_{\rm Ad}/N_H)\,\pi a^2\,\Qext$
+        compared against HD23 \texttt{extinction.dat}.
+  \item[C.] Two-stage enthalpy: silicate-only (Stage~1) and
+        silicate~+~carbonaceous volume-weighted (Stage~2).
+  \item[D.] Single-cell SED solver with dynamic $T$ grid per radius.
+  \item[E.] SED verification against the HD23 release answer key.
+\end{itemize}
+Two refinements were implemented in addition: PAH emission via the
+Draine \& Li (2007) DL07 cross sections, and polarization
+via the dichroic-extinction formula of HD23 \S2.2. A
+Python sidecar of the solver (Phase G) is provided for downstream
+prototyping.
+
+The optical-depth acceptance criterion is met to within 0.5\%; the
+polarization check matches the HD23 release to within 0.07\% in every wavelength band
+(both essentially perfect reproductions). The SED comparison
+falls $\sim 8.5\%$ below the HD23 release in the
+\SIrange[range-phrase=--,range-units=single]{30}{300}{\micro\meter}
+FIR-peak band after applying the corrected Mathis 4000\,K
+dilution factor (1.65$\times 10^{-13}$ instead of the literal
+Mathis~1983 $1\times 10^{-13}$; the original-Mathis variant gives
+$\sim 15\%$). This residual is now \emph{resolved}
+(\S\ref{sec:phaseE-resolution}): an energy-budget audit shows the HD23
+\emph{release} is internally inconsistent --- its emitted
+\texttt{irem} tables radiate 9.3\% (astrodust) and 3.2\% (PAH) more
+than its own released \Cabs\ absorb from the same field --- whereas our
+pipeline conserves energy to 0.15\%. The deficit equals HD23's own
+emitted-vs-absorbed excess; its component-dependence rules out a
+heating-field / $U$-convention offset and points to an
+internal-vs-released cross-section vintage difference.
+
+
+\section{Reference parameters}
+
+Table~\ref{tab:ref} lists the HD23 best-fit parameters that we hold
+fixed throughout this work. The first three lines define the
+dielectric function file \texttt{index\_DH21Ad\_P0.20\_0.00\_1.400};
+the rest determine size grids, dust mass, and the heating field.
+
+\begin{table}[h]
+\centering
+\caption{Reference parameters (HD23 best fit).}
+\label{tab:ref}
+\begin{tabularx}{0.95\textwidth}{l c X}
+\toprule
+Quantity & Value & Source \\
+\midrule
+Porosity $\mathcal{P}$                    & 0.2                    & HD23 \S3.1 \\
+Metallic Fe fraction $f_{\rm Fe}$         & 0                      & HD23 \S3.1 \\
+Axial ratio $b/a$ (oblate)                 & 1.4                    & HD23 \S3.1 \\
+Solid mass density $\rho_{\rm solid}$      & 3.42 g/cm$^3$          & DH21a Tab.~2 \\
+Bulk mass density $\rho_{\rm Ad}$          & 2.74 g/cm$^3$          & $= \rho_{\rm solid}(1-\mathcal{P})$ \\
+$M_{\rm Ad}/N_H$                           & 0.0092                 & DH21a Tab.~2 \\
+Heating intensity $U$                      & $10^{0.2} \approx 1.585$ & HD23 \S2.3.1 \\
+Radiation-field shape                      & Mathis 1983 ISRF, scaled by $U$ & HD23 \S2.3.1 \\
+$a_{\rm eff}$ range                        & \SIrange{3.16e-4}{5.012}{\micro\meter} & DH21a, 169 points \\
+$\lambda$ range                            & \SIrange{0.0912}{3.98e4}{\micro\meter} & DH21a, 1129 points \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+\section{Optical cross sections}
+
+\subsection{Two-track cross-section architecture}
+
+HD23 treats the astrodust and PAH populations on \emph{separate} tracks
+for their optical properties, and our pipeline mirrors that separation
+verbatim:
+
+\begin{itemize}
+  \item \textbf{Astrodust}~(HD23 \S3.1) is a single composite oblate
+        spheroid with the DH21a dielectric function. Its extinction,
+        scattering, and polarization cross sections are computed via
+        the modified-particle-form approximation (MPFA, three
+        orientations of $C_E(0^\circ)$, $C_E(90^\circ)$, $C_H(90^\circ)$
+        per HD23~\S2.2) of the random-orientation T-matrix code of
+        Mishchenko et al.~(1996). The result is the
+        \texttt{q\_DH21Ad\_*} table used throughout Phases A--E and
+        F-2. Astrodust is the only population that contributes to
+        polarized extinction or emission.
+  \item \textbf{PAH}~(HD23 \S3.2) is treated as spherical and
+        compositionally distinct ($\rho_{\rm PAH} = 2.0$~g/cm$^3$ vs
+        $\rho_{\rm Ad} = 2.74$~g/cm$^3$). Its cross sections follow
+        Draine \& Li~(2007) for the neutral and ionized branches,
+        blended with the random-orientation graphite Mie cross section
+        $C^{\rm gra}$ via the size-dependent weight $\xi_{\rm gra}(a)$
+        of HD23~eq.~16. No T-matrix; spherical Mie throughout. HD23
+        explicitly assumes PAH does not contribute to polarized
+        extinction or emission.
+\end{itemize}
+
+The two-track structure is propagated through the rest of the
+pipeline: astrodust uses the T-matrix Q tables and full MPFA machinery,
+PAH uses the DL07 cross sections (Sect.~\ref{sec:pah}). The
+present section is the astrodust track. The PAH track lives in
+Sect.~\ref{sec:pah}.
+
+\subsection{T-matrix wrapper and parallel sweep}
+
+We use the Mishchenko et al.\ (1996) random-orientation T-matrix code
+(\texttt{tmd.lp.f}) wrapped as a callable subroutine
+\texttt{TMD\_ONE(AXI, LAM, MRR, MRI, EPS, NP, DDELT, NDGS,
+QEXT, QSCA, WALB, ASYMM, IERR)}. The wrapper is a mechanical
+conversion of the original main program: inline test-case inputs become
+arguments, the size-distribution loop is removed (one $a$ per call),
+file I/O is dropped, and \texttt{STOP} statements are replaced with
+\texttt{IERR}~/~\texttt{RETURN}. A critical footgun: the original main
+mutates the input \texttt{DDELT} (\texttt{DDELT~=~0.1*DDELT}); when
+called from F90 with a \texttt{parameter} constant, the write traps as
+SIGBUS on a read-only page. The wrapper copies to a local
+\texttt{DDELT\_LOC} before mutating.
+
+Convergence-failure fallbacks are implemented for $x = 2\pi a/\lambda
+< 0.1$ (small-$x$ spheroidal Rayleigh polarizability ported from
+Draine 1992 \texttt{sphero.f}) and $x > 50$ (geometric optics, $\Qext
+\to 2$). The small-$x$ fallback uses the exact oblate-spheroid
+depolarization factors $L_a$, $L_b = (1-L_a)/2$ averaged over random
+orientation, and was found to remove a systematic 6\% under-prediction
+that a naive Mie-sphere fallback produces in the dipole limit.
+
+The full 169 by 1129 sweep takes 11 minutes single-threaded on
+Apple Silicon. A bash work-queue driver
+\texttt{run\_parallel.sh} dispatching $K = 32$ chunks across $N = 6$
+workers reduces this to 2 minutes 18 seconds (4.8$\times$ speedup)
+with bit-identical output (Tab.~\ref{tab:parallel}). Equal-jw-range
+partitioning ($K = N$) gives almost no speedup because the UV slice
+is T-matrix-bound and stalls the run; the work-queue pattern is the
+essential ingredient.
+
+\begin{table}[h]
+\centering
+\caption{Parallel-sweep walltime measurements.}
+\label{tab:parallel}
+\begin{tabular}{l c c c c}
+\toprule
+mode             & $N$ & $K$ & walltime & speedup \\
+\midrule
+serial           & 1   & 1   &       11~m~0~s &        1.0$\times$ \\
+equal partition  & 6   & 6   &       9~m~59~s &        1.1$\times$ \\
+work queue       & 6   & 32  & \bfseries 2~m~18~s & \bfseries 4.8$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Result}
+
+\autoref{fig:q} shows \Qext\ and \Qabs\ at four representative grain
+sizes spanning the full DH21 range. The classic transition from
+Rayleigh-like dipole behavior at small $x$ (small grains or long
+wavelengths) to the geometric-optics plateau at large $x$ is visible.
+Verification of $\Qabs$ against the HD23 release table
+\texttt{q\_DH21Ad\_P0.20\_Fe0.00\_1.400.dat.gz} (random-orientation
+average of jori = 1, 2, 3 columns) shows agreement within 0.5\% across
+the T-matrix-converged region ($x \in [0.01, 30]$); larger deviations
+(few \%) appear in the geometric-optics fallback regime which has
+negligible weight in any SED integral.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.95\textwidth]{figs/q_vs_lambda.pdf}
+\caption{Extinction (left) and absorption (right) efficiency factors
+as functions of wavelength for four representative grain sizes from
+the DH21 grid. The transition from $Q \propto x^4$ scattering at long
+wavelengths to $Q \to 1$ geometric optics at short wavelengths is
+clearly resolved for each size.}
+\label{fig:q}
+\end{figure}
+
+
+\section{Optical-depth verification}
+
+The first end-to-end milestone is to verify that our cross
+sections reproduce HD23's reported extinction per H atom:
+\begin{equation}
+\frac{\tau_{\rm Ad}}{N_H}\!\left(\lambda\right)
+= \sum_a \frac{dn_{\rm Ad}}{N_H}\!\left(a\right) \,\pi a^2 \,\Qext(\lambda, a),
+\label{eq:tau}
+\end{equation}
+where $(dn_{\rm Ad}/N_H)(a)$ is the HD23 size distribution
+(\texttt{size\_distribution.dat} column~2), already integrated over the
+local bin width.
+
+To evaluate eq.~\ref{eq:tau} our pipeline (\texttt{sed/tau\_check.x})
+loads the full Q table, interpolates \Qabs\ and \Qext\ in
+$\log a$ from the 169-point DH21 grid onto the 167-point size-distribution
+grid, sums, and interpolates onto the HD23 release wavelength grid
+(\texttt{wav.dat}, 1000 points). The same machinery is run for the
+scattering channel against \texttt{scattering.dat}.
+
+The maximum $|$relative residual$|$ across the entire grid is
+\textbf{0.47\%} for $\tau_{\rm Ad}/N_H$ (at \SI{26.84}{\micro\meter})
+and \textbf{0.68\%} for $\tau^{\rm sca}_{\rm Ad}/N_H$
+(at \SI{31.63}{\micro\meter}). \autoref{fig:tau} shows the residual is
+sub-percent everywhere and structurally featureless. The
+acceptance criterion (1\%) is met by a comfortable margin, confirming
+that our Q sweep and size-distribution integration are both correct.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.9\textwidth]{figs/tau_residual.pdf}
+\caption{Top: HD23 $\tau_{\rm Ad}/N_H$ (black solid) and our value
+(red dashed), and HD23 $\tau^{\rm sca}_{\rm Ad}/N_H$ (blue). Bottom:
+relative residual on $\tau_{\rm Ad}/N_H$ in percent. The acceptance
+band ($\pm 1\%$) is shown in dotted red.}
+\label{fig:tau}
+\end{figure}
+
+This is the strongest single piece of evidence that the optical
+properties pipeline is sound, since it is purely a function of
+$\Qext$, the size distribution, and the cross-section conversion
+$C = \pi a^2 Q$, and is completely independent of any thermal
+or enthalpy assumption.
+
+\subsection{Comparison against the WD01 / Draine~2003 model}
+\label{sec:d03}
+
+The HD23 astrodust+PAH model differs in both composition and size
+distribution from the older Weingartner \& Draine~(2001, WD01) /
+Draine~(2003) ``silicate + carbonaceous'' model that has been the
+working dust model in the MoCafe radiative-transfer code. To make the
+cross-section impact of moving from one model to the other concrete,
+we compute the three quantities that drive scattering in an isotropic
+medium -- the extinction cross section per H, the albedo
+$C_\mathrm{sca}/C_\mathrm{ext}$, and the scattering-weighted
+asymmetry parameter $g = \langle \cos\theta \rangle$ -- for both
+models on the WD01/D03 wavelength grid and overlay them
+(\autoref{fig:d03}).
+
+The D03 curves come from B.\ T.\ Draine's published tables
+\texttt{kext\_albedo\_WD\_MW\_3.1\_60\_D03.all\_\{2003,2009\}}, columns
+``albedo'', ``<cos>'', and ``C\_ext/H''. The 2003 and 2009 versions
+on Draine's website are nominally the same model but differ in some
+underlying grain parameters that are not explicitly documented; the
+2009 version has $M_\mathrm{dust}/N_H = 1.398 \times 10^{-26}$~g/H,
+revised from $1.870 \times 10^{-26}$~g/H in 2003. We plot both for
+reference. The HD23 extinction and scattering cross sections per H are
+the ``total'' (astrodust+PAH) columns of the release files
+\texttt{extinction.dat} and \texttt{scattering.dat}; the HD23
+asymmetry parameter is built from our Phase-A T-matrix output
+(\texttt{q\_astrodust\_*}, columns $Q_\mathrm{sca}$ and $g_a$ per
+$(a, \lambda)$) by the scattering-weighted size integral
+\begin{equation}
+g(\lambda) = \frac{\sum_a (dn_\mathrm{Ad}/N_H)\,\pi a^2\,
+                   Q_\mathrm{sca}(a, \lambda)\,g_a(a, \lambda)}
+                  {C^\mathrm{sca}_\mathrm{tot}(\lambda)},
+\end{equation}
+where the denominator is the AD+PAH total scattering cross section
+from \texttt{scattering.dat}; the PAH contribution to the numerator
+is taken to be zero on the assumption that PAH grains are in the
+Rayleigh limit across UV--NIR ($x = 2\pi a / \lambda \lesssim 0.1$
+for $a \le $~\SI{30}{\angstrom} and $\lambda \ge 0.1$\,$\mu$m), so
+$g_\mathrm{PAH} \approx 0$ and PAHs enter only through their (small)
+scattering cross section in the denominator. We restrict the plot to
+\SIrange{0.1}{5.0}{\micro\meter} (UV through K band) per the user
+request.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.99\textwidth]{figs/d03_comparison.pdf}
+\caption{Extinction cross section per H (left), albedo (middle), and
+scattering-weighted asymmetry parameter (right) of the HD23
+astrodust+PAH model (red dashed) overlaid on the WD01/Draine
+silicate+carbonaceous model in both the 2003 (black solid) and 2009
+(gray dot-dashed) revisions, over the UV--NIR range.}
+\label{fig:d03}
+\end{figure}
+
+Observations:
+\begin{itemize}
+  \item \textbf{WD01/D03 2003 vs 2009.} The 2003 and 2009 versions of
+        the WD01/D03 tabulation are nearly indistinguishable in this
+        range: the extinction and asymmetry curves overlay on each
+        other to plotting accuracy. The only visible revision is a
+        modest upward shift of the FUV albedo (around the
+        \SI{2175}{\angstrom} bump). Whatever physical revision
+        produced the 2009 numbers, it changes the dust mass per H
+        ($M_\mathrm{dust}/N_H$ dropped by 25\%) but not the wavelength
+        shape of the per-H optical properties at the percent level.
+  \item \textbf{Extinction:} all three curves reproduce the
+        \SI{2175}{\angstrom} bump, the FUV rise, and a roughly
+        power-law optical/NIR tail. HD23 is uniformly lower in
+        absolute amount across the entire band (the bump is a bit
+        weaker as a fraction of the continuum, and the NIR slope is
+        slightly steeper). This is consistent with the much smaller
+        carbon abundance in astrodust compared to graphite in
+        WD01/D03.
+  \item \textbf{Albedo:} the qualitative shape -- low in FUV,
+        peaking in the optical near \SI{0.6}{\micro\meter}, then
+        falling toward the NIR -- is the same in all three models,
+        with peak values $\approx 0.65$--$0.72$. HD23 peaks slightly
+        higher and drops off slightly faster.
+  \item \textbf{Asymmetry parameter:} HD23 is uniformly more
+        forward-scattering than D03 across the band, by
+        $\Delta g \sim 0.1$--$0.2$. The astrodust composite is
+        effectively a single large-grain population (the PAH track is
+        nearly scatterer-free at these wavelengths), while D03's
+        silicate+graphite mixture has more isotropic small-grain
+        scatterers in the same size range.
+\end{itemize}
+
+For the MoCafe RT context, the practical consequence of swapping in
+the HD23 dust is a $\sim 20$--$30\%$ reduction in $\tau$ per H in
+optical/NIR (visible directly in the left panel) and a more strongly
+forward-peaked phase function (visible in the right panel) -- both
+qualitatively the same direction relative to either D03 vintage.
+
+
+\section{Enthalpy}
+
+The grain enthalpy $U(T, a)$ enters the stochastic heating solver
+through the energy spacing $\Delta H = H(T_{i+1}) - H(T_i)$ between
+adjacent temperature bins. Since the closed-form Debye sums of
+Draine \& Li (2001, hereafter DL01) cost microseconds per call, we use
+the module functions
+\texttt{enthalpy\_S1(T, a, prefactor)} and
+\texttt{enthalpy\_S2(T, a)} directly in the inner SED loop; the
+\texttt{make\_enthalpy.x} table-dumping driver is retained as a sanity
+tool and is \emph{not} a required intermediate.
+
+\subsection{Single-composition closed forms (DL01)}
+
+For both graphite (\texttt{Car0}/\texttt{Car1}) and silicate
+(\texttt{Sil}) sub-components we use the closed-form Debye-2 internal
+energy of DL01 \S B (their eqs.\ 5--7). Define the Debye integral of
+order $n$ as
+\begin{equation}
+f_n(x) \;\equiv\; n\,x^{-n}\!\int_0^{x}\frac{y^{n}}{e^{y}-1}\,dy,
+\qquad x = \Theta/T,
+\end{equation}
+so that $f_n \to 1$ for $x\to 0$ (high $T$) and $f_n \to 0$ for
+$x\to\infty$ (low $T$). For a grain containing $N_{\rm atom}$ atoms,
+the vibrational internal energy is
+\begin{equation}\label{eq:U_DL01}
+U_{\rm vib}(T, N_{\rm atom}) = (N_{\rm atom} - 2)\,k_B\,T\,
+   \sum_{m} g_m\,f_2(\Theta_m / T),
+\end{equation}
+with the $(N_{\rm atom}-2)$ Debye-modes factor (DL01 eq.\ 5) and the
+composition-specific mode set $\{(\Theta_m,\,g_m)\}$.
+
+\paragraph{Graphite (DL01 \texttt{Car0}, \texttt{Car1}).}
+Two Debye-2 modes (DL01 eq.\ 6):
+\begin{equation}
+U_{\rm Car}(T, N_{\rm atom}) = (N_{\rm atom}-2)\,k_B\,T\,
+   \bigl[\,f_2(\Theta_{\rm op}/T) + 2\,f_2(\Theta_{\rm ip}/T)\,\bigr],
+\end{equation}
+with $\Theta_{\rm op} = 863$~K (out-of-plane) and
+$\Theta_{\rm ip} = 2504$~K (in-plane). The atom count is
+$N_{\rm atom}(a) = 4.68208\times10^{11}\,a^{3}\,[\umass^{-3}]$ at the
+standard graphite density $\rho = 2.24$~g/cm$^3$. For grains with
+$N_{\rm atom} \lesssim 10^{4}$ we add the three DL01 C--H stretch
+modes
+\begin{equation}
+U_{\rm CH}(T, N_{\rm atom}) = (N_{\rm H}/N_{\rm atom})\,N_{\rm atom}\,k_B
+   \sum_{j=1}^{3}\frac{h\nu_j}{\exp(h\nu_j/k_BT) - 1},
+\end{equation}
+with $h\nu_j/k_B = (hc/k_B)/\lambda_j$ for
+$\lambda_j \in \{11.3,\,8.6,\,3.3\}\umass$ and the size-dependent
+$H/C$ ratio of DL01 eq.\ 7
+($H/C = 0.5$ for $N_{\rm atom}\le 25$,
+$H/C = 0.5\,(25/N_{\rm atom})^{1/2}$ for $25 < N_{\rm atom} < 100$,
+$H/C = 0.25$ otherwise).
+
+\paragraph{Silicate (DL01 \texttt{Sil}).}
+Two Debye-2 modes plus a Debye-3 (DL01 eq.\ 9), extrapolated above
+$T = 500$~K to match laboratory data (Bonjour, Leger, \& Hekinian
+1984):
+\begin{equation}
+U_{\rm Sil}(T, N_{\rm atom}) = (N_{\rm atom}-2)\,k_B\,T\,
+   \bigl[\,2\,f_2(\Theta_2/T) + f_3(\Theta_3/T)\,\bigr],
+\end{equation}
+with $\Theta_2 = 500$~K and $\Theta_3 = 1500$~K. The atom count is
+$N_{\rm atom}(a) = 7 \times 5.10401\times10^{10}\,a^{3}\,[\umass^{-3}]$
+(seven atoms per formula unit MgFeSiO$_4$ at $\rho = 3.5$~g/cm$^3$).
+Above $T = 500$~K we use the piecewise-polynomial form of
+DL01 eq.\ (9) so that $U_{\rm Sil}$ matches the measured Si$_2$O fits
+to higher accuracy.
+
+\subsection{Stage 1: silicate-only}
+
+Treat the whole astrodust grain as if it were DL01 astrosilicate. Two
+prefactor options:
+\begin{itemize}
+  \item \textbf{C-1 (literal):}
+        $n_{\rm form}(a) = 5.1040126 \times 10^{10}\,a^3$
+        (DL01 astrosilicate at $\rho = 3.5$~g/cm$^3$).
+  \item \textbf{C-2 (density-corrected):}
+        $n_{\rm form}(a) = (2.74/3.5)\,n_{\rm form, C\text{-}1}(a)$,
+        matching the bulk astrodust density $\rho_{\rm Ad} = 2.74$~g/cm$^3$.
+\end{itemize}
+Sanity check: the ratio
+$U_{\rm S1,C2}(T, a) / U_{\rm S1,C1}(T, a)$ saturates at $0.7829 =
+2.74/3.5$ for grains large enough that the $(N_{\rm atom} - 2)$
+correction is negligible. Confirmed across the full $(T, a)$ grid.
+
+\subsection{Stage 2: silicate + carbonaceous, volume-weighted}
+
+Decompose the astrodust \emph{solid} (the $(1-\mathcal{P})$-fraction
+of the grain volume) into a carbonaceous sub-volume $V_{\rm car}$ and
+a silicate-like sub-volume $V_{\rm sil}$, with
+$V_{\rm sil}/V_{\rm solid} = 1 - \fc$. The astrodust enthalpy is the
+additive sum
+\begin{equation}
+U_{\rm Ad}(T, a) = U_{\rm Sil}(T;\, N_{\rm atom}^{\rm Sil}(a))
+                 + U_{\rm Car}(T;\, N_{\rm atom}^{\rm Car}(a)),
+\end{equation}
+with sub-component atom counts
+\begin{equation}
+N_{\rm atom}^{\rm Sil}(a) = (1-\mathcal{P})(1-\fc)\,n_{\rm Sil}^{\rm bulk}\,V(a),
+\quad
+N_{\rm atom}^{\rm Car}(a) = (1-\mathcal{P})\fc\,n_{\rm Car}^{\rm bulk}\,V(a),
+\end{equation}
+where $V(a) = (4\pi/3)\,a^3$, $n_{\rm Sil}^{\rm bulk}$ and
+$n_{\rm Car}^{\rm bulk}$ are the bulk atom densities of DL01
+astrosilicate and DL01 graphite respectively. ``Everything not
+carbonaceous is treated as silicate''.
+
+The carbonaceous volume fraction $\fc$ is derived from DH21a Table~2
+(column $f_{\rm Fe} = 0$): $V_{\rm car} = 0.86\times10^{-27}$~cm$^3$/H,
+$V_{\rm Ad}(1-\mathcal{P}) = 4.46\times10^{-27}$~cm$^3$/H, hence
+$\fc = 0.193$. The result is insensitive to $f_{\rm Fe}$
+($\fc(f_{\rm Fe}{=}0.10) = 0.196$).
+
+
+\section{SED solver}
+
+\subsection{Module API}
+
+The solver lives in \texttt{sed\_astrodust\_mod} and exposes a
+two-step API designed for a cell-by-cell 3D-RT driver:
+\begin{verbatim}
+   call sed_init(qtable_path, sizedist_path, NT, T_lo, T_hi)
+   ...
+   do icell = 1, ncells
+      ... build J_lam in this cell ...
+      call sed_solve    (J_lam, enthalpy_stage, lamI_lam)
+      call sed_solve_pah(J_lam,                 lamI_lam_pah)
+   end do
+\end{verbatim}
+The \texttt{sed\_init} call loads the precomputed Q table and the size
+distribution, builds the wide $T$ grid ($N_T = 200$, log-spaced 2.7~K
+to 5000~K), and tabulates the four cell-independent quantities
+\Cabs$(\lambda, a)$, $\kappa_B(T, a)$, $U(T, a)$ (for all three
+enthalpy stages, plus the PAH carbonaceous prescription), and
+$\kappa_{\rm CMB}(a)$. Single-cell \texttt{sed\_solve} loops over the
+size distribution, calling \texttt{calc\_Teq} once per radius and
+either branching to equilibrium emission $\Cabs\,B_\lambda(\Teq)$ or
+solving for the stochastic temperature distribution $P(T)$ via the
+Guhathakurta \& Draine (1989) matrix method.
+
+\subsection{Dynamic temperature grid}\label{sec:dynamicT}
+
+A key empirical result, learned the hard way from SED\_v5: the
+temperature distribution $P(T)$ for small grains is \emph{very sharp},
+and a single static $T$ grid spanning the full $[2.7, 5000]$~K range
+cannot resolve it. DL07 Fig.~4 illustrates this directly: $P(T)$ for a
+\SI{100}{\angstrom} grain at $U = 1$ drops by more than twelve orders
+of magnitude over less than a factor of two in $T$. A coarse or
+mis-centred grid simply returns numerical zeros across the entire
+range, mimicking ``no stochastic contribution'' when in reality the
+grain is sharply peaked at $\Teq$.
+
+\paragraph{Grain-loop direction matters.}
+Both algorithms iterate over the size distribution in the
+\emph{small-to-large} direction (\texttt{do ir = 1, NA} with
+\texttt{aeff} sorted ascending). This ordering is not arbitrary; it
+is forced by the steep dependence of $P(T)$ on $a$. The narrowing
+schemes use the previous grain's $P(T)$ width (look-ahead) or only
+the local equilibrium energy (grain-by-grain iterative) to bracket the
+window for the current grain. In both cases the natural progression
+is from a \emph{wider} window at small $a$ to a \emph{narrower}
+window at large $a$:
+\begin{itemize}
+  \item Small grains ($a \lesssim 30$~\AA) have a broad $P(T)$ that
+        extends from $T_{\rm CMB}$ up to several hundred K (DL07
+        Fig.~4). On the wide $T$ grid the matrix solver
+        \texttt{calc\_P} is well-conditioned and yields a sensible
+        $P(T)$ directly.
+  \item Large grains ($a \gtrsim 100$~\AA) have a $P(T)$ that is
+        essentially a delta function at $\Teq$. On the same wide $T$
+        grid the Guhathakurta--Draine transition matrix becomes
+        numerically degenerate (the entire steady-state probability
+        falls inside one bin) and \texttt{calc\_P} returns $P \equiv
+        0$ everywhere -- a silent failure that
+        mimics ``no stochastic contribution''.
+\end{itemize}
+The small-to-large loop bootstraps the narrowing from the well-
+conditioned end. Once one grain is solved, its $P(T)$ width sets a
+tight bracket for the next slightly-larger grain, the matrix stays
+well-conditioned, and the iteration converges grain by grain until
+the EEQ-gate triggers and the equilibrium branch propagates forward
+for all remaining (still larger) grains. The opposite direction would
+start on the degenerate large-grain calc\_P, with no working previous
+grain to seed the window -- a chicken-and-egg failure mode that we
+have hit while debugging
+(\texttt{mc\_pT/main\_pT\_compare.x} returns $P \equiv 0$ for
+$a > 80$~\AA{} when called on the wide grid without iterative
+narrowing, see Sect.~6.5 of the mc\_pT report).
+
+Two grid-narrowing algorithms are
+implemented in our solver and selectable at compile time via the
+\texttt{USE\_DRAINE\_NARROWING} module parameter:
+
+\begin{itemize}
+  \item \textbf{Look-ahead heuristic (SED\_v5 default).} For grain
+        $i+1$, set the $T$ grid to
+        $[\Teq \exp(-0.6\,\delta), \Teq \exp(+0.6\,\delta)]$ where
+        $\delta$ is twice the previous grain's $\ln P > \ln P_{\rm crit}$
+        half-width in $\ln T$. One \texttt{calc\_P} call per grain.
+        Cheap; relies on $P(T)$ varying smoothly with $a$ so that the
+        previous grain's window is a good guide for the next.
+  \item \textbf{Grain-by-grain iterative refinement} (default,
+        following Draine's method).
+        Initial guess
+        $U_{\max} = \max(13.6~\mathrm{eV} + 2E_{\rm eq}, 13.65~\mathrm{eV})$
+        (the single-UV-photon floor) and
+        $U_{\min} \in \{0, E_{\rm eq}/5\}$ depending on
+        $E_{\rm eq}/E_{\rm eq,SS}$ with $E_{\rm eq,SS} = 150$~eV; the
+        endpoints are then refined iteratively until
+        $P(\text{endpoint})/P_{\max} < 10^{-13}$, with $0.8 / 0.2$
+        damping for shrinkage and $\times 1.2$ expansion (or bisection
+        toward $U_{\max,{\rm hi}}$). Typically converges in 3--5
+        iterations per grain. The enthalpy $U$--to--$T$ inversion uses
+        log-log interpolation against the wide tables.
+\end{itemize}
+
+The two algorithms give identical SED to within $\sim 0.5\%$ on
+band-integrated totals (see Sect.~\ref{sec:phaseE-residual-analysis})
+on our HD23 reproduction case, confirming that the SED\_v5 heuristic
+window happens to be accurate enough \emph{for this radiation field
+and these enthalpy tables}. Both algorithms remain in the source so
+that future work with very different $J_\lambda$ shapes or size grids
+can switch and compare.
+
+Three ancillary safety nets are common to both algorithms: \Teq\ is
+always computed on the \emph{wide} grid (the narrowed grid may not
+bracket the next grain's \Teq); a grain whose enthalpy at \Teq\
+exceeds the EEQSS = 150~eV gate is solved as a $\delta$-function in
+$T$ at \Teq\ (steady-state limit); and on degenerate $P$ (no
+$\ln P > \ln P_{\rm crit}$ anywhere) we fall back to equilibrium
+emission at the wide-grid \Teq.
+
+\subsection{Performance}
+
+A full single-cell solve (\texttt{sed\_init} once, 3 enthalpy stages
+$\times$ 1 \texttt{sed\_solve} + 1 \texttt{sed\_solve\_pah}) takes
+$\sim 2$~seconds total on Apple Silicon, of which init is the bulk
+(building $\kappa_B$ once for both AD and PAH). For a 3D-RT use case
+\texttt{sed\_init} runs once per process; cost per cell is
+$\sim 0.5$~s.
+
+
+\section{SED verification}
+
+\subsection{Astrodust-only SED}
+
+\autoref{fig:sed_stages} compares our astrodust SED for the three
+enthalpy stages against HD23 \texttt{astrodust\_irem.dat} at
+$\log_{10} U = 0.2$ (column~33). The FIR peak shape is well reproduced
+and is essentially identical across stages (the peak is dominated by
+large equilibrium grains for which the enthalpy is irrelevant);
+stage-to-stage variations show up only in the
+\SIrange{5}{30}{\micro\meter} mid-IR where stochastic heating of
+small grains matters.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.9\textwidth]{figs/sed_stages.pdf}
+\caption{Astrodust thermal emission per H atom at HD23 best-fit
+heating ($U = 1.585$) for the current production (corrected
+Mathis 4000\,K dilution, see \S\ref{sec:phaseE-residual-analysis}).
+Top: our three enthalpy stages (S1\_C1, S1\_C2, S2) overlaid on HD23
+\texttt{astrodust\_irem.dat}. Bottom: relative residual in percent.
+The FIR peak shape is recovered; a $\sim 8.5\%$ systematic
+under-prediction persists at the peak (down from $\sim 15\%$ before
+the Mathis correction), and the \SI{<5}{\micro\meter} range
+over-predicts by a few-times factor (a PAH-deficit issue;
+see Sect.~\ref{sec:pah}).}
+\label{fig:sed_stages}
+\end{figure}
+
+The verification result by band, for the S1\_C1 baseline (current
+production with corrected Mathis; the parenthesised number after the
+arrow is the original-Mathis variant, retained as
+\texttt{./main\_astrodust.x mathis\_orig} for reproducing the historical
+state):
+\begin{itemize}
+  \item \textbf{300--3000\,$\mu$m} (sub-mm): mean $|$rel$|$ 3.5\%
+        (was 5\%), median $-3.2\%$, max 5.8\% --- within sub-mm
+        acceptance.
+  \item \textbf{30--300\,$\mu$m} (FIR peak): mean $|$rel$|$ 10\%
+        (was 15\%), median $-8.8\%$ (was $-15.8\%$), max 14\%
+        (was 24\%). All three stages show the same $\sim 8.5\%$
+        systematic, indicating that the issue is in the equilibrium
+        emission (independent of enthalpy), not in stochastic heating.
+        The residual narrowed from $\sim 15\%$ to $\sim 8.5\%$ when
+        we adopted the corrected Mathis 4000\,K dilution
+        (see \S\ref{sec:phaseE-residual-analysis}, \emph{``Mathis
+        4000\,K dilution correction''}).
+  \item \textbf{5--30\,$\mu$m} (mid-IR): mean $|$rel$|$ 6\% --- within
+        the $\le 30\%$ acceptance.
+  \item \textbf{$<5$\,$\mu$m}: over-prediction by $\sim 4\times$
+        at $\lambda = 1\,\mu$m. PAHs dominate this band in HD23 and
+        the astrodust-only contribution is small; the comparison is
+        meaningful only in the full Ad + PAH form below.
+\end{itemize}
+
+\subsubsection{Residual analysis: what is \emph{not} causing the 15\%
+deficit}
+\label{sec:phaseE-residual-analysis}
+
+A natural first guess for the 15\% FIR-peak deficit is a $\sim
+0.2$--$0.3$~K systematic offset in our equilibrium temperatures, since
+$B_\lambda(T)$ is extremely sensitive to $T$ at the peak
+($B_\lambda(14)/B_\lambda(13) \approx 1.84$ at
+$\lambda = $~\SI{130}{\micro\meter}). Three diagnostic ports have been
+implemented to test this and the other obvious suspects; \emph{all
+three came back clean}, so the residual is now isolated to a smaller
+suspect list.
+
+\begin{itemize}
+  \item \textbf{Independent \Teq\ check.} A verification driver
+        compares our
+        \texttt{calc\_Teq} (precomputed $\kappa_B(T, a)$ table
+        inversion) against an independent on-the-fly bracket--
+        bisection--power-law solver following Draine's method
+        (including the long-wavelength
+        Rayleigh--Jeans tail extension under the $C^{\rm abs} \propto
+        \nu^2$ assumption). Across the full 167-grain size grid at
+        $U = 1.585$:
+        \begin{itemize}
+          \item Astrodust: rms 0.14\%, max 0.21\%
+                (\Teq\ range 11--19~K).
+          \item PAH:       rms 0.11\%, max 0.17\%
+                (\Teq\ range 10--45~K).
+        \end{itemize}
+        That is, the two solvers agree to better than 0.2\%, well
+        below the 1--2\% \Teq\ error a 0.3~K offset at 15~K would
+        require. \emph{Our \Teq\ is not the source of the FIR
+        deficit.}
+  \item \textbf{Grain-by-grain T-window narrowing (Draine v7 port).} The
+        iterative refinement of Sect.~5.2 was ported and compared
+        against the SED\_v5 look-ahead heuristic. Band-integrated SED
+        ratios change by less than $0.5\%$ between the two algorithms
+        on the HD23 case; the diagnostic counter shows that
+        $\sim 73$ of 167 astrodust grains process stochastically (the
+        rest go equilibrium via the EEQSS gate or inheritance from a
+        smaller equilibrium grain), and the iterative refinement does
+        change the $T$ window for those grains -- it just does not
+        change the band-integrated SED. \emph{Grid choice is not the
+        source of the FIR deficit either.}
+  \item \textbf{DL01 algorithm sensitivity.} DL01 \S10/\S11.5 already
+        argued that the difference between the thermal-discrete
+        treatment and the thermal-continuous approximation we use is
+        negligible for the total spectrum. That statement is about
+        \emph{algorithmic} choice (matrix solver), not about grid
+        choice; the latter is governed by DL07 Fig.~4 and has now
+        been independently verified above.
+\end{itemize}
+
+What is left for the FIR-peak 15\% residual to live in is one of:
+(i)~the Q-table interpolation from the 169-point DH21 size grid onto
+the 167-point size-distribution grid at sub-mm wavelengths;
+(ii)~discretisation error in the single-grain $B_\lambda(T)$ integral
+that builds $\kappa_B$ and \Teq; or (iii)~the size-distribution
+treatment itself (i.e., the kernel that maps
+\texttt{size\_distribution.dat} onto our grain bins).
+
+\paragraph{Grain-by-grain diagnostic and the random-orientation convention.}
+We resolved this question by direct grain-by-grain comparison. A small
+driver \texttt{sed/src/dump\_per\_grain.f90} dumps
+$C_{\rm abs}(\lambda, a_0)$ at a chosen grain radius $a_0$, using
+exactly the Cabs that \texttt{sed\_init} feeds to \texttt{sed\_solve}.
+At $a_0 = $\,\SI{0.126}{\micro\meter} (the radius bin closest to where
+the FIR peak emission originates) we compared this against
+the HD23 release Q-table \texttt{q\_DH21Ad\_P0.20\_Fe0.00\_1.400.dat.gz},
+which publishes $Q_{\rm abs}$ separately for the three Mishchenko
+orientations
+\texttt{jori=1} ($\mathbf{k}\parallel\mathbf{a}$),
+\texttt{jori=2} ($\mathbf{k}\perp\mathbf{a},\, \mathbf{E}\parallel\mathbf{a}$), and
+\texttt{jori=3} ($\mathbf{k}\perp\mathbf{a},\, \mathbf{E}\perp\mathbf{a}$). The
+random-orientation average for unpolarized emission is the
+$\tfrac{1}{3}Q^{\rm jori=2} + \tfrac{2}{3}Q^{\rm jori=3}$ combination.
+
+Our small-x fallback (\texttt{tmatrix/driver/fallback.f90}, used in the
+flag-10 region $x < 0.1$ which covers all FIR-peak-relevant grains at
+sub-mm wavelengths) implements this random-orientation average exactly:
+the ratio of our $C_{\rm abs}(a_0=$\,\SI{0.126}{\micro\meter}$, \lambda)$
+to $\tfrac{1}{3}\!Q^{\rm jori=2} + \tfrac{2}{3}\!Q^{\rm jori=3}$ on the
+HD23 release grid is $1.0000$ to four significant figures across
+\SI{30}{\micro\meter}--\SI{30000}{\micro\meter}. So the single-grain
+cross-section is, by construction, the correct random-orientation
+average, and suspect~(i) (Q-table interpolation) is ruled out.
+
+At the \emph{same} grain, however, our $C_{\rm abs}$ is
+exactly $0.843$ ($=1/1.186$) times the release file's
+\texttt{jori=1} Q over \SI{30}{\micro\meter}--\SI{30000}{\micro\meter}
+-- a flat ratio with $\sigma < 0.001$ across $\sim 600$ release-grid
+wavelengths. In the dipole limit
+\texttt{jori=1} ($\mathbf{k}\parallel\mathbf{a}$) measures only
+$Q_{\perp}^{\rm pol}$ (the field $\mathbf{E}$ is necessarily perpendicular
+to the symmetry axis), so this $1.186$ factor is the standard
+relation $Q_{\perp}^{\rm pol} = (\tfrac{1}{3}Q_\parallel +
+\tfrac{2}{3}Q_\perp) \times f$ for the
+oblate $b/a = 1.4$ at this point in $(\lambda, a)$ space.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.9\textwidth]{figs/cabs_per_grain_vs_hd23.pdf}
+\caption{Single-grain absorption cross section at $a = $\,\SI{0.126}{\micro\meter}.
+Top: HD23 release $C_{\rm abs}$ from \texttt{jori=1} (k$\parallel$a,
+black solid) and our $C_{\rm abs}$ from \texttt{sed\_init} (red dashed),
+interpolated onto the release wavelength grid. Bottom: relative
+residual (ours $-$ HD23)/HD23 in percent. The flat $-15.7\%$ plateau
+across \SI{30}{\micro\meter}--\SI{30000}{\micro\meter} is precisely the
+ratio $\bigl(\tfrac{1}{3}Q_\parallel + \tfrac{2}{3}Q_\perp\bigr)/Q_\perp$
+for an oblate $b/a = 1.4$ spheroid in the dipole limit at this grain.}
+\label{fig:cabs_per_grain}
+\end{figure}
+
+\paragraph{Scaling test.} If HD23 used the
+\texttt{jori=1} block of the release file directly (i.e.\ as if it
+were the random-orientation Cabs, instead of constructing the
+$\tfrac{1}{3}+\tfrac{2}{3}$ combination), the predicted aggregate SED
+would be $1.186\times$ ours. Scaling our \texttt{S1\_C1} SED by this
+factor and re-computing the relative residual against HD23
+\texttt{astrodust\_irem.dat} at $\log U = 0.20$ gives:
+
+\begin{tabularx}{0.95\textwidth}{l c c X}
+\toprule
+band ($\mu$m)            & unscaled med\,rel & scaled $\times 1.186$ med\,rel & notes \\
+\midrule
+5--30                    & $-1.2\%$  & $+17.2\%$ & over after scaling \\
+\bfseries 30--300 (FIR peak)  & $\mathbf{-15.8\%}$ & $\mathbf{-0.2\%}$  & matched to better than 1\% \\
+300--3000 (sub-mm)       & $-5.6\%$  & $+11.9\%$ & over after scaling \\
+3000--30000              & $-4.0\%$  & $+13.9\%$ & over after scaling \\
+\bottomrule
+\end{tabularx}
+
+The single factor of $1.186$ collapses the FIR-peak residual from
+$-16\%$ to less than $\pm 1\%$, but overshoots in adjacent bands. The
+30--\SI{300}{\micro\meter} match is too precise to be coincidence: it
+is, to four significant figures, the ratio
+$\bigl(\tfrac{1}{3} Q_\parallel + \tfrac{2}{3}Q_\perp\bigr) /
+Q_\perp$ for an oblate $b/a = 1.4$ spheroid in the dipole limit.
+The 300--\SI{3000}{\micro\meter} overshoot tells us this single factor
+is \emph{not} a global Cabs miscalibration -- the rest of the deficit
+distribution at sub-mm and the few-percent slope across other bands
+must come from elsewhere (size-distribution kernel weighting or
+HD23-internal recipe details we cannot reproduce from public release
+files).
+
+\paragraph{Direct test of the hypothesis (avenue 3).}
+We packaged the HD23 release \texttt{jori=1} block into a drop-in
+substitute Q-table and fed it through
+the full \texttt{sed\_solve} pipeline with a dedicated driver.
+Result for Stage S1\_C1:
+
+\begin{tabularx}{0.95\textwidth}{l c c c X}
+\toprule
+band ($\mu$m)            & production & jori=1 substitute & naive x1.186 & notes \\
+\midrule
+5--30                    & $+1.2\%$    & $+9.5\%$   & $+17.2\%$    & \\
+\bfseries 30--300 (FIR peak)  & $\mathbf{-15.1\%}$ & $\mathbf{-11.3\%}$ & $\mathbf{-0.2\%}$ & jori=1 substitute does \emph{not} close the gap \\
+300--3000 (sub-mm)       & $-6.1\%$    & $+7.1\%$   & $+11.9\%$    & sign flips \\
+3000--30000              & $-4.3\%$    & $+10.6\%$  & $+13.9\%$    & sign flips \\
+\bottomrule
+\end{tabularx}
+
+The full-pipeline substitution recovers only $\sim 4$ percentage
+points of the FIR-peak deficit (from $-15.1\%$ to $-11.3\%$),
+nowhere near the $-0.2\%$ that the naive $\times 1.186$ scaling
+predicted. At the same time the sub-mm and mm bands flip sign and
+become large over-predictions. The reason the naive scaling failed:
+substituting a uniformly larger sub-mm $C_{\rm abs}$ changes
+$T_{\rm eq}$ self-consistently. The grain cools more efficiently,
+$T_{\rm eq}$ drops, the Planck function falls everywhere, and the
+increase in emission from the larger sub-mm Cabs is partially
+compensated by the lower $T_{\rm eq}$. The compensation is strongest
+at the FIR peak (where the Planck-derivative-with-$T$ is largest)
+and weakest in the Rayleigh-Jeans tail at mm wavelengths.
+
+\textbf{Conclusion.} Hypothesis (a) (HD23 used the \texttt{jori=1}
+slice directly when constructing \texttt{astrodust\_irem.dat}) is
+\emph{rejected}. The $0.843$ Cabs ratio plateau against HD23's
+\texttt{jori=1} table is a real geometric relationship between two
+orientation conventions, but it does not map linearly to the SED
+residual once $T_{\rm eq}$ self-consistency is taken into account.
+The 15\% FIR-peak deficit is therefore \emph{not} explained by an
+orientation-averaging convention difference. The residual must live
+in something else; candidate sources, in order of investigation
+ease, are: (1) Mathis ISRF normalization differences between our
+\texttt{radfield.f90 :: J\_Mathis} and HD23's implementation;
+(2) the $U_{\rm Mathis}$ convention (interpretation of
+``$\log U = 0.20$''); (3) size-by-size $T_{\rm eq}(a)$ sampling
+differences between our code and HD23's. Definitive resolution
+requires either correspondence with the HD23 authors or access to
+their post-processing code.
+
+\paragraph{Induced-emission factor: \emph{gross} vs HD23
+\emph{net} emission convention.} Draine's
+stochastic-heating method (which produces Draine's
+\texttt{iout.*.dbdis.gz} single-grain SED files) shows that every
+emission line in that code -- both the large-grain delta-function
+branch (line~1521) and the stochastic intra- and inter-bin branches
+(lines~1479, 1491, 1501) -- carries an explicit
+$\bigl(1 + J_\lambda/B_{\rm env}\bigr)$ multiplicative factor, where
+$B_{\rm env}(\lambda) \equiv 2hc^2/\lambda^5$ is the Planck envelope
+without the $1/(\mathrm{e}^{hc/\lambda k T} - 1)$ Bose factor. This is
+the standard spontaneous-plus-stimulated emission boost from
+Einstein-coefficient algebra. Our production \texttt{sed\_solve} and
+\texttt{sed\_solve\_pah} accumulate single-grain emission as
+$C_{\rm abs}\,B_\lambda(T)$ without this factor, so this is a clean,
+isolable difference between the two codes.
+
+To test whether the missing factor explains any part of the residual,
+we added a module-level toggle \texttt{use\_induced\_emission}
+(default \texttt{.false.}) to \texttt{sed\_astrodust\_mod} and a
+helper \texttt{apply\_induced\_factor(J\_lam, Jout)} that applies
+\(
+   J_{\rm out}(\lambda) \mapsto J_{\rm out}(\lambda)\bigl(
+   1 + J_\lambda \lambda^5 / (2hc^2)\bigr)
+\)
+once at the end of each solve (a wavelength-dependent factor with no $T$
+or grain dependence). The driver \texttt{main\_astrodust.x} now
+accepts an optional command-line argument
+\texttt{./main\_astrodust.x induced} which sets the flag and writes
+output files with an \texttt{induced\_} prefix so the baseline run is
+preserved. Running both back-to-back gives the ratio (induced$/$baseline)
+in Table~\ref{tab:induced_ratio}.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{c r r r}
+\toprule
+$\lambda$ & analytic prediction & measured & dominant source \\
+\midrule
+\SI{100}{\micro\meter} (FIR peak)   & $\sim 10^{-8}$ & $+0.000\%$ & Wien for both Mathis \& CMB \\
+\SI{300}{\micro\meter}              & $\sim 10^{-6}$ & $+0.000\%$ & CMB still on Wien \\
+\SI{1}{\milli\meter}                & $\sim 0.7\%$   & $+0.705\%$ & CMB transition \\
+\SI{3}{\milli\meter}                & $\sim 24\%$    & $+23.66\%$ & CMB approaching RJ \\
+\SI{5}{\milli\meter}                & $\sim 59\%$    & $+58.92\%$ & CMB RJ \\
+\bottomrule
+\end{tabular}
+\caption{Effect of the $\bigl(1 + J_\lambda/B_{\rm env}\bigr)$
+induced-emission factor on the Stage S1\_C1 SED. The factor depends
+only on $\lambda$ (not on $T$ or grain size) so all three astrodust
+stages and PAH show identical ratios. The full growth at $\lambda
+\gtrsim$~\SI{1}{\milli\meter} is driven by the \SI{2.9}{K} CMB
+component of $J_\lambda$ via $J_{\rm CMB}/B_{\rm env}(\lambda) =
+1/(\mathrm{e}^{hc/\lambda k T_{\rm CMB}} - 1)$.}
+\label{tab:induced_ratio}
+\end{table}
+
+Numerically the measured boost matches the analytic prediction to
+better than $10^{-3}$ at every tabulated wavelength. The
+\SI{30}{}--\SI{300}{\micro\meter} FIR-peak band, where the
+deficit lives, is left \emph{exactly} unchanged ($<10^{-7}$). The
+factor therefore cannot be the source of the 15\% deficit, on
+quantitative grounds.
+
+More interestingly, applying the factor and re-comparing against
+HD23's release \texttt{astrodust\_irem.dat} at $\log U = 0.20$
+shows that the millimetre-band agreement is \emph{degraded} rather
+than improved (Table~\ref{tab:induced_vs_hd23}, S1\_C1; the other
+two stages are essentially identical).
+
+\begin{tabular}{l r r}
+\toprule
+band ($\mu$m)              & baseline med\,rel & induced med\,rel \\
+\midrule
+30--300 (FIR peak)         & $-15.83\%$ & $-15.83\%$ \\
+300--3000 (sub-mm)         & $-5.65\%$  & $-5.13\%$  \\
+$>3000$ (mm)               & $-3.97\%$  & $+136.27\%$ \\
+\bottomrule
+\end{tabular}\\[2pt]
+\refstepcounter{table}\label{tab:induced_vs_hd23}
+{\small Table~\thetable: Median relative residual (ours~$-$~HD23)/HD23
+with and without the induced-emission factor, Stage S1\_C1.}
+
+\medskip
+The $>\SI{3000}{\micro\meter}$ swing from $-4\%$ to $+136\%$ leaves
+no ambiguity: HD23's \texttt{astrodust\_irem.dat} does not carry the
+$\bigl(1 + J_\lambda/B_{\rm env}\bigr)$ factor. The physical reason
+this is the right convention for a redistributable SED is direct.
+Pinning the gross emission against the dust energy budget in
+equilibrium gives
+\[
+\int C_{\rm abs}(\lambda)\,B_\lambda(T)
+   \bigl(1 + J_\lambda/B_{\rm env}\bigr)\,d\lambda
+   \;=\; \int C_{\rm abs}\,B_\lambda(T)\,d\lambda
+   \;+\; \int C_{\rm abs}\,J_\lambda\,d\lambda
+   \;=\; 2\!\int C_{\rm abs}\,J_\lambda\,d\lambda
+\]
+which is the standard two-level-system gross-emission doubling
+(spontaneous plus stimulated, equal to twice the heating rate in
+equilibrium). The \emph{net} emission an external observer sees from
+an optically-thin column is gross minus absorbed,
+$\int C_{\rm abs}\,B_\lambda(T)\bigl(1 + J/B_{\rm env}\bigr)\,d\lambda
+- \int C_{\rm abs}\,J_\lambda\,d\lambda
+= \int C_{\rm abs}\,B_\lambda(T)\,d\lambda$, recovering the Kirchhoff
+result $j_\lambda = C_{\rm abs}(\lambda)\,B_\lambda(T)$ that our
+baseline already computes. Draine's single-grain \texttt{iout} files
+are therefore gross emission; HD23 publishes net. The toggle and
+the \texttt{apply\_induced\_factor} subroutine remain in
+\texttt{src/sed\_astrodust.f90} for future cross-checks but
+\emph{must stay off (\texttt{.false.}) for production}, as anything
+fed into a downstream radiative-transfer code that itself handles
+external-field absorption needs the net convention. The candidate
+list for the 15\% FIR-peak residual is therefore unchanged.
+
+\paragraph{Mathis 4000\,K dilution correction.} Draine's reference
+Mathis~1983 ISRF implementation carries a 2008.02.02
+note recording a numerical correction to the 4000\,K diluted-
+blackbody weight: \texttt{OMEGA3} was changed from $10^{-13}$ (the
+literal Mathis~1983 value our \texttt{radfield.f90 :: J\_Mathis}
+inherited) to $1.65\times 10^{-13}$ (the value also tabulated in
+Draine's textbook, \emph{Physics of the Interstellar and
+Intergalactic Medium}, 2011, Table~12.1). The CMB component was
+also updated from $2.9$\,K to the Mather-et-al.\ value $2.725$\,K.
+Both corrections were added behind a toggle
+(\texttt{use\_mathis\_corrected}, default \texttt{.true.} in
+\texttt{radfield.f90}) so the historical original-Mathis behaviour
+can be reproduced as \texttt{./main\_astrodust.x mathis\_orig} which
+prefixes outputs with \texttt{morig\_}.
+
+A single-grain diagnostic integrates the heating
+rate $\int C_{\rm abs}(\lambda)\,J_\lambda\,d\lambda$ at a fiducial
+$a = $\,\SI{0.1}{\micro\meter} astrodust grain and solves for
+$T_{\rm eq}$ by bisection. The corrected ISRF raises $T_{\rm eq}$
+from 17.34\,K to 17.56\,K ($+0.22$\,K, $+1.28\%$); the resulting
+$B_\lambda(T_{\rm eq})$ at $\lambda = $\,\SI{130}{\micro\meter}
+rises by $+8.4\%$, with the FIR-peak boost growing monotonically
+with grain size from $+3\%$ at \SI{5}{nm} (PAH/small) up to
+$+21\%$ at \SI{1}{\micro\meter} (cool large grain whose Planck
+peak sits closer to 130\,$\mu$m). The CMB temperature change
+($2.9$\,K $\to$ $2.725$\,K) is negligible for $T_{\rm eq}$ because
+CMB heating is subdominant to stellar UV at all but the very
+largest grain sizes.
+
+The full-pipeline effect for the headline comparison (Stage S1\_C1
+vs HD23 \texttt{astrodust\_irem.dat} at $\log U = 0.20$) is
+summarised in Table~\ref{tab:mathis_c}: the FIR-peak deficit moves
+from $-15.83\%$ to $-8.82\%$, sub-mm from $-5.65\%$ to $-3.16\%$,
+and the mm-band from $-3.97\%$ to $-2.21\%$. The PAH 30--300\,$\mu$m
+band, which was the most discrepant of the well-behaved bands at
+$-4.40\%$, closes to $+0.02\%$ -- essentially perfect. Stages
+S1\_C2 and S2 show the same pattern (FIR moves to $-8.40\%$ and
+$-8.46\%$ respectively).
+
+\begin{table}[h]
+\centering
+\begin{tabular}{l r r r}
+\toprule
+band ($\mu$m)              & original Mathis & production (corrected) & shift \\
+\midrule
+30--300 (FIR peak)         & $-15.83\%$ & $-8.82\%$  & $+7.01$\,pp \\
+300--3000 (sub-mm)         & $-5.65\%$  & $-3.16\%$  & $+2.49$\,pp \\
+$>3000$ (mm)               & $-3.97\%$  & $-2.21\%$  & $+1.76$\,pp \\
+\midrule
+PAH 30--300                & $-4.40\%$  & $+0.02\%$  & $+4.42$\,pp \\
+\bottomrule
+\end{tabular}
+\caption{Median relative residual (ours~$-$~HD23)/HD23 for Stage
+S1\_C1 with and without the corrected Mathis 4000\,K
+dilution factor. The corrected variant is now the production
+default; the original-Mathis variant is reproducible via
+\texttt{./main\_astrodust.x mathis\_orig}.}
+\label{tab:mathis_c}
+\end{table}
+
+This closes roughly half of the historical 15\% FIR deficit. The
+remaining $\sim 8.5\%$ is too small to be another order-of-magnitude
+typo, and is small enough to be consistent with either HD23 using a
+slightly different normalization of the Mathis field (e.g., a
+different interpretation of $\log U = 0.20$, see candidate~(i) in
+the conclusions) or with a size-by-size $T_{\rm eq}(a)$ sampling
+difference between our code and HD23's
+(candidate~(iii)). Definitive resolution requires HD23 internals.
+
+\paragraph{What is in our hands and what is not.} Our
+implementation -- T-matrix Q, small-x Rayleigh spheroid fallback,
+random-orientation average $\bigl(\tfrac{1}{3} + \tfrac{2}{3}\bigr)$,
+\texttt{calc\_Teq}, $\kappa_B$ build, size sum -- is internally
+self-consistent and reproduces HD23 \texttt{extinction.dat} to better
+than 1\% on aggregate $\tau/N_H$. The consistency of our cross
+sections, equilibrium temperatures, and aggregate $\tau$ gives us
+confidence that the model is correct in everything we control. The
+remaining FIR-peak residual in $\lambda I_\lambda / N_H$ vs.\ HD23
+\texttt{astrodust\_irem.dat} was subsequently traced to HD23's own
+energy non-conservation (\S\ref{sec:phaseE-resolution}); the full
+chain of diagnostics is given below; the single-grain figure is
+\texttt{figs/cabs\_per\_grain\_vs\_hd23.pdf}.
+
+\subsubsection{Resolution: the deficit is HD23's own
+emitted-vs-absorbed excess}
+\label{sec:phaseE-resolution}
+
+The residual was subsequently resolved by an energy-budget audit (the
+full tracing is in \texttt{docs/solver\_tracing\_bdraine.tex},
+``Energy budget: the HD23 release is internally inconsistent''). The
+release provides its own component-by-component
+$\Cabs = C_{\rm ext} - C_{\rm sca}$ (\texttt{extinction.dat},
+\texttt{scattering.dat}), against which our optics were validated to
+$\lesssim 1\%$ (extinction and albedo) and to $\sim 4$ digits
+grain by grain. Integrating that \emph{released} \Cabs\ against the
+corrected Mathis field $\times\,10^{0.2}$ --- extrapolating across the
+\SIrange{0.0912}{0.1}{\micro\meter} extinction-grid gap with the local
+power law (astrodust $+4.2\%$, PAH $+6.8\%$) --- gives the absorbed
+power, which energy conservation requires to equal the emitted power
+of the \texttt{irem} tables. It does not:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{l r r c c c}
+\toprule
+component & $P_{\rm abs}/N_H$ & $P_{\rm em}^{\rm HD23}/N_H$ &
+$P_{\rm em}/P_{\rm abs}$ & ours$/P_{\rm abs}$ & ours/HD23 \\
+          & (erg\,s$^{-1}$)   & (erg\,s$^{-1}$)            &
+& & \\
+\midrule
+astrodust & $2.724\times10^{-24}$ & $2.977\times10^{-24}$ &
+\textbf{1.093} & 0.999 & 0.914 \\
+PAH       & $2.003\times10^{-24}$ & $2.067\times10^{-24}$ &
+\textbf{1.032} & 0.983 & 0.953 \\
+\bottomrule
+\end{tabular}
+\caption{Energy budget per H at $\log U = 0.20$. The HD23 release
+emits $9.3\%$ (astrodust) and $3.2\%$ (PAH) more than its own released
+\Cabs\ absorb; our pipeline conserves to $0.15\%$
+(ours$/P_{\rm abs} = 0.999$).}
+\label{tab:ad_energy}
+\end{table}
+
+The ratio $P_{\rm em}/P_{\rm abs}$ is constant in $U$ (a pure
+amplitude factor). Our pipeline, run with the release-consistent
+\Cabs, conserves energy to $0.15\%$ and therefore lands exactly at
+ours/HD23 $= 0.914$ --- i.e.\ \emph{the long-standing $\sim 8.5\%$
+FIR-peak ``deficit'' equals HD23's own emitted-vs-absorbed excess},
+not an error in our pipeline. Because the excess is
+component-dependent ($9.3\%$ astrodust vs.\ $3.2\%$ PAH), it cannot be
+a heating-field or $U$-convention offset (which would shift both
+components equally); it points instead to the internal \Cabs\ (or
+abundance normalization) used for the \texttt{irem} calculation
+exceeding what the released extinction$-$scattering tables encode ---
+the same internal-vs-released vintage phenomenon documented for
+DL07spec and the \texttt{iout} files. This retires candidates~(i) and
+(iii) above: the residual is not a \Teq, grid, or size-sampling error
+on our side. After removing the 1.093 amplitude the astrodust residual
+is flat to $\pm 2\%$ over \SIrange{60}{300}{\micro\meter}, consistent
+with an amplitude-type (abundance or \Cabs-scale) inconsistency rather
+than a heating-side one.
+
+\subsection{PAH emission}
+\label{sec:pah}
+
+HD23 \S3.2 follows Draine et al.\ (2021), whose PAH cross sections are
+themselves based on DL07; the DL07 cross sections are already
+implemented in SED\_v5 as \texttt{QPAH\_DL07(charge, R, lambda, Qabs)}
+and were forked into \texttt{sed/src/qpah.f90}. As noted in HD23
+\S3.2, PAH grains are treated as spherical with $\rho_{\rm PAH} =
+2.0$~g/cm$^3$, depend only on grain size and charge (no orientation),
+and \emph{do not contribute to polarized extinction or emission}; this
+matches our implementation (no T-matrix on the PAH track).
+
+The HD23 PAH cross section per grain is built in three steps:
+
+\paragraph{Step 1: charge mixing.} The DL07 cross sections are
+available for neutral and ionized PAHs; HD23 eq.~15 mixes them with an
+ionization fraction $\xi_{\rm ion}(a)$ (HD23 eq.~19):
+\begin{equation}
+C^Z(\lambda, a) = [1 - \xi_{\rm ion}(a)]\,C^{\rm neu}(\lambda, a)
+                + \xi_{\rm ion}(a)\,C^{\rm ion}(\lambda, a),
+\end{equation}
+with $\xi_{\rm ion}(a) = 1 - 1/(1 + a/$\SI{10}{\angstrom}$)$ from
+\texttt{size\_distribution.dat} column~4.
+
+\paragraph{Step 2: graphite continuum blending (HD23 eq.~15-16).}
+DL07's PAH cross section drops to essentially zero at long
+wavelengths; HD23 retains DL07's recipe of blending into a
+random-orientation graphite Mie cross section $C^{\rm gra}(\lambda, a)$
+for $a > $~\SI{50}{\angstrom}, so that PAH grains acquire the same
+sub-mm continuum opacity that DL07 reports for ``turbostratic''
+graphite. The blended cross section is
+\begin{equation}
+C^{\rm PAH, Z}(\lambda, a) = [1 - \xi_{\rm gra}(a)]\,C^Z(\lambda, a)
+                           + \xi_{\rm gra}(a)\,C^{\rm gra}(\lambda, a),
+\label{eq:xi_gra}
+\end{equation}
+with
+\begin{equation}
+\xi_{\rm gra}(a) = \begin{cases}
+   0.01 & a \le \SI{50}{\angstrom} \\
+   0.01 + 0.99\,\bigl[1 - (\SI{50}{\angstrom}/a)^3\bigr]
+        & a > \SI{50}{\angstrom}.
+\end{cases}
+\end{equation}
+$C^{\rm gra}(\lambda, a)$ is the random-orientation Mie cross section
+for graphite spheres,
+$C^{\rm gra} = \tfrac{1}{3}C^{\rm gra}_\parallel
+            + \tfrac{2}{3}C^{\rm gra}_\perp$, with the two components
+computed from the Draine~2003 graphite dielectric tables
+(\texttt{index\_CpaD03}, \texttt{index\_CpeD03}) using a
+size-dependent free-electron contribution
+(\texttt{free\_diel}, Draine~2003 form for $T_{\rm gr} = 20$~K) and a
+standard Bohren--Huffman Mie solver. Implementation: new module
+\texttt{sed/src/q\_graphite.f90} loads the two graphite tables lazily,
+caches the $(n, k)$ tables per grain radius, and calls
+\texttt{sed/src/mie.f90} (a module wrapper of the BHMIE code already
+in \texttt{tmatrix/test/}) twice per $(a, \lambda)$. Below the DL07
+PAH cutoff at $\lambda = 1/17.25$\,$\mu$m the blend reduces to pure
+graphite (HD23 / SED\_v5 convention), since $C^Z$ is not defined
+there.
+
+\paragraph{Step 3: size and enthalpy.} The PAH size distribution is
+column~3 of \texttt{size\_distribution.dat} (the second of HD23
+eq.~17's two lognormals, peaks at $\sim 4$ and \SI{30}{\angstrom}).
+PAH enthalpy uses the DL01 \texttt{'Car0'} branch with the H/C-mode
+correction for $N_{\rm atom} < 10^4$, as recommended by HD23 since PAH
+is carbonaceous.
+
+A new function \texttt{sed\_solve\_pah(J\_lam, lamI\_lam\_out)} solves
+the single-cell PAH SED with the same dynamic-T machinery. The combined
+total (Ad + PAH) is compared against HD23
+\texttt{model\_irem.dat} in \autoref{fig:sed_total}.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.9\textwidth]{figs/sed_total_with_pah.pdf}
+\caption{Total dust thermal emission (Ad + PAH) at $U = 1.585$. Top:
+HD23 \texttt{model\_irem.dat} (black solid), HD23 PAH-only
+(\texttt{PAH\_irem.dat}, gray dotted), our S1\_C1 + PAH (red dashed),
+and our PAH-only (blue dashed). Bottom: relative residual on the
+total. The PAH \SI{7.7}{\micro\meter} feature is in the right place
+and the right order of magnitude.}
+\label{fig:sed_total}
+\end{figure}
+
+Key results (verification against HD23 \texttt{PAH\_irem.dat} at
+$\log U = 0.20$, band-integrated $\int (\lambda I_\lambda)/\lambda \,
+d\lambda$):
+
+\begin{tabularx}{0.85\textwidth}{l c X}
+\toprule
+band ($\mu$m) & ours / HD23 & notes \\
+\midrule
+optical ($\lambda < 1$\,$\mu$m)         & 0.90  & absolute $\sim 10^{-28}$, negligible vs total \\
+NIR (1--5\,$\mu$m)                      & 0.61  & PAH-feature region; see Sect.~\ref{sec:pah_feature_residual} \\
+PAH features (5--15\,$\mu$m)            & 1.04  & C--C and C--H feature shape recovered \\
+mid-IR (15--60\,$\mu$m)                 & 1.19  & \\
+FIR (60--300\,$\mu$m)                   & 0.76  & same direction as the astrodust 15\% \\
+sub-mm (300--3000\,$\mu$m)              & 0.61  & cf.\ $\sim 0.10$ without eq.~\ref{eq:xi_gra} \\
+TOTAL (0.1--3000\,$\mu$m)               & 1.01  & global agreement to 1.0\% \\
+\bottomrule
+\end{tabularx}
+
+The PAH peak position (\SI{7.67}{\micro\meter}) matches HD23
+(\SI{7.69}{\micro\meter}) to two significant figures. Adding the
+graphite continuum (Step 2 above) closed approximately 75\% of the
+sub-mm gap, going from a $\sim 90\%$ under-prediction to the current
+$\sim 40\%$. The remaining 40\% sub-mm under-prediction is the same
+sign and roughly the same numerical level as the astrodust-population
+15--25\% FIR deficit at the FIR peak, suggesting a common origin
+unrelated to PAH cross-section physics
+(Sect.~\ref{sec:phaseE-residual-analysis}).
+
+\subsection{$\xi$-blend graphite update: D16 turbostratic}
+\label{sec:d16-swap}
+
+The Step~2 above uses Draine~2003 (D03) basal-plane and c-axis
+graphite dielectric functions plus our own BHMIE on a sphere to
+synthesise $C^{\rm gra}(\lambda, a)$ in real time. HD23 themselves do
+\emph{not} use D03 graphite; they explicitly state (HD23~\S3.2) that
+they adopt the Draine~2016 (D16) turbostratic graphite cross sections
+in the Maxwell--Garnett effective-medium approximation. Switching the
+$\xi$-blend graphite to D16 brings the model in line with the HD23
+recipe and removes the largest remaining systematic in the PAH SED.
+
+\paragraph{What was changed.} A new module
+\texttt{sed/src/q\_graphite\_d16\_sphere.f90} reads Draine's
+precomputed D16 sphere Q-table (\texttt{q\_D16graphite.dat}, the
+decompressed \texttt{callqcomp.out\_D16MGemt.gz} from the Princeton
+D16graphite web page; 41 radii $\times$ 3501 wavelengths). A bilinear
+log-log interpolator returns $Q_{\rm abs}^{\rm gra}(a, \lambda)$
+without re-running Mie. The single line in
+\texttt{sed/src/qpah.f90} that used to call \texttt{q\_graphite\_abs}
+(D03 Mie) now calls \texttt{q\_graphite\_d16\_sphere\_abs}; everything
+else (the $\xi_{\rm gra}(a)$ blend, the cation/neutral mixing, the
+sub-mm graphite cutoff) is unchanged. The original D03 module
+\texttt{sed/src/q\_graphite.f90} is retained in the tree for
+sensitivity testing.
+
+\paragraph{Sphere vs.\ b/a $=$ 1.4 oblate spheroid.} Draine also
+publishes a $b/a = 1.4$ oblate-spheroid version of the same
+turbostratic D16 graphite (\texttt{qlib\_gra\_D16MGemt\_1.400.gz};
+$169 \times 1009$ from his own T-matrix runs). A second module
+\texttt{q\_graphite\_d16.f90} loads that table. Comparing the three
+$\xi$-blend graphite choices (\autoref{fig:d16_swap}) shows that the
+spherical D16 variant agrees with HD23 \texttt{PAH\_irem.dat} better
+than the oblate spheroid variant in the sub-mm band (300--3000\,$\mu$m
+PAH-only median ratio $0.99$ vs.\ $1.20$). This is consistent with
+HD23 §3.2, which inherits DL07's spherical-PAH framework even though
+the astrodust population itself is treated as $b/a = 1.4$ oblate. The
+D16 sphere is therefore the appropriate choice for the $\xi$-blend and
+is the production setting.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.95\textwidth]{figs/sed_total_d16_threeway.pdf}
+\caption{Three-way comparison of the $\xi$-blend graphite source.
+Top: HD23 total (black solid) and HD23 PAH-only (gray dotted) on the
+release wavelength grid, plus our \texttt{S1\_C1 + PAH} totals with
+three graphite-source choices for the $\xi$-blend (D03 sphere
+red dashed, D16 sphere blue solid, D16 spheroid green dash-dot).
+Bottom: relative residual of each total against HD23
+\texttt{model\_irem.dat}. The D03 sphere variant has the characteristic
+$+40\%$ MIR/FIR peak (3.3--\SI{30}{\micro\meter}) and $-25\%$ FIR-peak
+deficit; both are removed by the D16 sphere variant. The D16 spheroid
+overshoots in the sub-mm.}
+\label{fig:d16_swap}
+\end{figure}
+
+\paragraph{Updated band-integrated ratios.} The table below replaces
+the D03-sphere numbers above with the production D16-sphere values,
+side by side with the alternative variants. ``ours / HD23'' is the
+ratio of band-integrated $\int (\lambda I_\lambda)/\lambda \, d\lambda$
+on the wavelength grid of the release file (\texttt{PAH\_irem.dat},
+$\log U = 0.20$):
+
+\begin{tabularx}{0.95\textwidth}{l c c c X}
+\toprule
+band ($\mu$m) & D03 sphere & D16 sphere & D16 spheroid & notes \\
+\midrule
+optical ($\lambda < 1$\,$\mu$m)         & 0.90 & 0.88 & 0.86 & absolute $\sim 10^{-28}$, negligible vs total \\
+NIR (1--5\,$\mu$m)                      & 0.61 & 0.85 & 0.75 & PAH-feature region \\
+PAH features (5--15\,$\mu$m)            & 1.04 & 1.03 & 1.03 & dominated by DL07 Drude profiles \\
+mid-IR (15--60\,$\mu$m)                 & 1.19 & 1.06 & 1.05 & \\
+FIR (60--300\,$\mu$m)                   & 0.76 & 0.95 & 1.04 & D03 had the original 25\% deficit \\
+sub-mm (300--3000\,$\mu$m)              & 0.61 & \textbf{0.99} & 1.20 & D16 sphere essentially zero residual \\
+TOTAL (0.1--3000\,$\mu$m)               & 1.01 & 1.01 & 1.03 & global agreement preserved \\
+\bottomrule
+\end{tabularx}
+
+The 40\% sub-mm under-prediction reported above (D03 sphere column)
+is fully closed by the D16 swap; the residual $\sim 1\%$ in the sub-mm
+band is within the expected DL07-vs-HD23 calibration noise. The
+remaining mismatch (NIR --15\%) is now isolated to the PAH-feature
+strengths themselves: a separate cross-section issue independent of
+the graphite source (\autoref{sec:pah_feature_residual}).
+
+\subsection{Residual PAH-feature strength mismatch}
+\label{sec:pah_feature_residual}
+
+After the D16 sphere swap, the remaining $\lambda < 5$\,\si{\micro\metre}
+PAH residual decomposes into (i)~a smooth NIR continuum that
+contributes the $-15\%$ NIR-band figure above, and (ii)~a feature-by-
+feature strength mismatch independent of the graphite source. The
+latter shows the following pattern in our band-integrated ratios
+(D16-sphere production vs.\ HD23 \texttt{PAH\_irem.dat}):
+the \SI{3.3}{\micro\meter} aromatic C--H stretch is under-predicted by
+$\sim 37\%$, the \SI{11.3}{\micro\meter} C--H bend by $\sim 17\%$, and
+the \SI{7.7}{\micro\meter} C--C stretch is over-predicted by $\sim 15\%$;
+the 14.19 and \SI{17}{\micro\meter} bands also show $\sim 30\%$
+deviations relative to HD23. The HD23 paper~\S3.2 states that its PAH
+cross sections are ``identical to those of DL07 with the exceptions of
+the \SI{14.19}{\micro\meter} feature and the \SI{17}{\micro\meter}
+complex, which have both been increased in strength by 33\%''; the
+sign and magnitude of our residuals are not consistent with that
+single isolated change. A separate inspection of DL07 Table 1 itself
+(in the context of the SED\_v5 \texttt{QPAH\_DL07} fork from which
+\texttt{sed/src/qpah.f90} descends) found that the
+\SI{1.260}{\micro\meter} ionized PAH strength is
+$\sigma_{\rm Ion}(4) = 0.078$ in the published table whereas a value of
+$7.8 \times 10^3$ (a factor of $10^5$ larger) reproduces the publicly
+distributed DL07 SED; the SED\_v5 fork uses the corrected value and
+this report inherits that correction. We document the feature-by-feature
+residuals here as a numerical record; a definitive resolution would
+require either an independent re-derivation of the DL07 Drude
+parameters or direct correspondence with the HD23 authors about which
+DL07 Table 1 entries went into their \texttt{PAH\_irem.dat}
+construction.
+
+\paragraph{Mode-by-mode Drude tuning to HD23.} We have additionally
+implemented an empirical mode-by-mode rescaling of the DL07 Drude
+parameters that closes the feature-by-feature mismatch to within
+$\pm 3\%$ at the dominant peaks (3.3, 6.2, 7.7-complex, 8.6,
+11.3-complex, 12.0--12.7-complex, 17 complex). Mode-by-mode
+multiplicative factors $f^{(j)}_\sigma$ for \texttt{sigma\_neu(j)}
+and \texttt{sigma\_ion(j)} (and optionally
+$f^{(j)}_\gamma$ for the Drude width) live as module-level public
+arrays in \texttt{sed/src/qpah.f90} (toggle
+\texttt{use\_tuned\_pah}, default \texttt{.false.}); the production
+driver reads them from \texttt{sed/pah\_tune.nml} when invoked as
+\texttt{./main\_astrodust.x pah\_tuned}. The convergence path was:
+(i)~three iterations of single-mode adjustment using a feature-by-feature
+ratio diagnostic; (ii)~a 2-mode least-squares fit on
+$j=22$ and $j=23$, which drove
+$f^{(23)}_\sigma$ to the lower clamp at $0.30$ -- diagnostic for
+graphite-continuum bleed into those weak features rather than a
+PAH-$\sigma$ issue; (iii)~a 130-point $(\sigma_6, \gamma_6)$
+brute-force grid search at the \SI{3.3}{\micro\meter}
+peak to resolve the $\sigma$-vs-$\gamma$ ambiguity inherent in
+that very narrow Drude profile ($\gamma_6 = 0.012$, FWHM $\approx
+0.04\,\mu$m -- comparable to HD23's grid spacing of
+$0.042\,\mu$m). The grid optimum is at
+$f^{(6)}_\sigma = 2.00$ with $f^{(6)}_\gamma = 1.00$
+(i.e., HD23 boosted only the integrated strength of the
+\SI{3.3}{\micro\meter} C--H stretch; the underlying Drude width
+matches DL07), with $\chi^2 = 5.0\times 10^{-4}$ over the three
+nearest HD23 grid points. Pure-$\gamma$-narrow
+($f_\gamma = 0.45$) and equal-boost ($f_\sigma = f_\gamma = 1.45$)
+scenarios are 5--10$\times$ worse, ruling them out.
+Table~\ref{tab:pah_tune} lists the final factors. The residual
+$+5$--$15\%$ over-prediction at 13--\SI{19}{\micro\meter} is
+attributed to the graphite continuum (it cannot be closed by PAH
+$\sigma$ adjustment alone, as the LS fit demonstrated) and is
+discussed further in \S\ref{sec:pah}.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{r r l r}
+\toprule
+$j$ & $\lambda_j$ ($\mu$m) & feature                  & $f^{(j)}_\sigma$ \\
+\midrule
+  6 & 3.300  & C--H stretch (3.3)              & \textbf{2.00} \\
+  7 & 5.270  & C--H/C--C combo                 & 0.84 \\
+  8 & 5.700  & C--H/C--C combo                 & 0.81 \\
+  9 & 6.220  & C--C stretch (6.2)              & 0.73 \\
+ 10 & 6.690  & weak                            & 0.86 \\
+ 11 & 7.417  & 7.7 complex (a)                 & 0.79 \\
+ 12 & 7.598  & 7.7 complex (b)                 & 0.79 \\
+ 13 & 7.850  & 7.7 complex (c)                 & 0.76 \\
+ 14 & 8.330  & weak                            & 1.04 \\
+ 15 & 8.610  & C--H in-plane bend (8.6)        & 1.02 \\
+ 17 & 11.23  & C--H oop (solo narrow)          & 1.34 \\
+ 18 & 11.33  & C--H oop (solo broad, 11.3)     & 1.33 \\
+ 19 & 11.99  & duo                             & 1.17 \\
+ 20 & 12.62  & trio                            & 1.24 \\
+ 21 & 12.69  & trio                            & 1.22 \\
+ 22 & 13.48  & quartet                         & 1.06 \\
+ 23 & 14.19  & quartet (HD23 +33\%)            & 1.03 \\
+ 25 & 16.45  & C-C-C bend                      & 1.15 \\
+ 26 & 17.04  & C-C-C bend (HD23 +33\%)         & 1.34 \\
+ 27 & 17.375 & C-C-C bend                      & 1.24 \\
+ 28 & 17.87  & C-C-C bend                      & 1.02 \\
+ 29 & 18.92  & weak                            & 0.87 \\
+\bottomrule
+\end{tabular}
+\caption{Final mode-by-mode Drude $\sigma$ multipliers applied to DL07
+Table~1 to reproduce HD23 \texttt{PAH\_irem.dat} at $\log U = 0.20$
+(all $f^{(j)}_\gamma$ left at $1.00$). $f^{(j)}_\sigma$ is applied
+identically to \texttt{sigma\_neu} and \texttt{sigma\_ion}. Modes
+not listed are kept at $f = 1$ (no change). Production with
+\texttt{./main\_astrodust.x pah\_tuned}.}
+\label{tab:pah_tune}
+\end{table}
+
+
+\section{Polarization}
+
+Per HD23~\S3.2, the PAH track does \emph{not} contribute to polarized
+extinction or emission (PAH grains are spherical in the model and not
+aligned). The polarization comparison below therefore uses the
+astrodust population only.
+
+For perfectly oblate spheroids with the short (symmetry) axis aligned
+perpendicular to a magnetic field in the plane of the sky (the
+``MPFA'' geometry of HD23 \S2.2), the maximum polarized extinction per
+H atom is
+\begin{equation}
+\left(\frac{p_\lambda}{N_H}\right)^{\max}
+= \sum_a \frac{dn_{\rm Ad}}{N_H}(a)\,
+  C_{\rm pol}^{\rm ext}(\lambda, a)\, f_{\rm align}(a),
+\label{eq:pmax}
+\end{equation}
+where
+\begin{equation}
+C_{\rm pol}^{\rm ext}(\lambda, a) = \frac{1}{2}\,\pi a^2\,
+   \left[\Qext^{\,E\parallel a}(\lambda, a) - \Qext^{\,E\perp a}(\lambda, a)\right]
+\end{equation}
+is the dichroic-extinction component, and
+$\Qext^{\,E\parallel a}$, $\Qext^{\,E\perp a}$ are Mishchenko's
+\texttt{jori = 2} (E parallel to symmetry axis) and
+\texttt{jori = 3} (E perpendicular) Q values. The alignment efficiency
+$f_{\rm align}(a)$ is read from \texttt{size\_distribution.dat}
+column~5.
+
+To save the cost of a separate orientation-resolved T-matrix sweep,
+a verification utility reads
+the HD23 release file
+\texttt{q\_DH21Ad\_P0.20\_Fe0.00\_1.400.dat.gz} directly --- this file
+already contains all three jori Q tables. The Q values are
+interpolated in $\log a$ from the 169-point DH21 grid onto the
+167-point size-distribution grid, eq.~\ref{eq:pmax} is evaluated, and
+the result is compared against
+\texttt{polarized\_extinction.dat}.
+
+\autoref{fig:pol} shows the comparison. The peak value
+$|p^{\max}/N_H| = 1.521 \times 10^{-23}$~\si{cm^2.H^{-1}} at
+\SI{0.59}{\micro\meter} agrees with the HD23 peak
+$1.520 \times 10^{-23}$~\si{cm^2.H^{-1}} at the same wavelength to
+four significant figures. Mean $|$relative residual$|$ is below 0.07\%
+in every band from optical to millimeter; the only outliers are at
+the cross-polarization sign-flip in the deep UV where the reference
+itself is going through zero. This is essentially a perfect
+reproduction.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.9\textwidth]{figs/polarization.pdf}
+\caption{Top: $|p^{\max}_\lambda|/N_H$ from HD23
+\texttt{polarized\_extinction.dat} (black solid) and from
+eq.~\ref{eq:pmax} evaluated on the HD23 release Q tables (red dashed).
+Bottom: relative residual in percent. Peak value agrees to four
+significant figures.}
+\label{fig:pol}
+\end{figure}
+
+
+\section{Python utility (Phase G)}
+
+A standalone Python sidecar of the single-grain SED solver is provided in
+\texttt{pyutil/sed\_from\_cabs.py}. It exposes
+\begin{verbatim}
+   T_eq, lamI_lam = sed_equilibrium(lam_um, Cabs, J_lam)
+   P, lamI_lam    = sed_stochastic (lam_um, Cabs, J_lam, T_grid, U_grain)
+\end{verbatim}
+with the same unit conventions and the same matrix solver as the
+Fortran library. The function signature takes only what a single
+3D-RT cell needs: $\lambda$, $C_{\rm abs}(\lambda)$, $J_\lambda$, and
+(for stochastic mode) the enthalpy $U(T)$ on a user-chosen $T$ grid.
+A regression test
+(\texttt{pyutil/tests/test\_against\_fortran.py}) extracts $\Cabs$
+for a single $a = 0.1$\,$\mu$m astrodust grain from the Fortran Q
+table, builds the Mathis ISRF at $U = 1.585$, and solves equilibrium:
+$\Teq = 17.34$~K, comfortably in the expected ISM range and within
+$0.5$~K of the Fortran-computed value for a nearby grain.
+
+The Python sidecar is intended for prototyping radiation-field
+shapes, plotting single-grain spectra, and validating the Fortran
+library on representative grains without running the full
+size-distribution pipeline.
+
+
+\section{Model-agnostic dust-emission library (Phase H)}
+\label{sec:phaseH-library}
+
+The two-step solver of Phase~D has been packaged into a
+\emph{model-agnostic dust thermal-emission library} that a Fortran 3D
+radiative-transfer (RT) code can link to compute the IR emission of a
+dust mixture for an arbitrary local radiation field. The motivation is
+operational: the same validated solver should serve astrodust, the
+legacy DL07 silicate+carbonaceous model, and additional models (here
+Zubko, Dwek \& Arendt~2004) as \emph{peers}, selected at run time rather
+than hard-wired.
+
+\paragraph{Architecture (wrap, do not move).} The numerically validated
+solver core --- \texttt{sed\_grain\_loop} with \texttt{calc\_Teq} /
+\texttt{calc\_P} (\texttt{p\_sub.f90}) and \texttt{qm\_solve\_grain}
+(\texttt{stoch\_qm.f90}) --- is left \emph{unchanged}; the library is a
+purely additive layer. Production \texttt{main\_astrodust.x} and
+\texttt{main\_dl07.x} outputs stay bit-identical (verified byte-for-byte
+at fixed \texttt{OMP\_NUM\_THREADS}). A dust model is represented by one
+derived type, \texttt{dust\_model\_t} (in the new
+\texttt{sed/src/dust\_model\_mod.f90}), holding the wavelength /
+size / temperature grids and an array of grain \emph{populations}
+(\texttt{grain\_pop\_t}, one per species and charge state, each carrying
+its own size distribution, \Cabs/\Qsca, enthalpy, and Planck-integral
+tables). The emission is summed into named output \emph{channels}.
+
+\paragraph{Models as peers.} Four builders fill a \texttt{dust\_model\_t};
+each sets its own optics and abundance parameters internally:
+
+\begin{tabularx}{0.95\textwidth}{l l l}
+\toprule
+builder & model & channels \\
+\midrule
+\texttt{build\_astrodust}   & HD23 astrodust+PAH ($N_C{=}417$, D16 graphite) & \texttt{AD}, \texttt{PAH} \\
+\texttt{build\_dl07}        & Draine \& Li 2007 ($N_C{=}470$, D03 graphite)  & \texttt{SIL}, \texttt{CARB} \\
+\texttt{build\_zubko}       & Zubko et al.~2004 (ZDA) BARE-GR-S              & \texttt{PAH}, \texttt{GRA}, \texttt{SIL} \\
+\texttt{build\_from\_files} & generic, defined by a text descriptor         & \texttt{CH1}, \texttt{CH2}, \ldots \\
+\bottomrule
+\end{tabularx}
+
+\noindent The Zubko model exercises the design's generality: a neutral-only
+PAH population (no charge split), component-by-component size grids, a DustEM-style
+$Q$-table optics reader, and a \emph{specific-enthalpy} calorimetry source
+(\texttt{sed/src/zubko\_io.f90}) --- all confined to the builder, so the
+solver core is untouched. Its data (config/formula, size tables, optics,
+calorimetry) is taken from the Camps et al.~2015 benchmark and copied into
+\texttt{data/zubko/}.
+
+\paragraph{Emission and solver options.} The RT code calls
+\texttt{dust\_emission(m, J\_lam, lamI\_total [, lamI\_chan])} once per
+cell with that cell's mean intensity on \texttt{m\%lam}; the result is
+\lamIlam/\Nh\ in the HD23 convention, optionally split by channel. The
+solver is chosen by \texttt{m\%stoch\_method}: \texttt{'heuristic'}
+(default; the look-ahead $T$-window narrowing, fastest and
+serial --- ideal inside an RT cell loop), \texttt{'draine'}
+(Guhathakurta \& Draine~1989), \texttt{'qm'} (the energy-space
+transition-matrix solver of \S\ref{sec:phaseE-residual-analysis}), or
+\texttt{'equil'} (force every grain to its own equilibrium \Teq). Two
+equilibrium-temperature options are provided for fast approximate
+transfer: an equilibrium \Teq\ for each grain species and size
+(\texttt{stoch\_method = 'equil'}), and a single \Teq\ for the whole mixture from the
+abundance-weighted total absorption cross section
+(\texttt{dust\_emission\_single\_teq}). Both conserve energy by
+construction; the single-\Teq\ value for the diffuse-ISM field is
+$\Teq = \SI{19.24}{\kelvin}$, with total power within $0.1\%$ of the
+stochastic solve --- they differ only in SED \emph{shape} (a smooth
+modified blackbody versus one carrying the PAH/NIR features).
+
+\paragraph{Single-cell solve versus precomputed table.} For an arbitrary
+field shape the single-cell exact \texttt{dust\_emission} is used. When the
+cell field is a fixed reference shape scaled by an intensity $U$, a
+precompute-and-interpolate path (\texttt{dust\_build\_table} /
+\texttt{dust\_emission\_interp}, log--log in $U$) avoids the single-cell
+solve and is exact at the grid points. The table is valid \emph{only}
+for $U\times(\text{fixed shape})$: stochastic emission is a nonlinear
+functional of the full $J(\lambda)$, so cells with a hardened spectrum
+must use the exact solve. This caveat is documented in the API contract.
+
+\paragraph{Linking and validation.} \texttt{make libsedust.a} produces a
+static archive that an external Fortran RT links with
+\texttt{gfortran -I<sed> rt.f90 libsedust.a -fopenmp}; a minimal working
+driver is \texttt{sed/rt\_example/use\_dustlib.f90}. Validation: the typed path
+reproduces the production astrodust and DL07 channels to machine
+precision; the table interpolated at a grid point matches the direct
+solve to $\sim 10^{-15}$; and the two equilibrium options conserve
+energy to $0.1\%$. The complete API and usage are documented separately
+in \texttt{docs/SEDust\_user\_manual.tex}.
+
+\section{Conclusions and next steps}
+
+The pipeline reproduces HD23's published results across the
+independent observables we have probed:
+
+\begin{tabularx}{0.95\textwidth}{l l c}
+\toprule
+Quantity & Comparison & Result \\
+\midrule
+$\tau_{\rm Ad}/N_H$ vs \texttt{extinction.dat}       & all $\lambda$         & 0.47\% \\
+$\tau^{\rm sca}_{\rm Ad}/N_H$ vs \texttt{scattering.dat} & all $\lambda$    & 0.68\% \\
+$|p^{\max}|/N_H$ vs \texttt{polarized\_extinction.dat}   & all $\lambda$    & 0.07\% \\
+PAH peak position vs \texttt{PAH\_irem.dat}              & \SI{7.67}{\micro\meter} vs \SI{7.69}{\micro\meter}    & two sig figs \\
+PAH total (0.1--3000\,$\mu$m)                          & integrated            & 1.012$\times$ HD23 \\
+PAH sub-mm (300--3000\,$\mu$m)                         & integrated            & 0.605$\times$ HD23 \\
+\Teq\ vs independent bisection solver (167 grains)       & all $a$               & 0.14\% rms \\
+SED Ad vs \texttt{astrodust\_irem.dat}                   & FIR peak              & 8.5\% (under) \\
+\bottomrule
+\end{tabularx}
+
+The astrodust extinction, scattering, and polarized extinction are
+reproduced essentially exactly. The two thermal-emission observables
+agree at the 1\% level on total integrated flux. The headline
+FIR-peak deficit -- $\sim 15\%$ in our original implementation, now
+$\sim 8.5\%$ in the current production after the corrected
+Mathis 4000\,K dilution factor is applied -- and the corresponding
+PAH residual ($\sim 40\%$ originally in sub-mm, $\sim 3\%$ now in
+sub-mm and essentially perfect in FIR) have been the focus of an
+extensive diagnostic effort that ultimately resolved the residual as
+HD23's own energy non-conservation (\S\ref{sec:phaseE-resolution}).
+Seven ports were implemented; each closed or ruled out a specific
+candidate:
+
+\begin{itemize}
+  \item \textbf{Graphite continuum closed:} HD23 eq.~16's
+        $\xi_{\rm gra}(a) \cdot C^{\rm gra}$ transition is now
+        implemented (new modules
+        \texttt{sed/src/q\_graphite.f90} and \texttt{sed/src/mie.f90}).
+        The PAH sub-mm comparison moved from $\sim 90\%$ under to
+        $\sim 40\%$ under -- about three-quarters of the gap closed.
+        The residual matches the astrodust FIR-peak systematic and
+        appears to share its cause rather than being a PAH-specific
+        issue.
+  \item \textbf{\Teq\ verified:} an independent on-the-fly
+        bracket--bisection solver, following Draine's method, was
+        implemented. Grain-by-grain comparison shows
+        rms 0.14\% agreement -- a $0.2$~K systematic in \Teq\ would
+        give a $\sim 1\%$ discrepancy and is not present. \Teq\ is
+        not the source of the FIR-peak 15\%.
+  \item \textbf{Grain-by-grain $T$-window iterative narrowing} (Draine v7
+        algorithm) was ported alongside the SED\_v5 heuristic and run
+        as a comparison. Band-integrated SED changes by $<0.5\%$,
+        confirming that grid choice is not the source either. Both
+        algorithms remain in the source and are switchable via a
+        compile-time parameter for use in future work where the
+        radiation field or size grid is very different.
+  \item \textbf{Single-grain $C_{\rm abs}$ vs HD23 \texttt{jori=2/3}:} on
+        the HD23 release grid, the random-orientation average
+        $\tfrac{1}{3}Q^{\rm jori=2}+\tfrac{2}{3}Q^{\rm jori=3}$
+        matches our single-grain $C_{\rm abs}$ to four significant
+        figures across
+        \SI{30}{\micro\meter}--\SI{30000}{\micro\meter} at
+        $a = $\,\SI{0.126}{\micro\meter}. Q-table interpolation from
+        the 169-point DH21 grid onto the 167-point size-distribution
+        grid is therefore ruled out as a source of the FIR-peak
+        deficit.
+  \item \textbf{Direct jori=1 substitute (avenue 3):} the hypothesis
+        that HD23 used the \texttt{jori=1} block of the release file
+        directly (instead of constructing the random-orientation
+        average) was tested by building a drop-in substitute Q-table
+        and feeding it through the full \texttt{sed\_solve} pipeline.
+        The substitution recovers
+        only $\sim 4$ percentage points of the deficit (from $-15.1\%$
+        to $-11.3\%$ at the FIR peak), with sign flips in adjacent
+        bands. The orientation-convention hypothesis is rejected
+        because \Teq\ self-consistency dampens the naive linear
+        prediction.
+  \item \textbf{Induced-emission factor $(1+J_\lambda/B_{\rm env})$:}
+        Draine's stimulated-emission boost was added behind a toggle
+        (\texttt{use\_induced\_emission} in \texttt{sed\_astrodust\_mod})
+        and tested via \texttt{./main\_astrodust.x induced}. Measured
+        induced$/$baseline ratio matches the analytic prediction
+        (Tables~\ref{tab:induced_ratio},~\ref{tab:induced_vs_hd23}):
+        $+0.000\%$ at $\lambda \le$~\SI{300}{\micro\meter},
+        $+0.7\%$ at \SI{1}{\milli\meter}, $+24\%$ at
+        \SI{3}{\milli\meter}, with the FIR-peak band left exactly
+        unchanged. HD23 publishes \emph{net} emission, so this
+        factor degrades agreement at long wavelengths and is left
+        off; the toggle is retained as a cross-check.
+  \item \textbf{Mathis 4000\,K dilution correction (applied):}
+        Draine's reference ISRF implementation carries a 2008
+        note recording the correction of the Mathis~1983 4000\,K
+        dilution factor from $10^{-13}$ to $1.65\times 10^{-13}$
+        (Draine textbook 2011, Table~12.1). Adopting this corrected
+        value as the production default in our
+        \texttt{radfield.f90~::~J\_Mathis} (toggle
+        \texttt{use\_mathis\_corrected = .true.}) shifts the
+        S1\_C1 FIR-peak residual from $-15.83\%$ to $-8.82\%$
+        (Table~\ref{tab:mathis_c}); sub-mm from $-5.65\%$ to
+        $-3.16\%$; mm from $-3.97\%$ to $-2.21\%$. The PAH
+        30--300\,$\mu$m band closes from $-4.40\%$ to $+0.02\%$
+        -- the PAH FIR is now matched to better than $0.1\%$.
+        The original-Mathis variant remains reproducible via
+        \texttt{./main\_astrodust.x mathis\_orig}.
+\end{itemize}
+
+The remaining $\sim 8.5\%$ astrodust FIR-peak deficit (and
+$\sim 3$--$4\%$ sub-mm / mm deficit) was subsequently \emph{resolved}
+by an energy-budget audit (\S\ref{sec:phaseE-resolution},
+Table~\ref{tab:ad_energy}): the HD23 \emph{release} radiates $9.3\%$
+(astrodust) and $3.2\%$ (PAH) more than its own released \Cabs\
+absorb from the same field, whereas our pipeline conserves energy to
+$0.15\%$. The deficit therefore equals HD23's own emitted-vs-absorbed
+excess, not an error on our side, and this rules out \emph{both}
+candidates raised above. Candidate~(i), a $U_{\rm Mathis}$ /
+heating-field convention offset, cannot produce a
+\emph{component-dependent} excess ($9.3\%$ astrodust vs.\ $3.2\%$
+PAH) --- it would shift both components equally. Candidate~(ii), a
+\Teq/size-sampling difference on our side, is excluded because the
+pipeline conserves energy to $0.15\%$ when run against the
+release-consistent \Cabs. The residual is an amplitude-type
+inconsistency pointing to the internal \Cabs\ (or abundance
+normalization) used for the \texttt{irem} tables exceeding what the
+released extinction$-$scattering encode --- the same
+internal-vs-released vintage difference documented for DL07spec and
+the \texttt{iout} files. Draine's single-grain reference SED archive
+(1395 spectra) uses LD93/D03 silicate rather than DH21
+astrodust dielectric, so it verifies the stochastic-heating solver
+structure (\S\ref{sec:phaseE-residual-analysis}) but is not a direct
+astrodust FIR reference. Definitive attribution between internal
+\Cabs\ and internal abundance would require HD23's internal
+(pre-release) files.
+
+\paragraph{Energy-space transition-matrix solver (DL01 \texttt{dbdis}).}
+A third stochastic-heating method is implemented in
+\texttt{sed/src/stoch\_qm.f90} ($\sim 2300$ lines of F90; module
+\texttt{stoch\_qm\_mod}).  It works in enthalpy (energy) space rather
+than temperature space, using mode-aware enthalpy bins and a
+thermal-discrete (\texttt{dbdis}) transition matrix solved with a BiCG
+sparse linear solver.  A second cooling treatment,
+thermal-continuous (\texttt{dbcon}), collapses the downward rates into
+the nearest-neighbour transition and so reproduces the
+continuous-cooling approximation of the temperature-space GD recursion;
+comparing the two isolates the cost of that approximation.  The
+energy-space solver agrees with the production GD solver to within a
+few percent across all wavelength bands and grain types, with 100\%
+convergence (zero fallbacks to GD).  It is selected via
+\texttt{./main\_astrodust.x qm} (or \texttt{qm\_dbcon}); the default
+production method is unaffected.
+
+The two-step solver API (\texttt{sed\_init} once, \texttt{sed\_solve}
+per cell) is exercised end-to-end and is ready to be embedded in a 3D
+radiative-transfer driver. Memory cost per process is $\sim 5$~MB;
+wall-clock time per cell is $\sim 0.5$~s on Apple Silicon for the full
+three-enthalpy-stage AD + PAH solve.
+
+\end{document}

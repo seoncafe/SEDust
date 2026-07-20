@@ -1,0 +1,377 @@
+\documentclass{kiseon_memo}
+
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\sloppy
+
+\lstset{
+  language=Fortran,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!60!black},
+  commentstyle=\color{green!40!black},
+  stringstyle=\color{red!60!black},
+  columns=fullflexible,
+  breaklines=true,
+  frame=single,
+  framesep=4pt,
+  showstringspaces=false,
+  numbers=none
+}
+\lstdefinestyle{sh}{language=bash,keywordstyle=\color{black},basicstyle=\ttfamily\small}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\lamIlam}{\ensuremath{\lambda I_\lambda}}
+\newcommand{\Nh}{\ensuremath{N_{\rm H}}}
+\newcommand{\Cabs}{\ensuremath{C_{\rm abs}}}
+\newcommand{\Teq}{\ensuremath{T_{\rm eq}}}
+\newcommand{\um}{\ensuremath{\,\mu\mathrm{m}}}
+
+\title{SEDust: User Manual}
+\author{Kwang-il Seon}
+\date{2026 July 16}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This manual describes the model-agnostic dust thermal-emission library under
+\code{SEDust/sed/}. The library computes the infrared emission spectrum of a
+dust mixture for an arbitrary local radiation field, and is intended to be
+linked into a Fortran 3D radiative-transfer (RT) code. It handles several dust
+models as peers --- the HD23 \emph{astrodust}+PAH model, the Draine \& Li (2007)
+silicate+carbonaceous model, the Zubko, Dwek \& Arendt (2004) BARE-GR-S model,
+and arbitrary file-defined models --- through one object type and one emission
+call. The numerically validated stochastic-heating solver is reused unchanged;
+the library is an additive layer on top of it.
+\end{abstract}
+
+\tableofcontents
+
+%====================================================================
+\section{Overview}
+
+A \emph{dust model} is represented by a single derived type,
+\code{dust\_model\_t}. You build it once (per RT run), then call
+\code{dust\_emission} once per RT cell with that cell's local mean intensity:
+
+\begin{lstlisting}
+use dust_lib
+type(dust_model_t)    :: m
+real(wp), allocatable :: J_lam(:), lamI_total(:)
+
+call build_astrodust(m, qtab, sizedist, 200, 2.7_wp, 5.0e3_wp)   ! once
+allocate(J_lam(m%NLAM), lamI_total(m%NLAM))
+do icell = 1, ncells
+   ! ... assemble J_lam(:) (mean intensity on the grid m%lam) for this cell ...
+   call dust_emission(m, J_lam, lamI_total)                      ! per cell
+   ! ... lamI_total(:) is lambda*I_lambda / N_H for the cell ...
+end do
+\end{lstlisting}
+
+\paragraph{Design.} The library wraps the existing, FIR-validated solver core
+(\code{sed\_grain\_loop}, \code{calc\_Teq}, \code{calc\_P}) without modifying it.
+A model is a set of grain \emph{populations} (one per species and charge state),
+each carrying its own size distribution, absorption cross sections, enthalpy, and
+Planck-integral tables. \code{dust\_emission} loops the populations through the
+solver and sums their emission into named output \emph{channels}.
+
+\paragraph{One active model at a time.} The module-global grids
+(\code{lam}, \code{T\_first}, $\dots$) hold the \emph{currently built} model's
+working set. Calling \code{build\_*} makes that model active. This is sufficient
+for an RT run that uses a single dust model; to switch models, rebuild.
+
+%====================================================================
+\section{Building the library}
+
+From \code{SEDust/sed/}:
+\begin{lstlisting}[style=sh]
+make libsedust.a      # the library archive (link this into your RT code)
+\end{lstlisting}
+
+The compiler is \code{gfortran} with \code{-O3 -march=native -fopenmp}
+(edit the \code{Makefile} for ifort). \code{libsedust.a} is a static archive of
+all library objects; the Fortran \code{.mod} files are written alongside it in
+\code{SEDust/sed/}.
+
+%====================================================================
+\section{Models and builders}
+
+Each builder fills a \code{dust\_model\_t} and defines the model's output
+channels (Table~\ref{tab:models}).
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}llll@{}}
+\toprule
+builder & model & channels & notes \\
+\midrule
+\code{build\_astrodust} & HD23 astrodust+PAH & \code{AD}, \code{PAH} & $N_C{=}417$, D16 graphite \\
+\code{build\_dl07}      & Draine \& Li 2007   & \code{SIL}, \code{CARB} & $N_C{=}470$, D03 graphite \\
+\code{build\_zubko}     & Zubko (ZDA 2004) BARE-GR-S & \code{PAH}, \code{GRA}, \code{SIL} & neutral PAH only \\
+\code{build\_from\_files} & file-defined & \code{CH1}, \code{CH2}, $\dots$ & generic loader \\
+\bottomrule
+\end{tabular}
+\caption{Built-in model builders. Each sets the model's own optics/abundance
+parameters internally.}
+\label{tab:models}
+\end{table}
+
+\noindent Signatures:
+\begin{lstlisting}
+call build_astrodust(m, qtable_path, sizedist_path, NT, T_lo, T_hi [, status])
+call build_dl07     (m, qtable_path, sizedist_path, sd_index, U, NT, T_lo, T_hi [, status])
+call build_zubko    (m, config_path, data_dir, NT, T_lo, T_hi [, status])
+call build_from_files(m, descriptor_path, data_dir, NT, T_lo, T_hi [, status])
+\end{lstlisting}
+
+\begin{itemize}
+\item \code{NT}, \code{T\_lo}, \code{T\_hi}: number and range [K] of the internal
+      temperature grid (typical \code{200, 2.7, 5000}).
+\item \code{sd\_index} (DL07): WD01 size-distribution index --- \code{7} =
+      MW $R_V{=}3.1$, $q_{\rm PAH}{=}4.58\%$; \code{29/30/31} = LMC2; \code{32} = SMC.
+\item \code{U} (DL07): ISRF intensity scaling (the DL07 reference uses $U{=}1$).
+\item \code{data\_dir} (Zubko / files): directory holding the data files, e.g.
+      \code{data/zubko/}.
+\item \code{status} (optional, all builders): error report; see
+      \S\ref{sec:status}. When present, a missing or malformed input file is
+      reported through it and the model is not built, so an RT host can recover.
+\end{itemize}
+
+%====================================================================
+\section{Computing emission}
+
+\subsection{Single-cell exact solve}
+
+\begin{lstlisting}
+call dust_emission(m, J_lam, lamI_total [, lamI_chan] [, status])
+\end{lstlisting}
+\begin{itemize}
+\item \code{J\_lam(m\%NLAM)}: the local \emph{mean intensity} on the grid
+      \code{m\%lam} [\um]. For a scaled Mathis ISRF use
+      \code{call J\_Mathis(U, m\%lam, J\_lam)} from module \code{radfield}.
+\item \code{lamI\_total(m\%NLAM)}: the summed SED, \lamIlam$/\Nh$
+      [\,erg\,s$^{-1}$\,cm$^{-2}$\,sr$^{-1}$\,H$^{-1}$\,] --- the HD23 convention.
+\item \code{lamI\_chan(m\%NLAM, m\%n\_channel)} (optional): the SED of each channel.
+\item \code{status} (optional): error report; see \S\ref{sec:status}.
+\end{itemize}
+
+\subsection{Solver choice (\code{m\%stoch\_method})}
+
+The field \code{m\%stoch\_method} selects how each grain is heated
+(Table~\ref{tab:solver}); \code{dust\_emission} honors it.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\code{m\%stoch\_method} & method & note \\
+\midrule
+\code{'heuristic'} & GD look-ahead T-window narrowing & \textbf{default}; fastest, serial \\
+\code{'draine'}    & Guhathakurta \& Draine (1989) & reference GD \\
+\code{'qm'}        & energy-space transition matrix (thermal-discrete) & most detailed \\
+\code{'equil'}     & single-grain equilibrium (no stochastic) & see \S\ref{sec:eqtemp} \\
+\bottomrule
+\end{tabular}
+\caption{Stochastic-heating solver options. The first three resolve the grain
+temperature \emph{distribution} (PAH/NIR features); \code{'equil'} forces
+equilibrium.}
+\label{tab:solver}
+\end{table}
+
+\subsection{Equilibrium-temperature options}\label{sec:eqtemp}
+
+Two options replace the full stochastic solve when an equilibrium approximation
+is wanted:
+
+\paragraph{(1) Equilibrium temperature for each grain type and size.}
+Set \code{m\%stoch\_method = 'equil'} and call \code{dust\_emission}. Every grain
+is placed at its own equilibrium temperature \Teq, computed from \emph{that
+grain's} absorption cross section, and emits $C_{\rm abs}\,B_\lambda(\Teq)$. No
+stochastic excursions are computed.
+
+\paragraph{(2) A single equilibrium temperature for the whole model.}
+\begin{lstlisting}
+call dust_emission_single_teq(m, J_lam, lamI_total [, Teq_out])
+\end{lstlisting}
+All dust shares one temperature, found from the type- and size-integrated
+(\,dn-weighted\,) total absorption cross section
+$C_{\rm abs}^{\rm tot}(\lambda) = \sum_{\rm pop}\sum_a {\rm d}n(a)\,C_{\rm abs}(\lambda,a)$.
+The single \Teq\ satisfies $\int C_{\rm abs}^{\rm tot}\,J\,{\rm d}\lambda =
+\int C_{\rm abs}^{\rm tot}\,B(\Teq)\,{\rm d}\lambda$, and the emission is
+$C_{\rm abs}^{\rm tot}\,B_\lambda(\Teq)$. The optional \code{Teq\_out} returns that
+temperature.
+
+Both options conserve energy (the emitted bolometric power equals the absorbed
+power); they differ from the stochastic solve only in the SED \emph{shape} ---
+a smooth modified blackbody rather than one carrying PAH/NIR features.
+
+\subsection{Precomputed table + interpolation}
+
+When the field in each cell is a fixed spectral \emph{shape} scaled by an intensity
+$U$, precompute a table once and interpolate per cell:
+\begin{lstlisting}
+type(dust_emis_table_t) :: tab
+call dust_build_table(m, J_ref, U_grid, tab [, status])            ! once
+call dust_emission_interp(tab, U, lamI_total [, lamI_chan] [, status])  ! per cell
+\end{lstlisting}
+\code{J\_ref(m\%NLAM)} is the reference field shape (at $U{=}1$) and
+\code{U\_grid(:)} an ascending intensity grid. The table is built from exact
+solves, so it is exact at the grid points; interpolation is log--log in $U$.
+The stored emissivities are floored at $10^{-300}$ before the log, so a grid
+node whose true value is $0$ comes back as $10^{-300}$ rather than exactly $0$.
+Both calls take an optional final \code{status} (\S\ref{sec:status}).
+
+\paragraph{Caveat.} Stochastic emission is a \emph{nonlinear} functional of the
+full $J(\lambda)$, not of a scalar. The table is valid only when the cell field
+is $U\times(\text{fixed }J_{\rm ref})$. For cells whose field \emph{shape}
+departs from $J_{\rm ref}$ (e.g.\ hardened spectra near hot stars), use the
+cell-by-cell exact \code{dust\_emission}.
+
+\subsection{Optional error status}\label{sec:status}
+
+The builders and the emission/table calls each accept an optional final
+\code{status} argument (\code{integer, intent(out)}). When it is present, an
+invalid model, argument, or input file is reported through it (\code{status = 0}
+on success, nonzero on failure) and the process keeps running, so a 3D RT host
+can recover; when it is omitted, the same condition prints a message and
+\code{stop}s the run, which the CLI drivers rely on. For the builders the
+nonzero value only names the failing stage: the contract is simply
+\code{0} = built, nonzero = build failed.
+
+\begin{itemize}
+\item \code{dust\_emission}: \code{1} unknown \code{stoch\_method};
+      \code{2} \code{'qm'} selected but a population's radii are unset.
+\item \code{dust\_build\_table}: \code{1} \code{size(J\_ref)}$\,\ne$\code{m\%NLAM};
+      \code{2} \code{size(U\_grid)}$\,<2$;
+      \code{3} \code{U\_grid} not positive and strictly increasing.
+\item \code{dust\_emission\_interp}: \code{1} \code{U}$\,\le0$;
+      \code{2} \code{size(lamI\_total)}$\,\ne$\code{tab\%NLAM};
+      \code{3} \code{lamI\_chan} present but not
+      \code{(tab\%NLAM, tab\%n\_channel)}.
+\item \code{build\_astrodust}, \code{build\_dl07}: \code{1} $Q$-table load failed;
+      \code{2} size-distribution load failed.
+\item \code{build\_zubko}: \code{1} config read; \code{2} fewer than 3 components;
+      \code{3} a component's optics read; \code{4} grid inconsistent;
+      \code{5} a component's calorimetry read failed.
+\item \code{build\_from\_files}: \code{1} descriptor open;
+      \code{2} too many \code{pop:} lines; \code{3} invalid channel;
+      \code{4} no \code{pop:} lines; \code{5} optics read;
+      \code{6} grid inconsistent; \code{7} size-distribution read;
+      \code{8} calorimetry read failed.
+\end{itemize}
+
+%====================================================================
+\section{The model object and accessors}
+
+\begin{lstlisting}
+type :: dust_model_t
+   character(len=32)              :: name
+   integer                       :: NA, NLAM, NT
+   real(wp), allocatable         :: lam(:)        ! (NLAM) [um]
+   real(wp), allocatable         :: T_first(:)    ! (NT)   [K]
+   type(grain_pop_t), allocatable :: pops(:)
+   integer                       :: n_channel
+   character(len=16), allocatable :: channel_name(:)
+   logical                       :: use_induced_emission   ! default .false.
+   character(len=16)             :: stoch_method           ! default 'heuristic'
+   logical                       :: verbose                ! default .false.
+end type
+\end{lstlisting}
+
+\paragraph{Diagnostics.} \code{m\%verbose} (default \code{.false.}) keeps the
+library solve path silent; set it \code{.true.} to print the same solver
+diagnostics as the CLI drivers.
+
+Convenience accessors (all in \code{dust\_lib}):
+\begin{lstlisting}
+n  = dust_nlam(m)              ! number of wavelengths
+nc = dust_n_channel(m)         ! number of output channels
+lam = dust_lambda(m)           ! allocatable copy of the wavelength grid [um]
+nm  = dust_channel_name(m, ic) ! name of channel ic
+\end{lstlisting}
+
+%====================================================================
+\section{The generic file loader}
+
+\code{build\_from\_files} reads a small text \emph{descriptor} and assembles a
+model from data files, with no code changes. One \code{pop:} line per
+population:
+\begin{lstlisting}[style=sh]
+# descriptor.txt
+name = mymodel
+# pop: <grain_type> <channel> <optics> <dnda_table> <calorimetry> <rho(0=use file)>
+pop: pah 1 PAH_28_1201_neu.dat  SzDist_PAH.dat Graphitic_Calorimetry.dat 0.0
+pop: gra 2 Gra_121_1201.dat     SzDist_Gra.dat Graphitic_Calorimetry.dat 0.0
+pop: sil 3 suvSil_121_1201.dat  SzDist_Sil.dat Silicate_Calorimetry.dat  0.0
+\end{lstlisting}
+\begin{itemize}
+\item \code{grain\_type}: \code{'sil'}, \code{'pah'}, or \code{'gra'} (selects the
+      heat-capacity/mode model used by the \code{'qm'} solver; ignored by the GD
+      solvers, which use the supplied enthalpy directly).
+\item \code{channel}: integer output channel ($1\dots$); populations sharing a
+      channel are summed.
+\item \code{optics}: a DustEM/Zubko $Q$-table ($Q_{\rm abs}$ per radius and
+      wavelength); $C_{\rm abs}=Q_{\rm abs}\pi a^2$.
+\item \code{dnda\_table}: a 2-column table $a$ [\um] and ${\rm d}n/{\rm d}a$
+      [cm$^{-1}$ H$^{-1}$].
+\item \code{calorimetry}: a specific-enthalpy table $u(T)$ [erg/g];
+      $H(T,a)=u(T)\,\rho\,\tfrac{4\pi}{3}a^3$.
+\item \code{rho}: grain density [g\,cm$^{-3}$]; \code{0.0} uses the value in the
+      optics-file header.
+\end{itemize}
+All files are sought under \code{data\_dir}. The coded builders
+(\code{build\_astrodust}/\code{dl07}/\code{zubko}) are the recommended path for
+the built-in models; \code{build\_from\_files} is for adding new data-defined
+models.
+
+%====================================================================
+\section{Linking into a 3D RT code}
+
+Compile your RT source against \code{libsedust.a} with the \code{.mod} search path
+pointing at \code{SEDust/sed/}:
+\begin{lstlisting}[style=sh]
+gfortran -I<sed> my_rt.f90 <sed>/libsedust.a -fopenmp -o my_rt.x
+\end{lstlisting}
+A complete minimal example is provided in
+\code{SEDust/sed/rt\_example/use\_dustlib.f90}: it builds a model, computes
+emission for one field, and prints the SED peak. No \code{ISO\_C\_BINDING} is
+needed --- the RT code simply \code{use}s the Fortran module \code{dust\_lib}.
+
+\paragraph{Threading.} \code{m} is read-only during \code{dust\_emission}; all
+scratch is local. The solver uses OpenMP internally over grains. If your RT
+parallelizes over cells, take care to avoid oversubscription (nested
+parallelism); the default \code{'heuristic'} solver is serial per call, which
+suits an outer cell-level parallel loop.
+
+%====================================================================
+\section{Units and conventions}
+
+\begin{itemize}
+\item Wavelengths \code{lam} are in \um\ throughout; cross sections in cm$^2$.
+\item \code{J\_lam} is a mean intensity with the same units as the Planck
+      function $B_\lambda$ (specific intensity per steradian). The library's
+      output \lamIlam$/\Nh$ is then in
+      erg\,s$^{-1}$\,cm$^{-2}$\,sr$^{-1}$\,H$^{-1}$.
+\item The CMB (2.725\,K) is included in the heating field by \code{J\_Mathis}.
+\item The induced-/stimulated-emission factor is off by default (the output is
+      \emph{net} emission, matching the HD23 and DL07spec released SEDs).
+\end{itemize}
+
+%====================================================================
+\section{Data files}
+
+Model data lives under \code{SEDust/data/}:
+\begin{itemize}
+\item astrodust / DL07: the T-matrix $Q$-table
+      (\code{../tmatrix/output/q\_astrodust\_*.dat}) and the HD23 release size
+      distribution (\code{../data/release/size\_distribution.dat}).
+\item Zubko: \code{../data/zubko/} --- the ZDA config/formula, the tabulated
+      size distributions, the DustEM $Q$-tables, and the calorimetry tables
+      from the Camps et al.\ 2015 benchmark; a ready descriptor is
+      \code{../data/zubko/zubko\_descriptor.txt}.
+\end{itemize}
+
+\end{document}
