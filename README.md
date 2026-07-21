@@ -23,6 +23,24 @@ solve one cell at a time. Every model builder and solver call takes an optional
 `status` argument, so a missing input file or an invalid model is reported back
 to the host instead of stopping the process.
 
+## Which version
+
+SEDust is split into two versions because most radiative-transfer codes either
+do not carry polarization at all, or carry it only for spherical grains.
+
+This is **version 1.20**, the polarized branch. Use it for polarized transfer
+that accounts for the non-spherical (**spheroidal**) grain shape -- dichroic
+extinction, birefringence, and scattering by aligned spheroidal grains -- for
+which it provides the direction-dependent extinction matrix `K(theta_i)` and the
+aligned-grain scattering matrix, in addition to the scalar optics and thermal
+emission.
+
+For transfer that does not carry polarization, use **version 1.00**, the scalar
+branch: it computes the same unpolarized cross sections and emission through the
+same `dust_emission` / `dust_extinction` API without the polarized optics or
+their data tables. (Version 1.20 can also run scalar-only, by building a model
+with `load_polarized_optics = .false.`, when a host wants both from one build.)
+
 ## Layout
 
 ```
@@ -248,4 +266,4 @@ Rebuild any of them with `pdflatex <name>.tex` (run twice for cross-references).
 
 ---
 
-Last updated: 2026-07-21 07:03 KST
+Last updated: 2026-07-21 09:48 KST
