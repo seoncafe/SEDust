@@ -191,7 +191,11 @@ contains
          sumP = sum(P)
          if (sumP > 0_wp) then
             P   = P / sumP
-            lnP = log(P)
+            !--- P is zero at every temperature the grain does not reach, and
+            !--- log(0) raises a divide-by-zero (fatal under -fpe0).  lnP is
+            !--- only ever compared against lnP_crit, so the finite sentinel
+            !--- set above already carries "unreachable"; leave it in place.
+            where (P > 0_wp) lnP = log(P)
          end if
       end if
       ! Amat_ws/Bmat_ws are intentionally not deallocated: they are kept

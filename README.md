@@ -264,6 +264,10 @@ Rebuild any of them with `pdflatex <name>.tex` (run twice for cross-references).
 - Draine, B. T., & Hensley, B. S. 2021, ApJ, 909, 94
 - Hensley, B. S., & Draine, B. T. 2023, ApJ, 948, 55
 
+## Author
+
+Kwang-il Seon (KASI/UST)
+
 ---
 
-Last updated: 2026-07-21 09:48 KST
+Last updated: 2026-08-01 08:26 KST

@@ -27,7 +27,7 @@ contains
    real(kind=wp), parameter :: hwc(3) = C2/lambdaj(:)
 
    real(kind=wp) :: natom
-   real(kind=wp) :: H_C, UCH
+   real(kind=wp) :: H_C, UCH, xch(size(hwc))
 
    select case (trim(dtype))
    case ('Car0', 'Car1')
@@ -57,7 +57,24 @@ contains
          !NH = int(0.25*natom+0.5)
       endif
       ! C-H mode
-      UCH = (H_C*natom) * kB * sum(hwc(:)/(exp(hwc(:)/T)-1.0_wp))
+      !--- The C-H mode temperatures are 1273, 1673 and 4360 K, so hwc/T passes
+      !--- the exp() overflow threshold below T ~ 6 K -- inside the temperature
+      !--- grid, whose default floor is 2.7 K.  The occupation term goes to zero
+      !--- there, which letting exp() overflow to infinity also happens to give,
+      !--- but only by accident: it raises a floating overflow (fatal under
+      !--- -fpe0, so the checked build cannot run at all) and it assumes the
+      !--- compiler carries the infinity through rather than optimizing on the
+      !--- assumption that none appears.  Take the limit directly.
+      !---
+      !--- The cut is at x = 700 rather than at the overflow threshold 709.78,
+      !--- so terms in between -- of order exp(-700), i.e. 1e-304 -- are set to
+      !--- zero instead of kept.  That is below anything the enthalpy is used
+      !--- for, but it is not literally nothing: measured against the previous
+      !--- code it moves the dust temperatures and the emergent SED in the last
+      !--- bits (relative differences up to 1e-13, every sum unchanged).
+      xch = hwc(:)/T
+      UCH = (H_C*natom) * kB * &
+            sum(merge(0.0_wp, hwc(:)/(exp(min(xch,700.0_wp))-1.0_wp), xch > 700.0_wp))
       !UCH = NH * kB * sum(hwc(:)/(exp(hwc(:)/T)-1.0))
       U = U + UCH
    endif
