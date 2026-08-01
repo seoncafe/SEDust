@@ -31,9 +31,8 @@ program calc_kext_astrodust
    ! Output: ../data/kext_astrodust_MW.dat  (kext_albedo-style columns).
    !====================================================================
    use constants,         only: wp, pi
-   use sed_astrodust_mod, only: sed_init, NLAM, NA, lam, aeff, dn_ad, dn_pah, &
-                                Cabs, Csca, Cabs_cneu, Cabs_cion, dn_cneu, dn_cion
-   use q_table_mod,       only: qt_g => gpar, qt_aeff => aeff_t, qt_na => n_aeff
+   use sed_astrodust_mod, only: build_astrodust, dust_extinction, dust_model_t, &
+                                NLAM, NA, lam, aeff, dn_ad, dn_pah
    use enthalpy_astrodust_mod, only: RHO_AD     ! astrodust bulk density [g/cm^3] = 2.74
    implicit none
 
@@ -47,23 +46,16 @@ program calc_kext_astrodust
    character(len=*), parameter :: F_SCA = '../data/release/scattering.dat'
    character(len=*), parameter :: F_OUT = '../data/kext_astrodust_MW.dat'
 
-   real(wp), allocatable :: g_ad(:,:)             ! (NLAM,NA) asymmetry on size grid
+   type(dust_model_t)    :: m
    real(wp), allocatable :: Cext(:), Cabs_t(:), Csca_t(:), alb(:), gbar(:)
-   real(wp) :: cab_ad, csc_ad, cpah, gnum
    integer  :: jw, ja, u
 
-   write(*,'(a)') ' calc_kext_astrodust: building optics via sed_init ...'
-   ! Build all single-grain cross sections exactly as the SED pipeline does.
-   ! (NT/T_lo/T_hi only affect the thermal tables, which we do not use.)
-   call sed_init(F_QT, F_SD, 100, 1.0_wp, 3000.0_wp)
+   write(*,'(a)') ' calc_kext_astrodust: building the astrodust model ...'
+   ! Build the model the RT hosts use, so this table and their in-memory optics
+   ! come from one calculation.  (NT/T_lo/T_hi only affect the thermal tables,
+   ! which the extinction does not use.)
+   call build_astrodust(m, F_QT, F_SD, 100, 1.0_wp, 3000.0_wp)
    write(*,'(a,i0,a,i0,a)') '   NLAM=', NLAM, '  NA=', NA, '  (size grid)'
-
-   ! Asymmetry g: from the T-matrix Q table, interpolated onto the size
-   ! grid with the same log-linear-in-a scheme the pipeline uses for Q.
-   allocate(g_ad(NLAM, NA))
-   do ja = 1, NA
-      call interp_a(log(aeff(ja)), qt_aeff(1:qt_na), qt_g(:, 1:qt_na), g_ad(:, ja))
-   end do
 
    ! Dust mass per H [g/H], self-consistent with the size distribution and
    ! the model grain densities: M = (4/3) pi a^3 rho, summed over the binned
@@ -76,23 +68,10 @@ program calc_kext_astrodust
    end do
    write(*,'(a,es12.5,a)') '   M_dust/H = ', Mdust_H, ' g/H'
 
+   ! Size integral over every population of the model: the astrodust grains
+   ! carry the scattering and its asymmetry, the PAHs enter through absorption.
    allocate(Cext(NLAM), Cabs_t(NLAM), Csca_t(NLAM), alb(NLAM), gbar(NLAM))
-   do jw = 1, NLAM
-      cab_ad = 0.0_wp;  csc_ad = 0.0_wp;  cpah = 0.0_wp;  gnum = 0.0_wp
-      do ja = 1, NA
-         cab_ad = cab_ad + dn_ad(ja)   * Cabs(jw, ja)
-         csc_ad = csc_ad + dn_ad(ja)   * Csca(jw, ja)
-         gnum   = gnum   + dn_ad(ja)   * Csca(jw, ja) * g_ad(jw, ja)
-         cpah   = cpah   + dn_cneu(ja) * Cabs_cneu(jw, ja) &
-                         + dn_cion(ja) * Cabs_cion(jw, ja)
-      end do
-      Cabs_t(jw) = cab_ad + cpah          ! astrodust + PAH absorption
-      Csca_t(jw) = csc_ad                 ! astrodust scattering (PAH ~ 0)
-      Cext(jw)   = Cabs_t(jw) + Csca_t(jw)
-      alb(jw)    = 0.0_wp;  gbar(jw) = 0.0_wp
-      if (Cext(jw)   > 0.0_wp) alb(jw)  = Csca_t(jw) / Cext(jw)
-      if (Csca_t(jw) > 0.0_wp) gbar(jw) = gnum / Csca_t(jw)
-   end do
+   call dust_extinction(m, Cext, Cabs_t, Csca_t, gbar=gbar, albedo=alb)
 
    ! ---- write the table -------------------------------------------------
    open(newunit=u, file=F_OUT, status='replace', action='write')
@@ -126,25 +105,6 @@ program calc_kext_astrodust
    call validate()
 
 contains
-
-   subroutine interp_a(loga, ain, qin, qout)
-      ! Log-linear interpolation in a (clamped to edges), vectorized over
-      ! lambda -- identical to the pipeline's interp_q_grid.
-      real(wp), intent(in)  :: loga, ain(:), qin(:,:)
-      real(wp), intent(out) :: qout(:)
-      integer  :: n, lo, hi, mid
-      real(wp) :: t
-      n = size(ain)
-      if (loga <= log(ain(1)))  then; qout = qin(:, 1); return; end if
-      if (loga >= log(ain(n)))  then; qout = qin(:, n); return; end if
-      lo = 1; hi = n
-      do while (hi - lo > 1)
-         mid = (lo + hi) / 2
-         if (log(ain(mid)) <= loga) then; lo = mid; else; hi = mid; end if
-      end do
-      t = (loga - log(ain(lo))) / (log(ain(hi)) - log(ain(lo)))
-      qout = (1.0_wp - t) * qin(:, lo) + t * qin(:, hi)
-   end subroutine interp_a
 
    subroutine validate()
       ! Compare C_ext/H and C_sca/H against the HD23 release total columns

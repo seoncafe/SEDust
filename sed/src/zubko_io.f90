@@ -149,15 +149,18 @@ contains
    ! one block for each radius: "<a> = radius (micron)", a column-header line, and
    ! NWAVE rows of  x  lambda[um]  Q_abs  Q_sca  Q_ext  g.
    ! Returns a_um(nsize), lam_um(nwave) [um], qabs/qsca(nwave,nsize), rho[g/cm^3].
+   ! The optional gpar(nwave,nsize) is the scattering asymmetry <cos> of the
+   ! last column, which an RT host needs alongside Q_sca.
    ! ------------------------------------------------------------------
-   subroutine read_zubko_optics(path, nsize, nwave, a_um, lam_um, qabs, qsca, rho, ok)
+   subroutine read_zubko_optics(path, nsize, nwave, a_um, lam_um, qabs, qsca, rho, ok, gpar)
       character(len=*),      intent(in)  :: path
       integer,               intent(out) :: nsize, nwave
       real(wp), allocatable, intent(out) :: a_um(:), lam_um(:), qabs(:,:), qsca(:,:)
       real(wp),              intent(out) :: rho
       logical, optional,     intent(out) :: ok
+      real(wp), allocatable, optional, intent(out) :: gpar(:,:)
       integer :: u, ios, ja, jw, idum
-      real(wp) :: x, ldum
+      real(wp) :: x, ldum, qe, gg
       logical  :: found
       character(len=256) :: line
 
@@ -189,19 +192,23 @@ contains
          end if
       end if
       allocate(a_um(nsize), lam_um(nwave), qabs(nwave,nsize), qsca(nwave,nsize))
+      if (present(gpar)) allocate(gpar(nwave,nsize))
 
       ! --- block 1 (line currently holds its "= radius" header) ---
       read(line, *) a_um(1)
       read(u,'(a)') line                              ! column header
       do jw = 1, nwave
-         read(u, *) x, lam_um(jw), qabs(jw,1), qsca(jw,1)
+         read(u, *) x, lam_um(jw), qabs(jw,1), qsca(jw,1), qe, gg
+         if (present(gpar)) gpar(jw,1) = gg
       end do
       ! --- blocks 2..nsize ---
       do ja = 2, nsize
          call skip_to_radius(u, line, found)
          if (.not. found) then
             if (present(ok)) then
-               close(u);  deallocate(a_um, lam_um, qabs, qsca);  ok = .false.;  return
+               close(u);  deallocate(a_um, lam_um, qabs, qsca)
+               if (present(gpar)) deallocate(gpar)
+               ok = .false.;  return
             else
                write(*,'(a)') ' read_zubko_optics: unexpected EOF seeking radius'; stop 1
             end if
@@ -209,7 +216,8 @@ contains
          read(line, *) a_um(ja)
          read(u,'(a)') line                           ! column header
          do jw = 1, nwave
-            read(u, *) x, ldum, qabs(jw,ja), qsca(jw,ja)
+            read(u, *) x, ldum, qabs(jw,ja), qsca(jw,ja), qe, gg
+            if (present(gpar)) gpar(jw,ja) = gg
          end do
       end do
       close(u)

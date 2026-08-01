@@ -19,6 +19,7 @@ module q_graphite_mod
    private
    public :: q_graphite_abs
    public :: q_graphite_full
+   public :: graphite_index_lambda_range
 
    character(len=*), parameter :: F_CPA = '../data/dielectric/index_CpaD03'
    character(len=*), parameter :: F_CPE = '../data/dielectric/index_CpeD03'
@@ -43,6 +44,21 @@ module q_graphite_mod
    real(wp) :: cpe_n(NCPE), cpe_k(NCPE)
 
 contains
+
+   subroutine graphite_index_lambda_range(lam_lo, lam_hi)
+      ! Shortest and longest wavelength [um] covered by BOTH D03 graphite
+      ! dielectric functions (E || c and E perp c).  The random-orientation
+      ! average needs both, so the usable range is their intersection.
+      ! Outside it `interp` returns the boundary value, i.e. a CONSTANT
+      ! (n, k), so a caller whose wavelength grid runs past this range must
+      ! refuse rather than let the frozen index pass as physics.
+      real(wp), intent(out) :: lam_lo, lam_hi
+
+      if (.not. loaded) call load_tables()
+      lam_lo = max(minval(cpa_wavl), minval(cpe_wavl))
+      lam_hi = min(maxval(cpa_wavl), maxval(cpe_wavl))
+   end subroutine graphite_index_lambda_range
+
 
    subroutine load_tables()
       integer  :: i, u

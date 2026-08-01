@@ -11,6 +11,33 @@ module dust_lib
    !      call dust_emission(m, J_lam, lamI_total [, lamI_chan])  ! per cell
    !   end do
    !
+   ! EXTREME ULTRAVIOLET. The astrodust model's wavelength grid is the T-matrix
+   ! Q table's, which stops at 0.0912 um (13.6 eV, the Lyman limit). A host
+   ! that transports harder photons passes the shortest wavelength it needs as
+   ! the optional lam_min [um]:
+   !   call build_astrodust(m, qtab, sizedist, NT, T_lo, T_hi, lam_min=0.0124_wp)
+   ! The grid is then carried from lam_min up to the table, log-spaced no more
+   ! coarsely than the table's own dln(lambda) = 0.01156, and m%lam is that
+   ! longer grid; everything else about the API is unchanged. OMITTING lam_min
+   ! leaves the grid, and every number the model produces, exactly as before.
+   !
+   ! In the extended band the astrodust optics are Bohren-Huffman Mie on the
+   ! DH21 dielectric function for the volume-equivalent SPHERE, not the b/a=1.4
+   ! oblate spheroid of the T-matrix table -- the table simply does not reach
+   ! there. That approximation is good to ~2% over 13.6-100 eV; q_astrodust.f90
+   ! documents it size by size, and where it stops being valid. The carbonaceous
+   ! optics have no such seam: above the DL07 PAH cutoff (21.4 eV) they are Mie
+   ! on the D03 graphite dielectric functions, which run to 6.2e-5 um.
+   !
+   ! The dielectric function must be the one the Q table was computed from --
+   ! same porosity, iron fraction and axial ratio -- or the model changes
+   ! material at the seam. build_astrodust takes it as the optional
+   ! astrodust_index_path for that reason, and reports the file whenever the
+   ! extension is active; omitted, it is the P = 0.20, f_Fe = 0.00, b/a = 1.400
+   ! file that pairs with q_astrodust_P0.20_Fe0.00_1.400.dat. lam_min shorter
+   ! than that file's own shortest wavelength (1.00003e-4 um = 12.4 keV) is
+   ! refused rather than served with a frozen refractive index.
+   !
    ! Two usage modes:
    !   (a) single-cell EXACT solve: dust_emission(m, J_lam, ...)  -- arbitrary J(lambda).
    !   (b) precomputed TABLE + interpolation, for when the cell field is a
@@ -39,15 +66,25 @@ module dust_lib
    ! dust_emission, so an RT host takes its opacity from the same model object
    ! and on the same wavelength grid (m%lam) as its emission, rather than
    ! parsing data/kext_astrodust_MW.dat and interpolating off that file's grid:
-   !   call dust_extinction(m, Cext, Cabs, Csca [, gbar] [, status])
+   !   call dust_extinction(m, Cext, Cabs, Csca [, gbar] [, albedo] [, status])
    ! All three required outputs are (m%NLAM) cross sections per H atom
    ! [cm^2/H], integrated over the size distribution of every population:
    ! Cext = Cabs + Csca. Optional gbar is the scattering-weighted asymmetry
    ! <cos>, sum dn*Csca*g / sum dn*Csca, and is 0 at wavelengths where nothing
-   ! scatters. Populations without scattering optics (the PAHs) contribute zero
-   ! to those terms and enter through absorption only. status is 0 on success
-   ! and 1 if an output array is not of size m%NLAM; when it is omitted such a
-   ! call stops the run.
+   ! scatters; optional albedo is Csca/Cext, 0 where Cext underflows.
+   !
+   ! Every model carries its scattering optics, so the four builders all return
+   ! a physical albedo:
+   !   astrodust  Csca and <cos> from the random-orientation T-matrix Q table
+   !   dl07       Mie on the D03 astrosilicate and graphite dielectric
+   !              functions (q_silicate_full / q_graphite_full); the PAH
+   !              component scatters negligibly and enters through absorption
+   !   zubko      Q_sca and <cos> columns of the model's own DustEM tables
+   !   from_files same, for whatever tables the descriptor names
+   ! A population that genuinely does not scatter leaves its optics unallocated
+   ! and contributes zero to those terms. status is 0 on success and 1 if an
+   ! output array is not of size m%NLAM; when it is omitted such a call stops
+   ! the run.
    !
    ! dust_build_table and dust_emission_interp take the same optional final
    ! status argument (0 = success); when present a bad argument is reported
@@ -68,6 +105,10 @@ module dust_lib
    ! is simply "0 = built, non-zero = build failed". Codes per builder:
    !   build_astrodust / build_dl07:  1 Q-table load failed
    !                                  2 size-distribution load failed
+   !   build_astrodust only, and only when lam_min asks for the EUV band:
+   !                                  3 astrodust dielectric function load failed
+   !                                  4 lam_min below that dielectric function's
+   !                                    shortest wavelength
    !   build_zubko:   1 config read failed        2 fewer than 3 components
    !                  3 a component's optics read  4 grid inconsistent
    !                  5 a component's calorimetry read failed

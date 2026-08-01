@@ -1768,6 +1768,7 @@ contains
       integer :: i, j, fbin, iter, iter_total, jcut, jpmax
       integer :: nc_pah, nh_pah, nset_qm
       real(wp) :: umin, umax, umaxmin, umaxhi, umaxlo, uminhi, uminlo
+      real(wp) :: u_photon_max
       real(wp) :: pmax, term, sum_p, err_bcg, tol_bcg
       logical  :: refine, bicg_ok, sparse_ok
       integer  :: itmax_bcg, n_retry
@@ -1855,9 +1856,16 @@ contains
          cabs_ds    = cabs_full
       end if
 
-      ! Initial UMIN/UMAX guesses (following Draine's method)
+      ! Initial UMIN/UMAX guesses (following Draine's method).  The
+      ! single-photon term must be the hardest photon the radiation field
+      ! carries, hc/lambda at the short-wavelength end of the caller's grid,
+      ! not a fixed 13.6 eV: that constant is the Lyman limit, i.e. exactly
+      ! where the unextended model grid stops (hc/0.0912 um = 13.595 eV), so
+      ! the max() leaves it selected there and only rises when the grid has
+      ! been carried into the EUV.  isrf_wl_full is already in cm.
+      u_photon_max = HC_CGS / minval(isrf_wl_full)
       umaxmin = 13.65_wp * EV2ERG
-      umax = max(13.6_wp * EV2ERG + 2.0_wp * eeq, umaxmin)
+      umax = max(max(13.6_wp * EV2ERG, u_photon_max) + 2.0_wp * eeq, umaxmin)
       if (eeq < 0.1_wp * eeqss) then
          umin = 0.0_wp
       else

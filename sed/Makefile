@@ -42,7 +42,8 @@ SRC_DL07MOD = src/pah_ioniz.f90 src/grain_dist.f90 src/q_silicate.f90 \
 SRC_PIPE    = $(SRC_BASE) src/enthalpy_v2.f90 \
               src/size_dist.f90 src/q_table.f90 \
               src/enthalpy_astrodust.f90 \
-              src/mie.f90 src/q_graphite.f90 src/q_graphite_d16.f90 \
+              src/mie.f90 src/q_astrodust.f90 \
+              src/q_graphite.f90 src/q_graphite_d16.f90 \
               src/q_graphite_d16_sphere.f90 src/qpah.f90 \
               src/radfield.f90 src/p_sub.f90 \
               src/stoch_qm.f90 $(SRC_DL07MOD) \
