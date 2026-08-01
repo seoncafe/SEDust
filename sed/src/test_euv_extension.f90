@@ -73,7 +73,13 @@ program test_euv_extension
    ! Each check prints PASS/FAIL with numbers; a FAIL sets a non-zero exit.
    !====================================================================
    use constants, only: wp
-   use dust_lib,  only: dust_model_t, build_astrodust, build_dl07, dust_extinction, &
+   ! size_integrated_extinction, not dust_extinction: every check below
+   ! compares one build of a model against another build of the same model, so
+   ! it has to see the optics THIS build computed. dust_extinction serves an
+   ! RT host from a precomputed table, which would answer both builds with the
+   ! same file and measure nothing.
+   use dust_lib,  only: dust_model_t, build_astrodust, build_dl07, &
+                        size_integrated_extinction, &
                         dust_has_polarized_optics, dust_nlam
    implicit none
 
@@ -209,8 +215,10 @@ program test_euv_extension
 
    allocate(Cext_b(nl_b), Cabs_b(nl_b), Csca_b(nl_b), gbar_b(nl_b), alb_b(nl_b))
    allocate(Cext_e(nl_e), Cabs_e(nl_e), Csca_e(nl_e), gbar_e(nl_e), alb_e(nl_e))
-   call dust_extinction(m_scal_base, Cext_b, Cabs_b, Csca_b, gbar=gbar_b, albedo=alb_b)
-   call dust_extinction(m_scal_euv,  Cext_e, Cabs_e, Csca_e, gbar=gbar_e, albedo=alb_e)
+   call size_integrated_extinction(m_scal_base, Cext_b, Cabs_b, Csca_b, &
+                                   gbar=gbar_b, albedo=alb_b)
+   call size_integrated_extinction(m_scal_euv,  Cext_e, Cabs_e, Csca_e, &
+                                   gbar=gbar_e, albedo=alb_e)
 
    call check_grid(nfail)
    call check_table_block(nfail)
@@ -240,9 +248,9 @@ program test_euv_extension
 
    allocate(Cpol_b(nl_b), Cbir_b(nl_b), Cpol_e(nl_e), Cbir_e(nl_e))
    allocate(Cad_b(nl_b), Cad_e(nl_e))
-   call dust_extinction(m_base, Cext_b, Cabs_b, Csca_b, gbar=gbar_b, &
+   call size_integrated_extinction(m_base, Cext_b, Cabs_b, Csca_b, gbar=gbar_b, &
                         Cpol_ext=Cpol_b, Cbir_ext=Cbir_b, albedo=alb_b)
-   call dust_extinction(m_euv,  Cext_e, Cabs_e, Csca_e, gbar=gbar_e, &
+   call size_integrated_extinction(m_euv,  Cext_e, Cabs_e, Csca_e, gbar=gbar_e, &
                         Cpol_ext=Cpol_e, Cbir_ext=Cbir_e, albedo=alb_e)
    call astrodust_extinction(m_base, Cad_b)
    call astrodust_extinction(m_euv,  Cad_e)
@@ -579,8 +587,8 @@ contains
 
       nb = dust_nlam(m_dl_base);  ne = dust_nlam(m_dl_euv);  nx = ne - nb
       allocate(xb(nb), ab(nb), sb(nb), gb(nb), xe(ne), ae(ne), se(ne), ge(ne))
-      call dust_extinction(m_dl_base, xb, ab, sb, gbar=gb)
-      call dust_extinction(m_dl_euv,  xe, ae, se, gbar=ge)
+      call size_integrated_extinction(m_dl_base, xb, ab, sb, gbar=gb)
+      call size_integrated_extinction(m_dl_euv,  xe, ae, se, gbar=ge)
 
       dlam = maxreldiff(m_dl_euv%lam(nx+1:), m_dl_base%lam)
       dext = maxreldiff(xe(nx+1:), xb)

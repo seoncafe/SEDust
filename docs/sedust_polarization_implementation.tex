@@ -234,11 +234,15 @@ Optional \code{lamI\_pol}, last argument. Sums \code{Jpol} over the populations
 that carry polarized optics and applies the same unit convention as
 \code{lamI\_total}. \\[2pt]
 \code{sed\_astrodust.f90}: \code{dust\_extinction} &
-The extinction accessor. Integrates \Cabs, $C_{\rm sca}$, the
-scattering-weighted $\langle\cos\theta\rangle$ and
-$C_{\rm pol,ext}\,\falign$ over the size distribution of every population, and
-returns them per H atom on \code{m\%lam}. These are the same numbers column 8
-of the table carries, without the file (\S\ref{sec:whyaccessor}). \\[2pt]
+The extinction accessor, per H atom on \code{m\%lam}. It integrates
+$C_{\rm pol,ext}\,\falign$ (and the birefringent twin) over the size
+distribution of every population --- these are the same numbers column 8 of the
+table carries, without the file. \Cabs, $C_{\rm sca}$ and
+$\langle\cos\theta\rangle$ it later stopped integrating: it reads them from the
+precomputed \code{kext} table instead, while the polarized outputs stay
+computed because their \falign\ weight is runtime state
+(\S\ref{sec:whyaccessor}). The first-principles integral of all six is
+\code{size\_integrated\_extinction}. \\[2pt]
 \code{sed/src/calc\_polext.f90} &
 Standalone check: computes the polarized extinction directly from
 \code{qpol\_ext} and the release size distribution, and compares against the
@@ -457,6 +461,31 @@ expected result for one integral evaluated twice.
 
 The table remains, unchanged byte for byte, and remains the right route for a
 tool that wants the optics without linking the library.
+
+\paragraph{Later revision: the scalar optics went back to the table.} The
+argument above is about the \emph{interface}, and it stands: a host must get
+its opacity from a call on the same model object that gives it emission, on its
+own wavelength grid. What changed afterwards is where that call gets its
+numbers. The scalar transport optics of a dust model do not depend on the
+transport, so recomputing the size integral inside an RT run buys nothing that
+reading the recorded integral does not. \code{dust\_extinction} therefore now
+serves \Cabs, $C_{\rm sca}$, $C_{\rm ext}$ and $\langle\cos\theta\rangle$ from a
+\code{data/kext\_*.dat} table, attached to the model by the builder (optional
+\code{kext\_path}; the defaults are the EUV products, the widest grid each model
+has) and interpolated onto \code{m\%lam}, exactly at the nodes the two grids
+share. The host's call site is unchanged, and so is the requirement that the
+file be opened while the working directory is still \code{sed/} --- which is why
+the read happens in \code{build\_*} and not in \code{dust\_extinction}.
+
+The polarized outputs were deliberately \emph{not} moved. \code{Cpol\_ext} and
+\code{Cbir\_ext} carry the \falign\ weight, which a host resets cell by cell
+through \code{dust\_set\_alignment}; a column fixed at build time could not
+follow it. So the routine is now mixed on purpose: scalar optics from a table,
+polarized optics from the model. The size integral itself is unchanged and is
+still reachable, for all six outputs, as
+\code{size\_integrated\_extinction} --- which is what \code{calc\_kext.x} calls
+to write the tables, and what the in-tree checks call when they must compare one
+build of a model against another.
 
 \subsection{Compression handling, and a scratch file that leaked}
 

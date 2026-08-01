@@ -27,7 +27,13 @@ program test_scalar_mode
    !====================================================================
    use constants, only: wp
    use radfield,  only: J_Mathis
-   use dust_lib,  only: dust_model_t, build_astrodust, dust_extinction, &
+   ! size_integrated_extinction, not dust_extinction: the point of the checks
+   ! is that a scalar-only build and a polarized build compute the SAME scalar
+   ! optics, and that the scalar build has no polarized optics to return.
+   ! dust_extinction would serve both from one precomputed table and so could
+   ! not tell them apart.
+   use dust_lib,  only: dust_model_t, build_astrodust, &
+                        size_integrated_extinction, &
                         dust_emission, dust_has_polarized_optics, &
                         dust_set_alignment, dust_nlam
    implicit none
@@ -93,7 +99,7 @@ program test_scalar_mode
    allocate(Cpol_ext_s(nlam), Cbir_ext_s(nlam))
    allocate(J(nlam), total_p(nlam), total_s(nlam))
 
-   call dust_extinction(m_pol, Cext_p, Cabs_p, Csca_p, gbar=gbar_p)
+   call size_integrated_extinction(m_pol, Cext_p, Cabs_p, Csca_p, gbar=gbar_p)
    ! One cell's field: the Mathis ISRF at U = 1.
    call J_Mathis(1.0_wp, m_pol%lam, J)
    call dust_emission(m_pol, J, total_p)
@@ -107,7 +113,7 @@ program test_scalar_mode
    end if
    has_pol_s = dust_has_polarized_optics(m_scalar)
 
-   call dust_extinction(m_scalar, Cext_s, Cabs_s, Csca_s, gbar=gbar_s, &
+   call size_integrated_extinction(m_scalar, Cext_s, Cabs_s, Csca_s, gbar=gbar_s, &
                         Cpol_ext=Cpol_ext_s, Cbir_ext=Cbir_ext_s)
    call dust_emission(m_scalar, J, total_s)
 

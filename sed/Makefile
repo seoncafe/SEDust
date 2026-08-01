@@ -19,6 +19,7 @@
 #   ./main_dl07.x
 #   ./calc_kext.x astrodust            # -> ../data/kext_astrodust_MW.dat
 #   ./calc_kext.x astrodust euv        # carried into the ionizing band
+#   ./calc_kext.x dl07
 #   ./calc_kext.x dl07 euv
 #   ./calc_kext.x zubko
 #   ./calc_kext.x from_files <descriptor> [data_dir]
@@ -57,7 +58,7 @@ SRC_PIPE    = $(SRC_BASE) src/enthalpy_v2.f90 \
               src/radfield.f90 src/p_sub.f90 \
               src/stoch_qm.f90 $(SRC_DL07MOD) \
               src/scatmat_aligned.f90 src/dust_model_mod.f90 src/zubko_io.f90 \
-              src/sed_astrodust.f90
+              src/kext_table.f90 src/sed_astrodust.f90
 
 SRC_ENTH    = $(SRC_BASE) src/enthalpy_v2.f90 \
               src/enthalpy_astrodust.f90 src/make_enthalpy.f90
@@ -86,9 +87,10 @@ main_zubko.x: $(SRC_PIPE) src/main_zubko.f90
 
 # Size-integrated transport optics (lambda, albedo, <cos>, C_ext/C_abs/C_sca
 # per H) for astrodust, DL07, Zubko or any file-defined model -> ../data/.
-# Reuses the full SED pipeline, so every table it writes is the same optics
-# the RT hosts get from dust_extinction; only the driver differs.  The
-# astrodust product also carries the dichroic C_polext/H column.
+# Reuses the full SED pipeline and computes the size integral from first
+# principles (size_integrated_extinction); the tables it writes here are the
+# very ones dust_extinction reads back for an RT host.  The astrodust product
+# also carries the dichroic C_polext/H column.
 calc_kext.x: $(SRC_PIPE) src/calc_kext.f90
 	$(FC) $(FFLAGS) $^ -o $@
 	@echo 'Built: ./calc_kext.x'

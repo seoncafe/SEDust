@@ -49,25 +49,88 @@ module dust_lib
    !
    ! EXTINCTION. dust_extinction is the extinction counterpart of
    ! dust_emission, so an RT host takes its opacity from the same model object
-   ! and on the same wavelength grid (m%lam) as its emission, rather than
-   ! parsing data/kext_astrodust_MW.dat and interpolating off that file's grid:
+   ! and on the same wavelength grid (m%lam) as its emission:
    !   call dust_extinction(m, Cext, Cabs, Csca [, gbar] [, Cpol_ext] &
    !                        [, Cbir_ext] [, albedo] [, status])
    ! All three required outputs are (m%NLAM) cross sections per H atom
    ! [cm^2/H], integrated over the size distribution of every population:
-   ! Cext = Cabs + Csca. Optional gbar is the scattering-weighted asymmetry
-   ! <cos>, sum dn*Csca*g / sum dn*Csca, and is 0 at wavelengths where nothing
-   ! scatters; optional albedo is Csca/Cext, 0 where Cext underflows -- derived
-   ! here rather than by the caller so every host gets the same convention at
-   ! those wavelengths. Optional Cpol_ext is the dichroic (polarized)
-   ! extinction, sum dn*Cpol_ext*f_align [cm^2/H], and Cbir_ext the
-   ! birefringent extinction from the same weighting; the size integral and the
-   ! alignment weight are done here, but the sin^2(gamma) geometry factor and
-   ! any turbulent depolarization are left to the radiative transfer, exactly
-   ! as for lamI_pol. Populations without scattering or polarized optics (the
-   ! PAHs) contribute zero to those terms and enter through absorption only.
-   ! status is 0 on success and 1 if an output array is not of size m%NLAM;
-   ! when it is omitted such a call stops the run.
+   ! Cext = Cabs + Csca. Optional gbar is the scattering asymmetry <cos>;
+   ! optional albedo is Csca/Cext, 0 where Cext underflows -- derived here
+   ! rather than by the caller so every host gets the same convention at those
+   ! wavelengths. Optional Cpol_ext is the dichroic (polarized) extinction,
+   ! sum dn*Cpol_ext*f_align [cm^2/H], and Cbir_ext the birefringent extinction
+   ! from the same weighting; the size integral and the alignment weight are
+   ! done here, but the sin^2(gamma) geometry factor and any turbulent
+   ! depolarization are left to the radiative transfer, exactly as for
+   ! lamI_pol. Populations without scattering or polarized optics (the PAHs)
+   ! contribute zero to those terms and enter through absorption only.
+   !
+   ! WHERE THE NUMBERS COME FROM. The four SCALAR outputs -- Cext, Cabs, Csca,
+   ! gbar -- are READ FROM A TABLE, one of the data/kext_*.dat products of
+   ! calc_kext.x, attached to the model at build time and interpolated onto
+   ! m%lam (log-log in the cross sections, linear in log(lambda) for the signed
+   ! gbar). The transport optics of a dust model do not depend on the
+   ! transport, so there is nothing to gain by re-running the size integral
+   ! during an RT run: the table is that same integral, done once and recorded.
+   ! A wavelength of m%lam that coincides with a table node takes the tabulated
+   ! value unchanged, and nothing is extrapolated -- a grid running outside the
+   ! table is refused (status 3), not served a frozen boundary value.
+   !
+   ! The two POLARIZED outputs -- Cpol_ext and Cbir_ext -- are NOT tabulated.
+   ! They are computed from the model's own orientation-resolved optics on
+   ! every call, because their f_align(a) weight is runtime state an RT host
+   ! resets cell by cell through dust_set_alignment, which a table fixed at
+   ! build time could not follow. This asymmetry is deliberate.
+   !
+   ! The first-principles size integral is still reachable under its own name,
+   !   call size_integrated_extinction(m, Cext, Cabs, Csca [, gbar] &
+   !                        [, Cpol_ext] [, Cbir_ext] [, albedo] [, status])
+   ! with the identical argument list. It needs no table, computes all six
+   ! outputs from the model's optics, and is what the standalone calculators
+   ! (calc_kext.x, which writes the tables) use.
+   !
+   ! DUST MASS PER H. Both routines return cross sections PER H NUCLEON. A host
+   ! that carries a dust mass density instead converts them with
+   !   Mdust_H = dust_mass_per_H(m)          ! [g/H], one number per model
+   !   kappa   = Cabs / Mdust_H              ! [cm^2 per gram of dust]
+   ! It is the model's own size distribution weighted by the solid density of
+   ! each population's material,
+   !   M_dust/N_H = sum_pop rho_bulk * sum_a (4/3) pi a_cm^3 dn_pop(a),
+   ! so the opacity it produces refers to the same grains the emission does.
+   ! Being a property of the model it is wavelength- and temperature-
+   ! independent; evaluate it once. The densities are the astrodust model's
+   ! rho_Ad = 2.74 and rho_PAH = 2.0 g/cm^3, the DL07 model's astrosilicate 3.5
+   ! and graphitic carbon 2.2 g/cm^3 (both Draine & Li 2007 sec. 2), and, for
+   ! the Zubko and file-defined models, the density each optics file declares.
+   ! The same number normalizes the K_abs column of every data/kext_*.dat
+   ! product.
+   !
+   ! WHICH TABLE. Each builder takes an optional kext_path naming the file.
+   ! Omitting it takes that model's default:
+   !   astrodust  ../data/kext_astrodust_MW_euv.dat
+   !   dl07       ../data/kext_dl07_MW_euv.dat
+   !   zubko      ../data/kext_zubko_BARE_GR_S.dat
+   !   from_files (none -- a file-defined model's product is named after the
+   !               model, so a host wanting extinction must name the file)
+   ! The astrodust and DL07 defaults are the EUV products because they are the
+   ! WIDEST grid each model has (~1e-4 to 39810 um), so one file serves a host
+   ! that transports ionizing radiation and a host that does not -- the
+   ! latter's grid is a subset of the former's, on the same nodes. Naming a
+   ! kext_path is therefore how you NARROW the table (to
+   ! kext_astrodust_MW.dat / kext_dl07_MW.dat), or point at a product of your
+   ! own. A kext_path that cannot be read fails the build (see the codes
+   ! below); a
+   ! DEFAULT that cannot be read does not, since the emission-only drivers must
+   ! still build and calc_kext.x builds a model precisely to write the table
+   ! that is not there yet. dust_extinction then reports status 2.
+   !
+   ! The table is read at BUILD time, not at query time, because these paths
+   ! are relative to sed/ and a host that changes directory around the build
+   ! call would find them broken afterwards.
+   !
+   ! status is 0 on success, 1 if an output array is not of size m%NLAM, 2 if
+   ! no extinction table was loaded for this model, and 3 if m%lam runs outside
+   ! the table; when it is omitted such a call stops the run.
    !
    ! All four builders carry scattering optics, so albedo and gbar are physical
    ! for every model: astrodust from the T-matrix Q table (and Mie on the same
@@ -153,13 +216,23 @@ module dust_lib
    !                                    0.0124-0.0912 um (build_astrodust only)
    !                                  (build_astrodust also forwards sed_init's
    !                                   polarized-optics codes 3, 4, 5)
+   !                                  build_dl07 only:
+   !                                  5 an explicitly named kext_path failed to
+   !                                    load
+   !                                  build_astrodust only:
+   !                                 10 an explicitly named kext_path failed to
+   !                                    load. It is 10 here and 5 everywhere
+   !                                    else because this builder's polarized
+   !                                    codes already occupy 3, 4, 5, 8 and 9.
    !   build_zubko:   1 config read failed        2 fewer than 3 components
    !                  3 a component's optics read  4 grid inconsistent
    !                  5 a component's calorimetry read failed
+   !                  6 an explicitly named kext_path failed to load
    !   build_from_files: 1 descriptor open   2 too many pop: lines
    !                     3 invalid channel   4 no pop: lines
    !                     5 optics read       6 grid inconsistent
    !                     7 size-dist read    8 calorimetry read failed
+   !                     9 an explicitly named kext_path failed to load
    !
    ! WAVELENGTH GRID AND THE EUV. m%lam is the T-matrix Q table's grid, which
    ! ends at 0.0912 um (13.6 eV, the Lyman limit). build_astrodust and
@@ -196,7 +269,9 @@ module dust_lib
    use sed_astrodust_mod, only: dust_model_t, &
                                 build_astrodust, build_dl07, build_zubko, build_from_files, &
                                 dust_emission, dust_emission_single_teq, &
-                                dust_extinction, dust_has_polarized_optics, &
+                                dust_extinction, size_integrated_extinction, &
+                                dust_mass_per_H, &
+                                dust_has_polarized_optics, &
                                 dust_set_alignment, dust_set_alignment_profile
    ! Aligned-grain polarized scattering optics for a polarized RT host. The
    ! init call (load_scatmat_aligned) runs once from serial code; the query
@@ -220,6 +295,8 @@ module dust_lib
    ! Re-exported model API
    public :: dust_model_t, build_astrodust, build_dl07, build_zubko, build_from_files
    public :: dust_emission, dust_emission_single_teq, dust_extinction
+   public :: size_integrated_extinction
+   public :: dust_mass_per_H
    public :: dust_has_polarized_optics
    public :: dust_set_alignment, dust_set_alignment_profile
    ! Re-exported aligned-scattering API (initialization + path queries)

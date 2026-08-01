@@ -11,6 +11,7 @@ module radfield
    private
    public :: J_Mathis, J_diluted_bbody, calc_bbody, bbody
    public :: hardest_photon_energy
+   public :: cmb_temperature
    ! Toggle for Draine's 2008.02.02 correction of the Mathis 4000K
    ! dilution factor (1e-13 -> 1.65e-13) and the modern CMB temperature
    ! (2.9 -> 2.725 K). Default .true. follows Draine
@@ -41,6 +42,33 @@ module radfield
 
 contains
 
+   pure function cmb_temperature() result(T_cmb)
+      ! The CMB temperature this module puts into the radiation field, and the
+      ! ONLY place that value is written down.
+      !
+      ! It has to be a single source of truth because two very different pieces
+      ! of the calculation must agree on it. J_Mathis adds a CMB blackbody to
+      ! the field the grains absorb, and build_kappCMB integrates C_abs against
+      ! a CMB blackbody past 1 mm to form the term calc_P subtracts from the
+      ! grain's own emission (kappB - kappCMB is the NET cooling rate, which is
+      ! what stops a grain cooling below its surroundings). If the two used
+      ! different temperatures the solver would hold grains up against photons
+      ! the field never supplied. They did differ -- 2.725 K in the field
+      ! against a hard-coded 2.9 K in the cooling term -- once
+      ! use_mathis_corrected became the default.
+      !
+      ! use_mathis_corrected = .true. is the modern value (Mather et al.);
+      ! .false. recovers the literal Mathis (1983) 2.9 K together with that
+      ! paper's 4000 K dilution factor, so the two move as a pair.
+      real(wp) :: T_cmb
+      if (use_mathis_corrected) then
+         T_cmb = 2.725_wp
+      else
+         T_cmb = 2.9_wp
+      end if
+   end function cmb_temperature
+
+
    subroutine J_Mathis(U, lambda, J)
       ! Mathis 1983 ISRF, scaled by intensity factor U, plus a CMB
       ! blackbody at long wavelength. With use_mathis_corrected=.true.
@@ -56,11 +84,10 @@ contains
       real(wp) :: w_4000, T_cmb
       if (use_mathis_corrected) then
          w_4000 = 1.65d-13
-         T_cmb  = 2.725_wp
       else
          w_4000 = 1.0d-13
-         T_cmb  = 2.9_wp
       end if
+      T_cmb = cmb_temperature()
       nlambda = size(lambda)
       do i = 1, nlambda
          if (lambda(i) < 0.0912d0) then

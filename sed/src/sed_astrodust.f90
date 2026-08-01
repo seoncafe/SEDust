@@ -23,7 +23,8 @@ module sed_astrodust_mod
    use, intrinsic :: iso_fortran_env, only: real64, error_unit
    use constants,             only: wp
    use sed_mathlib,               only: interp, first_location, last_location
-   use radfield,              only: bbody, calc_bbody, hardest_photon_energy
+   use radfield,              only: bbody, calc_bbody, hardest_photon_energy, &
+                                    cmb_temperature
    use p_sub,                 only: p_sub_setup, calc_Teq, calc_P
    use q_table_mod,           only: load_q_table, &
                                     qt_n_lam=>n_lam, qt_n_aeff=>n_aeff, &
@@ -46,7 +47,7 @@ module sed_astrodust_mod
    use size_dist_mod,         only: load_size_dist, sd_n=>n_size, &
                                     sd_aeff=>a_dist, sd_dn=>dn_ad, &
                                     sd_dn_pah=>dn_pah, sd_fion=>f_ion
-   use enthalpy_astrodust_mod, only: enthalpy_S1, enthalpy_S2
+   use enthalpy_astrodust_mod, only: enthalpy_S1, enthalpy_S2, RHO_AD, RHO_PAH
    use enthalpy,              only: enthalpy_DL01
    use qpah,                  only: qpah_dl07, qpah_ld01, &
                                     nc_coeff, nc_integer, qpah_use_d03_graphite
@@ -67,6 +68,9 @@ module sed_astrodust_mod
    use pah_ioniz_mod,         only: pah_ionfrac
    use dust_model_mod,        only: dust_model_t, grain_pop_t, free_dust_model, &
                                     dust_set_alignment, dust_set_alignment_profile
+   ! Size-integrated extinction tables (calc_kext.x products under data/),
+   ! which the builders attach to the model and dust_extinction serves from.
+   use kext_table_mod,        only: load_kext_table, tabulated_extinction_on_grid
    use scatmat_aligned_mod,   only: load_scatmat_aligned
    use zubko_io,              only: zda_comp_t, read_zda_config, zda_gofa, &
                                     read_zubko_optics, read_zubko_calor, &
@@ -78,6 +82,11 @@ module sed_astrodust_mod
    ! Model-agnostic library API (path B: wraps the untouched solver core).
    public :: dust_model_t, build_astrodust, build_dl07, build_zubko, dust_emission
    public :: build_from_files, dust_emission_single_teq, dust_extinction
+   ! First-principles size integral over the model's own optics -- what the
+   ! standalone calculators use, and what writes the tables dust_extinction
+   ! then reads back.
+   public :: size_integrated_extinction
+   public :: dust_mass_per_H
    ! .true. iff the active model was built with polarized optics loaded; lets a
    ! host tell an intentionally scalar model from a polarized one.
    public :: dust_has_polarized_optics
@@ -118,6 +127,45 @@ module sed_astrodust_mod
 
    real(wp), parameter :: PI    = 3.141592653589793238462643383279502884197d0
    real(wp), parameter :: UM2CM = 1.0e-4_wp
+
+   ! Solid mass densities of the two DL07 / WD01 materials [g/cm^3], used to
+   ! turn that model's size distribution into a dust mass per H.
+   !
+   ! Both are stated by the model's own paper, Draine & Li (2007) sec. 2, in the
+   ! paragraph defining the effective radius a = (3M/4 pi rho)^(1/3):
+   !
+   !   astrosilicate  3.5   "amorphous silicate is assumed to have a mass
+   !                        density rho = 3.5 g cm^-3".  The same value the DL01
+   !                        astrosilicate enthalpy is built on (see
+   !                        enthalpy_astrodust_mod, where the S1 stage rescales
+   !                        N_atom by RHO_AD/3.5).
+   !   graphite       2.2   "carbonaceous grains are assumed to have a mass
+   !                        density due to graphitic carbon alone of
+   !                        rho = 2.2 g cm^-3".  NOT the 2.24 of WD01 / LD01,
+   !                        which is the density implied by the carbon-atom
+   !                        count N_C = 470 (a/nm)^3 this builder selects.  DL07
+   !                        kept that count and quoted the rounder density; the
+   !                        model being built here is DL07's, so its number is
+   !                        the one used.
+   !
+   ! The DL07 carbonaceous grains are ONE material sequence -- PAH-like at small
+   ! a, graphite at large a, joined by the DL07 xi(a) weight -- with no size at
+   ! which the solid changes, so the graphite density is used across the whole
+   ! sequence rather than split at some radius.  (The astrodust model's PAHs take
+   ! RHO_PAH = 2.0 instead.  That is HD23's own convention, tied to its
+   ! N_C = 417 (a/nm)^3; the two numbers differ because the models differ, not
+   ! because one corrects the other.)
+   !
+   ! CHECK against DL07 Table 3, model j_M = 7 (MW3.1_60, the size distribution
+   ! this builder selects): the paper gives M_dust/M_H = 0.0104.  These densities
+   ! reproduce it to about half a percent.  Draine's own kext_albedo_WD file
+   ! header instead states M_dust/N_H = 1.870e-26 g/H, i.e. M_dust/M_H = 0.0112,
+   ! which is 7% away from his Table 3; the header also normalizes the silicate
+   ! distribution by 0.93 where the paper's Fig. 11 caption says 0.92.  The
+   ! optics here follow the FILE (they agree with it to 0.1-0.3%), the mass
+   ! follows the PAPER, and the two disagree by that ~1%.
+   real(wp), parameter :: RHO_ASTROSIL = 3.5_wp
+   real(wp), parameter :: RHO_GRAPHITE = 2.2_wp
    ! SI constants for the induced-emission factor (h*c^2 in J*m^2/s).
    real(wp), parameter :: H_SI    = 6.62606957e-34_wp
    real(wp), parameter :: C_SI    = 2.99792458e8_wp
@@ -292,6 +340,27 @@ module sed_astrodust_mod
    character(len=*), parameter :: QPOL_EUV_Q_DEF = &
         '../tmatrix/output/q_astrodust_jori_euv_P0.20_Fe0.00_1.400.dat.gz'
    character(len=*), parameter :: QPOL_EUV_W_DEF = '../data/dielectric/DH21_wave_euv'
+
+   ! Default size-integrated extinction table of each coded model, relative to
+   ! the sed/ working directory -- what dust_extinction serves when the builder
+   ! was given no kext_path.
+   !
+   ! The astrodust and DL07 defaults are the EUV products, the WIDEST grid each
+   ! model has: they run from ~1e-4 um up to 39810 um, so one file covers a host
+   ! that transports ionizing radiation and a host that does not, the latter's
+   ! grid being a subset of the former's. Both were written on the same
+   ! wavelength nodes as the T-matrix Q table above 0.0912 um, so an unextended
+   ! model reads its own nodes straight out of them. The narrower non-EUV
+   ! products (kext_astrodust_MW.dat, kext_dl07_MW.dat) remain available, but a
+   ! host that wants one has to name it.
+   !
+   ! Zubko needs no such choice: its optics table IS the model definition and
+   ! already reaches 0.001 um, so it has one product and no EUV extension.
+   ! build_from_files has no default at all -- a file-defined model's product is
+   ! named after the model, which is only known once the descriptor is read.
+   character(len=*), parameter :: KEXT_ASTRODUST = '../data/kext_astrodust_MW_euv.dat'
+   character(len=*), parameter :: KEXT_DL07      = '../data/kext_dl07_MW_euv.dat'
+   character(len=*), parameter :: KEXT_ZUBKO     = '../data/kext_zubko_BARE_GR_S.dat'
 
 contains
 
@@ -1822,12 +1891,19 @@ contains
 
    subroutine build_kappCMB_pah()
       ! Same as build_kappCMB() but using Cabs_pah.
-      real(wp), parameter :: T_CMB    = 2.9_wp
+      ! calc_P subtracts this from the grain's own emission, so kappB - kappCMB
+      ! is the NET cooling rate and a grain cannot cool below its surroundings.
+      ! T_CMB must therefore be the temperature of the CMB the FIELD carries;
+      ! radfield's cmb_temperature() is the single place that value is written
+      ! down.  It was hard-coded 2.9 K here while J_Mathis had moved to
+      ! 2.725 K, which held grains up against photons the field never supplied.
+      real(wp)            :: T_CMB
       real(wp), parameter :: lam_min  = 1000.0_wp
       integer,  parameter :: NW_INT   = 101
       real(wp) :: w(NW_INT), spec(NW_INT), Cabs_w(NW_INT), lam_max, dlnw
       integer  :: ja, iw
 
+      T_CMB   = cmb_temperature()
       lam_max = maxval(lam)
       kappCMB_pah = 0.0_wp
       if (lam_max <= lam_min) return
@@ -2293,14 +2369,21 @@ contains
 
 
    subroutine build_kappCMB()
-      ! kappCMB(ja) = integral_(lam>1mm) Cabs(lam, ja) * B_lam(2.9 K, lam) dlam
+      ! kappCMB(ja) = integral_(lam>1mm) Cabs(lam, ja) * B_lam(T_CMB, lam) dlam
       ! See setup_kappCMB.
-      real(wp), parameter :: T_CMB    = 2.9_wp
+      ! calc_P subtracts this from the grain's own emission, so kappB - kappCMB
+      ! is the NET cooling rate and a grain cannot cool below its surroundings.
+      ! T_CMB must therefore be the temperature of the CMB the FIELD carries;
+      ! radfield's cmb_temperature() is the single place that value is written
+      ! down.  It was hard-coded 2.9 K here while J_Mathis had moved to
+      ! 2.725 K, which held grains up against photons the field never supplied.
+      real(wp)            :: T_CMB
       real(wp), parameter :: lam_min  = 1000.0_wp     ! [um]
       integer,  parameter :: NW_INT   = 101
       real(wp) :: w(NW_INT), spec(NW_INT), Cabs_w(NW_INT), lam_max, dlnw
       integer  :: ja, iw
 
+      T_CMB   = cmb_temperature()
       lam_max = maxval(lam)
       kappCMB = 0.0_wp
       if (lam_max <= lam_min) return
@@ -2349,7 +2432,7 @@ contains
    ! Copy one population's arrays (from the module globals) into a grain_pop_t.
    subroutine set_pop(p, gtype, chan, dn_in, Cabs_in, kappB_in, H_in, &
                       log_H_in, log_kappB_in, kappCMB_in, Cpol_in, falign_in, &
-                      Csca_in, Cpol_ext_in, gsca_in, Cbir_ext_in)
+                      Csca_in, Cpol_ext_in, gsca_in, Cbir_ext_in, rho_bulk)
       type(grain_pop_t), intent(inout) :: p
       character(len=*),  intent(in)    :: gtype
       integer,           intent(in)    :: chan
@@ -2370,6 +2453,10 @@ contains
       ! independent: a population without it (the PAHs, or an astrodust model
       ! built from a 3-block table) leaves it out and contributes zero.
       real(wp), optional, intent(in)   :: Cbir_ext_in(:,:)
+      ! Solid mass density of the material [g/cm^3], read only by
+      ! dust_mass_per_H. Omitted, the population states none and contributes no
+      ! mass; see grain_pop_t.
+      real(wp), optional, intent(in)   :: rho_bulk
       p%grain_type = gtype
       p%out_channel = chan
       p%aeff      = aeff          ! [um] module-global size grid (set by sed_init)
@@ -2380,6 +2467,7 @@ contains
       p%log_H     = log_H_in
       p%log_kappB = log_kappB_in
       p%kappCMB   = kappCMB_in
+      if (present(rho_bulk)) p%rho_bulk = rho_bulk
       if (present(Cpol_in) .and. present(falign_in)) then
          p%Cpol   = Cpol_in
          p%falign = falign_in
@@ -2401,7 +2489,7 @@ contains
    subroutine build_astrodust(m, qtable_path, sizedist_path, NT_in, T_lo, T_hi, status, &
                               qpol_path, qpol_wave_path, qpol_aeff_path, scatmat_path, &
                               load_polarized_optics, lam_min, astrodust_index_path, &
-                              qpol_euv_path, qpol_euv_wave_path)
+                              qpol_euv_path, qpol_euv_wave_path, kext_path)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: qtable_path, sizedist_path
       integer,            intent(in)  :: NT_in
@@ -2426,6 +2514,8 @@ contains
       !               error -- that band degrades to a reported zero)
       !   status = 9  the EUV band of the grid runs outside the wavelengths the
       !               EUV companion table covers
+      !   status = 10 an explicitly named extinction table (kext_path) could
+      !               not be read
       integer, optional,  intent(out) :: status
       ! Orientation-resolved DH21 table + grid axes for the polarized optics,
       ! forwarded to sed_init. Omit to use the defaults; an implicit-default
@@ -2458,6 +2548,14 @@ contains
       ! Optional EUV companion polarized table and its wavelength axis,
       ! forwarded to sed_init. Omit for the shipped defaults.
       character(len=*), optional, intent(in) :: qpol_euv_path, qpol_euv_wave_path
+      ! Size-integrated extinction table dust_extinction serves this model's
+      ! scalar optics from. Omitting it takes KEXT_ASTRODUST, and a default
+      ! that cannot be read is not an error -- the model is still built, and
+      ! only dust_extinction is left with nothing to return (status 2 there).
+      ! A kext_path that cannot be read FAILS the build (status 10): a host
+      ! naming a file that is not there is a configuration error.
+      character(len=*), optional, intent(in) :: kext_path
+      logical :: kext_ok
 
       if (present(status)) status = 0
 
@@ -2504,28 +2602,43 @@ contains
       ! falign) are attached only when the orientation-resolved table was
       ! actually loaded; a scalar-only build or a failed implicit-default load
       ! leaves the population unpolarized, which dust_has_polarized_optics reports.
+      !
+      ! The astrodust grains carry the porosity-corrected astrodust density and
+      ! the two PAH charge states the HD23 PAH density, so dust_mass_per_H sums
+      ! this model's mass per H from the same size distribution the optics use.
       if (polarized_optics_loaded) then
          call set_pop(m%pops(1), 'sil', 1, dn_ad, Cabs, kappB_first, H_first(:,:,2), &
                       log_H_first(:,:,2), log_kappB_first, kappCMB, &
                       Cpol_in=Cpol, falign_in=falign_ad, &
                       Csca_in=Csca, Cpol_ext_in=Cpol_ext, gsca_in=gsca_ad, &
-                      Cbir_ext_in=Cbir_ext)
+                      Cbir_ext_in=Cbir_ext, rho_bulk=RHO_AD)
       else
          call set_pop(m%pops(1), 'sil', 1, dn_ad, Cabs, kappB_first, H_first(:,:,2), &
                       log_H_first(:,:,2), log_kappB_first, kappCMB, &
-                      Csca_in=Csca, gsca_in=gsca_ad)
+                      Csca_in=Csca, gsca_in=gsca_ad, rho_bulk=RHO_AD)
       end if
       call set_pop(m%pops(2), 'pah', 2, dn_cneu, Cabs_cneu, kappB_cneu, H_pah_first, &
-                   log_H_pah_first, log_kappB_cneu, kappCMB_cneu)
+                   log_H_pah_first, log_kappB_cneu, kappCMB_cneu, rho_bulk=RHO_PAH)
       call set_pop(m%pops(3), 'pah', 2, dn_cion, Cabs_cion, kappB_cion, H_pah_first, &
-                   log_H_pah_first, log_kappB_cion, kappCMB_cion)
+                   log_H_pah_first, log_kappB_cion, kappCMB_cion, rho_bulk=RHO_PAH)
+
+      call load_model_extinction_table(m, KEXT_ASTRODUST, kext_path, kext_ok)
+      if (.not. kext_ok) then
+         if (present(status)) then
+            status = 10;  return
+         else if (present(kext_path)) then
+            write(*,'(a)') ' build_astrodust: cannot read the extinction table '// &
+                 trim(kext_path)
+            stop 1
+         end if
+      end if
    end subroutine build_astrodust
 
 
    ! Build the DL07 model into m. Channels: SIL, CARB (carbonaceous =
    ! neutral + cation summed). Reuses sed_init_dl07 to set the globals.
    subroutine build_dl07(m, qtable_path, sizedist_path, sd_index, u_isrf, &
-                         NT_in, T_lo, T_hi, status, lam_min)
+                         NT_in, T_lo, T_hi, status, lam_min, kext_path)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: qtable_path, sizedist_path
       integer,            intent(in)  :: sd_index, NT_in
@@ -2535,11 +2648,19 @@ contains
       ! the process; when absent the build stops on error (CLI behavior).
       !   status = 1  Q-table load failed
       !   status = 2  size-distribution load failed
+      !   status = 7  lam_min below the D03 dielectric functions' own shortest
+      !               wavelength (forwarded from sed_init_dl07; EUV band only)
+      !   status = 5  an explicitly named extinction table (kext_path) could
+      !               not be read
       integer, optional,  intent(out) :: status
       ! Optional shortest wavelength [um] the model must cover; see
       ! build_astrodust. This model's optics are dielectric-function Mie
       ! throughout, so the extension is a grid extension only.
       real(wp), optional, intent(in)  :: lam_min
+      ! Size-integrated extinction table dust_extinction serves this model's
+      ! scalar optics from; see build_astrodust. Omitting it takes KEXT_DL07.
+      character(len=*), optional, intent(in) :: kext_path
+      logical :: kext_ok
 
       if (present(status)) status = 0
 
@@ -2589,15 +2710,28 @@ contains
       ! All three populations scatter, so all three carry their scattering
       ! optics into dust_extinction.  The two charge states share one
       ! scattering description and differ in dn and absorption only.
+      ! Densities: the DL07 astrosilicate and graphite bulk values.  Both
+      ! carbonaceous charge states are the same continuous material sequence, so
+      ! both take the graphite density (see RHO_GRAPHITE).
       call set_pop(m%pops(1), 'sil', 1, dn_ad, Cabs, kappB_first, H_first(:,:,1), &
                    log_H_first(:,:,1), log_kappB_first, kappCMB, &
-                   Csca_in=Csca, gsca_in=gsca_ad)
+                   Csca_in=Csca, gsca_in=gsca_ad, rho_bulk=RHO_ASTROSIL)
       call set_pop(m%pops(2), 'pah', 2, dn_cneu, Cabs_cneu, kappB_cneu, H_pah_first, &
                    log_H_pah_first, log_kappB_cneu, kappCMB_cneu, &
-                   Csca_in=Csca_car, gsca_in=gsca_car)
+                   Csca_in=Csca_car, gsca_in=gsca_car, rho_bulk=RHO_GRAPHITE)
       call set_pop(m%pops(3), 'pah', 2, dn_cion, Cabs_cion, kappB_cion, H_pah_first, &
                    log_H_pah_first, log_kappB_cion, kappCMB_cion, &
-                   Csca_in=Csca_car, gsca_in=gsca_car)
+                   Csca_in=Csca_car, gsca_in=gsca_car, rho_bulk=RHO_GRAPHITE)
+
+      call load_model_extinction_table(m, KEXT_DL07, kext_path, kext_ok)
+      if (.not. kext_ok) then
+         if (present(status)) then
+            status = 5;  return
+         else if (present(kext_path)) then
+            write(*,'(a)') ' build_dl07: cannot read the extinction table '//trim(kext_path)
+            stop 1
+         end if
+      end if
    end subroutine build_dl07
 
 
@@ -2608,7 +2742,7 @@ contains
    ! (Cabs = Qabs*pi*a^2); enthalpy from the specific-heat calorimetry tables
    ! (H = u_spec(T)*rho*(4pi/3)a^3). The shared lambda grid is the optics
    ! grid (all 3 components share 1201 wavelengths). Channels: PAH, GRA, SIL.
-   subroutine build_zubko(m, config_path, data_dir, NT_in, T_lo, T_hi, status)
+   subroutine build_zubko(m, config_path, data_dir, NT_in, T_lo, T_hi, status, kext_path)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: config_path, data_dir
       integer,            intent(in)  :: NT_in
@@ -2621,7 +2755,13 @@ contains
       !   status = 3  a component's optics read failed
       !   status = 4  a component's size/wavelength grid is inconsistent
       !   status = 5  a component's calorimetry read failed
+      !   status = 6  an explicitly named extinction table (kext_path) could
+      !               not be read
       integer, optional,  intent(out) :: status
+      ! Size-integrated extinction table dust_extinction serves this model's
+      ! scalar optics from; see build_astrodust. Omitting it takes KEXT_ZUBKO.
+      character(len=*), optional, intent(in) :: kext_path
+      logical               :: kext_ok
 
       type(zda_comp_t)      :: comps(ZDA_MAXCOMP)
       integer               :: ncomp, ic, jt, ja, jw, nsize, nwave, ntc
@@ -2764,6 +2904,11 @@ contains
             ! --- assemble the population ---
             m%pops(ic)%grain_type = gt(ic)
             m%pops(ic)%out_channel = ic
+            ! Bulk density of this component, as its own DustEM optics file
+            ! declares it ("Density in gr/cm^3") -- the same number the
+            ! enthalpy above turns into a grain mass, so the model's dust mass
+            ! per H and its heat capacity refer to one and the same material.
+            m%pops(ic)%rho_bulk = rho
             m%pops(ic)%Cabs    = Cabs
             m%pops(ic)%Csca    = Csca
             m%pops(ic)%gsca    = gsca_ad
@@ -2800,6 +2945,16 @@ contains
 
          deallocate(a_opt, lam_opt, qa, qs, gg, Tcal, Ucal, Ccal)
       end do
+
+      call load_model_extinction_table(m, KEXT_ZUBKO, kext_path, kext_ok)
+      if (.not. kext_ok) then
+         if (present(status)) then
+            status = 6;  return
+         else if (present(kext_path)) then
+            write(*,'(a)') ' build_zubko: cannot read the extinction table '//trim(kext_path)
+            stop 1
+         end if
+      end if
    end subroutine build_zubko
 
 
@@ -2840,7 +2995,8 @@ contains
    ! 2-column a[um] dn/da[cm^-1 H^-1] table, and the enthalpy a specific-heat
    ! calorimetry table; all files are sought under data_dir. This is the
    ! data-driven path (build_astrodust/dl07/zubko are the coded builders).
-   subroutine build_from_files(m, descriptor_path, data_dir, NT_in, T_lo, T_hi, status)
+   subroutine build_from_files(m, descriptor_path, data_dir, NT_in, T_lo, T_hi, status, &
+                               kext_path)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: descriptor_path, data_dir
       integer,            intent(in)  :: NT_in
@@ -2856,7 +3012,15 @@ contains
       !   status = 6  a population's size/wavelength grid is inconsistent
       !   status = 7  a population's size-distribution read failed
       !   status = 8  a population's calorimetry read failed
+      !   status = 9  the extinction table named by kext_path could not be read
       integer, optional,  intent(out) :: status
+      ! Size-integrated extinction table dust_extinction serves this model's
+      ! scalar optics from. A file-defined model has NO default: its product is
+      ! named after the model, which only the descriptor knows, so a host that
+      ! wants extinction out of such a model must name the file. Omitting it
+      ! leaves m%kext_n = 0 and dust_extinction with nothing to return.
+      character(len=*), optional, intent(in) :: kext_path
+      logical               :: kext_ok
 
       integer, parameter :: MAXP = 16
       character(len=8)   :: p_gt(MAXP)
@@ -3049,6 +3213,10 @@ contains
             end do
             m%pops(ip)%grain_type = p_gt(ip)
             m%pops(ip)%out_channel = p_ch(ip)
+            ! Bulk density: the descriptor's rho if it gave one, otherwise the
+            ! optics file's own declared density -- whichever the enthalpy just
+            ! above used, so mass per H and heat capacity stay consistent.
+            m%pops(ip)%rho_bulk = rho
             m%pops(ip)%dn = dn
             m%pops(ip)%Cabs = Cabs
             m%pops(ip)%Csca = Csca
@@ -3065,6 +3233,17 @@ contains
 
          deallocate(a_opt, lam_opt, qa, qs, gg, a_dn, f_dn, la_dn, lf_dn, Tc, Uc, Cc)
       end do
+
+      call load_model_extinction_table(m, '', kext_path, kext_ok)
+      if (.not. kext_ok) then
+         if (present(status)) then
+            status = 9;  return
+         else if (present(kext_path)) then
+            write(*,'(a)') ' build_from_files: cannot read the extinction table '// &
+                 trim(kext_path)
+            stop 1
+         end if
+      end if
    end subroutine build_from_files
 
 
@@ -3180,9 +3359,12 @@ contains
 
 
    ! Size-distribution-integrated extinction of the (active) model m, per H
-   ! atom. This is the extinction twin of dust_emission: an RT host gets its
-   ! opacity from the same model object it gets its emission from, on the
-   ! model's own wavelength grid, instead of parsing a precomputed table.
+   ! atom, computed from first principles out of the model's own optics.
+   !
+   ! This is what the standalone calculators use, and what calc_kext.x writes
+   ! into the data/kext_*.dat tables; dust_extinction reads those tables back
+   ! and does NOT come through here for its scalar optics.  The two therefore
+   ! agree by construction as long as the table was made from the same model.
    !
    ! The size integral is the plain binned sum over each population, because
    ! dn(a) already carries the bin width:
@@ -3204,7 +3386,8 @@ contains
    ! are NOT applied. C_polext is the IQ-block optic and C_birext the UV-block
    ! optic of the extinction matrix (see extinction_matrix_aligned).
    ! REQUIRES: m is the most recently built model (its grids == the globals).
-   subroutine dust_extinction(m, Cext, Cabs, Csca, gbar, Cpol_ext, Cbir_ext, albedo, status)
+   subroutine size_integrated_extinction(m, Cext, Cabs, Csca, gbar, Cpol_ext, Cbir_ext, &
+                                         albedo, status)
       type(dust_model_t), intent(in)  :: m
       real(wp),           intent(out) :: Cext(:), Cabs(:), Csca(:)   ! (NLAM) [cm^2/H]
       ! Scattering-weighted asymmetry; 0 where nothing scatters.
@@ -3236,15 +3419,14 @@ contains
          if (present(status)) then
             status = 1;  return
          else
-            write(*,'(a,i0)') 'dust_extinction: output arrays must be of size m%NLAM=', m%NLAM
+            write(*,'(a,i0)') 'size_integrated_extinction: output arrays must be of '// &
+                 'size m%NLAM=', m%NLAM
             stop 1
          end if
       end if
 
       allocate(gnum(m%NLAM))
       Cabs = 0.0_wp;  Csca = 0.0_wp;  gnum = 0.0_wp
-      if (present(Cpol_ext)) Cpol_ext = 0.0_wp
-      if (present(Cbir_ext)) Cbir_ext = 0.0_wp
 
       do ip = 1, size(m%pops)
          na_p = size(m%pops(ip)%dn)
@@ -3268,6 +3450,96 @@ contains
                end do
             end if
          end if
+      end do
+
+      call size_integrated_polarized_extinction(m, Cpol_ext, Cbir_ext)
+
+      Cext = Cabs + Csca
+      if (present(gbar)) then
+         gbar = 0.0_wp
+         do jw = 1, m%NLAM
+            if (Csca(jw) > 0.0_wp) gbar(jw) = gnum(jw) / Csca(jw)
+         end do
+      end if
+      if (present(albedo)) then
+         albedo = 0.0_wp
+         do jw = 1, m%NLAM
+            if (Cext(jw) > 0.0_wp) albedo(jw) = Csca(jw) / Cext(jw)
+         end do
+      end if
+      deallocate(gnum)
+   end subroutine size_integrated_extinction
+
+
+   ! Dust mass per H nucleon [g/H] of the model m -- the model's own size
+   ! distribution weighted by the solid density of each population's material:
+   !
+   !   M_dust/N_H = sum_pop rho_bulk(pop) * sum_a (4/3) pi a_cm^3 dn_pop(a)
+   !
+   ! dn(a) already carries the width of its size bin, so no da enters the sum,
+   ! and a_eff is the population's own effective radius in um.  A population
+   ! whose model states no density (rho_bulk = 0) contributes nothing.
+   !
+   ! This is the constant that converts between the two ways dust opacity is
+   ! quoted: the cross section per H this library serves and the mass opacity of
+   ! Draine's tables,
+   !
+   !   K_abs [cm^2/g] = (C_abs/H) / (M_dust/N_H) ,
+   !
+   ! which is the trailing column calc_kext.x writes into every data/kext_*.dat.
+   ! An RT host that carries a dust mass density rather than an H column density
+   ! needs the same number to turn one into the other.
+   !
+   ! The value is a property of the MODEL alone -- size distribution and grain
+   ! densities -- so it is wavelength- and radiation-field-independent.
+   ! REQUIRES: nothing beyond a built model; it reads m only.
+   real(wp) function dust_mass_per_H(m) result(Mdust_H)
+      type(dust_model_t), intent(in) :: m
+      real(wp) :: acm3
+      integer  :: ip, ja, na_p
+
+      Mdust_H = 0.0_wp
+      if (.not. allocated(m%pops)) return
+
+      do ip = 1, size(m%pops)
+         if (m%pops(ip)%rho_bulk <= 0.0_wp) cycle
+         if (.not. allocated(m%pops(ip)%dn) .or. .not. allocated(m%pops(ip)%aeff)) cycle
+         na_p = min(size(m%pops(ip)%dn), size(m%pops(ip)%aeff))
+         do ja = 1, na_p
+            acm3 = (m%pops(ip)%aeff(ja) * UM2CM)**3
+            Mdust_H = Mdust_H + (4.0_wp/3.0_wp)*PI*acm3 * &
+                      m%pops(ip)%dn(ja) * m%pops(ip)%rho_bulk
+         end do
+      end do
+   end function dust_mass_per_H
+
+
+   ! Dichroic and birefringent extinction per H of the (active) model m, the
+   ! f_align-weighted size integrals
+   !   C_polext = sum_pop sum_a dn(a) * Cpol_ext(lambda, a) * f_align(a)
+   !   C_birext = sum_pop sum_a dn(a) * Cbir_ext(lambda, a) * f_align(a)
+   ! computed from the model's own orientation-resolved optics.  Both outputs
+   ! are optional; an absent one is not computed.  A population without
+   ! polarized optics or without an alignment efficiency -- the PAHs, which
+   ! HD23 take to be unaligned -- contributes zero, as does a model built from
+   ! a 3-block table with no birefringence.
+   !
+   ! Shared by size_integrated_extinction and dust_extinction, which is why
+   ! the two cannot disagree on the polarized optics even though they get
+   ! their scalar optics from different places.
+   subroutine size_integrated_polarized_extinction(m, Cpol_ext, Cbir_ext)
+      type(dust_model_t), intent(in)  :: m
+      real(wp), optional, intent(out) :: Cpol_ext(:)   ! (NLAM) [cm^2/H]
+      real(wp), optional, intent(out) :: Cbir_ext(:)   ! (NLAM) [cm^2/H]
+      integer :: ip, ja, jw, na_p
+
+      if (.not. present(Cpol_ext) .and. .not. present(Cbir_ext)) return
+      if (present(Cpol_ext)) Cpol_ext = 0.0_wp
+      if (present(Cbir_ext)) Cbir_ext = 0.0_wp
+      if (.not. allocated(m%pops)) return
+
+      do ip = 1, size(m%pops)
+         na_p = size(m%pops(ip)%dn)
          if (present(Cpol_ext)) then
             if (allocated(m%pops(ip)%Cpol_ext) .and. allocated(m%pops(ip)%falign)) then
                do ja = 1, na_p
@@ -3289,22 +3561,182 @@ contains
             end if
          end if
       end do
+   end subroutine size_integrated_polarized_extinction
 
-      Cext = Cabs + Csca
-      if (present(gbar)) then
-         gbar = 0.0_wp
-         do jw = 1, m%NLAM
-            if (Csca(jw) > 0.0_wp) gbar(jw) = gnum(jw) / Csca(jw)
-         end do
+
+   ! Transport optics of the model m per H atom, on the model's own wavelength
+   ! grid -- the extinction counterpart of dust_emission, and the routine an RT
+   ! host calls.
+   !
+   ! WHERE THE NUMBERS COME FROM.  The four SCALAR outputs -- Cext, Cabs, Csca
+   ! and gbar -- are read from the size-integrated extinction table the builder
+   ! attached to the model (m%kext_*, one of the data/kext_*.dat products of
+   ! calc_kext.x), interpolated onto m%lam.  The transport optics of a dust
+   ! model do not depend on the transport, so there is nothing for a host to
+   ! gain by re-running the size integral in the middle of a run; the table is
+   ! the same integral, done once, by calc_kext.x, and recorded.  The
+   ! first-principles route is still available under its own name,
+   ! size_integrated_extinction, and is what the standalone calculators use.
+   !
+   ! The two POLARIZED outputs -- Cpol_ext and Cbir_ext -- are NOT tabulated.
+   ! They are computed here, exactly as before, from the model's own
+   ! orientation-resolved optics weighted by the alignment efficiency
+   ! f_align(a), because f_align is a runtime state an RT host resets cell by
+   ! cell through dust_set_alignment: a table fixed at build time could not
+   ! follow it.  (The astrodust product does carry a dichroic column, and the
+   ! EUV products deliberately do not; neither is read here.)  This asymmetry
+   ! -- scalar optics from a table, polarized optics from the model -- is
+   ! deliberate.
+   !
+   ! INTERPOLATION.  Cext, Cabs and Csca are interpolated linearly in
+   ! log(lambda)-log(C); gbar linearly in log(lambda), because it is signed.
+   ! A model wavelength that coincides with a table node takes that node's
+   ! value unchanged, so a model whose grid IS the grid the table was written
+   ! on -- the usual case, since both come from the same Q table -- gets the
+   ! tabulated numbers back exactly.  Nothing is extrapolated: a model
+   ! wavelength outside the table is an error (status 3), not a frozen
+   ! boundary value.
+   !
+   ! Units: all cross sections [cm^2/H]; gbar and albedo dimensionless.
+   ! C_polext and C_birext are the MAXIMUM dichroic and birefringent
+   ! extinction -- the size integral and the f_align weight are done here, but
+   ! the sin^2(gamma) geometry factor and any turbulent depolarization are the
+   ! radiative transfer's job and are NOT applied.  C_polext is the IQ-block
+   ! optic and C_birext the UV-block optic of the extinction matrix (see
+   ! extinction_matrix_aligned).
+   ! REQUIRES: m is the most recently built model (its grids == the globals).
+   subroutine dust_extinction(m, Cext, Cabs, Csca, gbar, Cpol_ext, Cbir_ext, albedo, status)
+      type(dust_model_t), intent(in)  :: m
+      real(wp),           intent(out) :: Cext(:), Cabs(:), Csca(:)   ! (NLAM) [cm^2/H]
+      ! Scattering asymmetry <cos>, as tabulated.
+      real(wp), optional, intent(out) :: gbar(:)                     ! (NLAM)
+      real(wp), optional, intent(out) :: Cpol_ext(:)                 ! (NLAM) [cm^2/H]
+      ! Birefringent extinction; 0 for a 3-block model or where nothing aligns.
+      real(wp), optional, intent(out) :: Cbir_ext(:)                 ! (NLAM) [cm^2/H]
+      ! Scattering albedo C_sca/C_ext; 0 where the medium is transparent.
+      ! Derived here so that every caller gets the same convention at the
+      ! wavelengths where C_ext underflows to zero.
+      real(wp), optional, intent(out) :: albedo(:)                   ! (NLAM)
+      ! Optional error report (0 = success). When present, a bad call is
+      ! reported through it instead of stopping the process; when absent such a
+      ! call stops the run, matching dust_emission.
+      !   status = 1  an output array is not of size m%NLAM
+      !   status = 2  no extinction table was loaded for this model, so there
+      !               are no scalar optics to return (see the builders'
+      !               kext_path argument)
+      !   status = 3  the model's wavelength grid runs outside the table
+      integer,  optional, intent(out) :: status
+      integer :: jw
+      logical :: bad, ok
+
+      if (present(status)) status = 0
+
+      bad = size(Cext) /= m%NLAM .or. size(Cabs) /= m%NLAM .or. size(Csca) /= m%NLAM
+      if (present(gbar))     bad = bad .or. size(gbar)     /= m%NLAM
+      if (present(Cpol_ext)) bad = bad .or. size(Cpol_ext) /= m%NLAM
+      if (present(Cbir_ext)) bad = bad .or. size(Cbir_ext) /= m%NLAM
+      if (present(albedo))   bad = bad .or. size(albedo)   /= m%NLAM
+      if (bad) then
+         if (present(status)) then
+            status = 1;  return
+         else
+            write(*,'(a,i0)') 'dust_extinction: output arrays must be of size m%NLAM=', m%NLAM
+            stop 1
+         end if
       end if
+
+      if (m%kext_n <= 0) then
+         if (present(status)) then
+            status = 2;  return
+         else
+            write(*,'(a)') 'dust_extinction: no extinction table loaded for model '// &
+                 trim(m%name)//'; name one with the builder''s kext_path argument'
+            stop 1
+         end if
+      end if
+
+      ! gbar is forwarded as an optional, so this routine allocates nothing and
+      ! stays callable from an RT host's photon threads.
+      call tabulated_extinction_on_grid(m%kext_n, m%kext_lam, m%kext_Cext, m%kext_Cabs, &
+                                        m%kext_Csca, m%kext_gbar, m%lam, &
+                                        Cext, Cabs, Csca, gbar, ok)
+      if (.not. ok) then
+         if (present(status)) then
+            status = 3;  return
+         else
+            write(*,'(a)') 'dust_extinction: the model grid runs outside the extinction '// &
+                 'table '//trim(m%kext_path)
+            stop 1
+         end if
+      end if
+
       if (present(albedo)) then
          albedo = 0.0_wp
          do jw = 1, m%NLAM
             if (Cext(jw) > 0.0_wp) albedo(jw) = Csca(jw) / Cext(jw)
          end do
       end if
-      deallocate(gnum)
+
+      ! Polarized optics: still computed from the model, never tabulated.
+      call size_integrated_polarized_extinction(m, Cpol_ext, Cbir_ext)
    end subroutine dust_extinction
+
+
+   ! Attach the size-integrated extinction table this model will serve to an RT
+   ! host through dust_extinction.  Called at the END of every builder, once the
+   ! model stands, because the table paths are relative to sed/ and a host that
+   ! changes directory around the build call would find them broken later.
+   !
+   ! kext_path names the file explicitly; omitting it falls back on
+   ! default_path, and an empty default_path means this model has none to try.
+   !
+   ! ok = .false. ONLY when an EXPLICITLY named table could not be read -- a
+   ! host naming a file that is not there is a configuration error the builder
+   ! must report.  A missing or unreadable DEFAULT leaves m%kext_n = 0 and
+   ! ok = .true.: the standalone drivers (main_astrodust.x and the rest) build
+   ! models to compute emission and never call dust_extinction, and calc_kext.x
+   ! builds a model precisely in order to WRITE the table that is not there yet.
+   ! Neither may be stopped by its absence.
+   subroutine load_model_extinction_table(m, default_path, kext_path, ok)
+      type(dust_model_t),         intent(inout) :: m
+      character(len=*),           intent(in)    :: default_path
+      character(len=*), optional, intent(in)    :: kext_path
+      logical,                    intent(out)   :: ok
+
+      character(len=512)    :: path
+      real(wp), allocatable :: alb(:)
+      integer               :: n
+      logical               :: read_ok
+
+      ok = .true.
+      m%kext_n = 0;  m%kext_path = ''
+      if (allocated(m%kext_lam))  deallocate(m%kext_lam)
+      if (allocated(m%kext_Cext)) deallocate(m%kext_Cext)
+      if (allocated(m%kext_Cabs)) deallocate(m%kext_Cabs)
+      if (allocated(m%kext_Csca)) deallocate(m%kext_Csca)
+      if (allocated(m%kext_gbar)) deallocate(m%kext_gbar)
+
+      if (present(kext_path)) then
+         path = kext_path
+      else
+         path = default_path
+      end if
+      if (len_trim(path) == 0) return
+
+      ! The albedo column is read and dropped: dust_extinction derives the
+      ! albedo from the interpolated Csca/Cext, so that it stays consistent with
+      ! the cross sections returned alongside it and every caller gets the same
+      ! convention where Cext underflows.
+      call load_kext_table(trim(path), n, m%kext_lam, alb, m%kext_gbar, &
+                           m%kext_Cext, m%kext_Cabs, m%kext_Csca, read_ok)
+      if (allocated(alb)) deallocate(alb)
+      if (.not. read_ok) then
+         if (present(kext_path)) ok = .false.
+         return
+      end if
+      m%kext_n    = n
+      m%kext_path = path
+   end subroutine load_model_extinction_table
 
 
    ! .true. iff the model m carries polarized optics, i.e. at least one

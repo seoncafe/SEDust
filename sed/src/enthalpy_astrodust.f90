@@ -25,7 +25,7 @@ module enthalpy_astrodust_mod
    implicit none
    private
    public :: enthalpy_S1, enthalpy_S2
-   public :: P_PORO, F_C_VOL, F_SIL_VOL, RHO_AD
+   public :: P_PORO, F_C_VOL, F_SIL_VOL, RHO_AD, RHO_PAH
    public :: s1_density_corrected
 
    ! Stage-1 prefactor option (paper Fig. 4 / Sect. 5.1):
@@ -38,6 +38,13 @@ module enthalpy_astrodust_mod
    real(wp), parameter :: P_PORO       = 0.20_wp     ! porosity
    real(wp), parameter :: RHO_AD       = 2.74_wp     ! astrodust solid mass density [g/cm^3]
                                                      ! = rho_solid * (1-P), HD23 sec 2.3.2
+
+   ! PAH mass density of the same model [g/cm^3].  It is the density behind the
+   ! HD23 carbon-atom count N_C = 417 (a/nm)^3 (HD23 eq. 21; the astrodust
+   ! builder sets nc_coeff = 417): 417 carbon atoms inside a sphere of radius
+   ! 1 nm is 417*12.011/N_A / ((4pi/3)*1e-21 cm^3) = 1.99 g/cm^3.  Kept beside
+   ! RHO_AD so the enthalpy and the dust-mass sum use one number for one material.
+   real(wp), parameter :: RHO_PAH      = 2.0_wp
 
    ! Carbonaceous volume fraction of the astrodust solid.
    ! Derived from DH21a Table 2 (fFe = 0 column):

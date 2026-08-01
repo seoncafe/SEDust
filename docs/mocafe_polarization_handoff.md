@@ -67,6 +67,41 @@ block); `lamI_pol` is the **intrinsic** polarized emission (size integral and
 `f_align` done; `sin^2 gamma`, turbulent depolarization, and position angle left
 to MoCafe — see §4 and the user manual §6.7).
 
+**Where those numbers come from.** The four scalar outputs `Cext`, `Cabs`,
+`Csca`, `gbar` are read from a size-integrated extinction table (one of
+`data/kext_*.dat`, written by `calc_kext.x`), interpolated onto `m%lam`. The two
+polarized outputs are *not* tabulated — they are computed from the model's optics
+on every call, because their `f_align` weight is runtime state MoCafe resets cell
+by cell. The table is attached **inside** `build_*`, which matters here: its path
+is relative to `SEDust/sed/`, so it is opened while MoCafe is still chdir'd
+there, and `dust_extinction` itself touches no path afterwards. Each builder
+takes an optional `kext_path`; omitting it takes the model's default
+(`kext_astrodust_MW_euv.dat` / `kext_dl07_MW_euv.dat` /
+`kext_zubko_BARE_GR_S.dat` — the EUV products, because they are the widest grid
+and so cover a host with or without the ionizing band). A `kext_path` that cannot
+be read fails the build (status 10 from `build_astrodust`, whose polarized codes
+already occupy 3, 4, 5, 8 and 9; 5, 6 and 9 from `build_dl07`, `build_zubko` and
+`build_from_files`); a missing default does not fail the
+build, but leaves `dust_extinction` with status 2. A grid running outside the
+table is refused (status 3), never extrapolated. The first-principles size
+integral is still callable as `size_integrated_extinction`, same argument list.
+
+**Per H, and how to get per gram.** Every cross section above is per H nucleon.
+A cell that carries a dust mass density instead of a hydrogen column converts
+with one number, asked of the model:
+
+```fortran
+Mdust_H = dust_mass_per_H(m)   ! [g/H], wavelength- and temperature-independent
+kappa   = Cabs / Mdust_H       ! [cm^2 per gram of dust]
+```
+
+It is the model's own size distribution weighted by the solid density of each
+population, `sum_pop rho_bulk * sum_a (4/3) pi a_cm^3 dn_pop(a)`, so the opacity
+it produces refers to the same grains the emission does. Evaluate it once, next
+to the build. It is also what normalizes the `K_abs` column of the
+`data/kext_*.dat` products, so a host reading the tables and a host linking the
+library get the identical conversion.
+
 ### Aligned scattering optics (µm² per H; note the unit change)
 
 ```fortran
@@ -336,7 +371,9 @@ wavelengths over 57 processes took 9m22s wall for 34m48s of processor time. The
   `mueller_matrix_aligned`, `mueller_matrix_random`, `mueller_matrix_total`,
   `scattering_cross_sections`, and `dust_extinction` are pure reads — they write
   only their own output arguments, do no I/O and no allocation — so they are safe
-  to call from OpenMP photon threads. The generator's OpenMP correctness (1-thread
+  to call from OpenMP photon threads. This is why `dust_extinction` reads its
+  table at build time and interpolates it in place at query time: the file is
+  opened once, from serial code, and never again. The generator's OpenMP correctness (1-thread
   vs N-thread bitwise identical) is already verified; the library layer adds no
   shared state. A query is a trilinear interpolation — a few hundred
   floating-point operations per scattering event — and `scatmat_band` maps the

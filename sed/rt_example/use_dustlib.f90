@@ -15,14 +15,16 @@ program use_dustlib
    ! that the light the host removes from a ray and the light it puts back
    ! refer to the same grains.
    !
-   ! READING THE OPTICS FROM A FILE INSTEAD.  sed/calc_kext.x writes the very
-   ! same dust_extinction curves to ../data/kext_*.dat in the column order of
-   ! Draine's kext_albedo tables.  Read those when the host only transports
-   ! (no dust emission), or when it is not Fortran and cannot link this
-   ! library; link the library when the host also needs emission, because a
-   ! file cannot supply the size-resolved absorption the heating solver wants.
-   ! There is no library call that reads those files -- it would only hide
-   ! which of the two the host is really using.
+   ! WHERE THE TRANSPORT OPTICS COME FROM.  dust_extinction below serves the
+   ! scalar cross sections out of one of the ../data/kext_*.dat tables that
+   ! sed/calc_kext.x writes -- the size integral, done once and recorded, in the
+   ! column order of Draine's kext_albedo tables.  build_astrodust attaches that
+   ! table (see its kext_path argument), so the file is opened while the working
+   ! directory is still sed/ and dust_extinction itself touches no path.  A host
+   ! that is not Fortran, or that only transports and never needs emission, can
+   ! read the same file directly and get the same numbers; link the library when
+   ! the host also needs emission, because a file cannot supply the
+   ! size-resolved absorption the heating solver wants.
    use constants, only: wp
    use radfield,  only: J_Mathis
    use dust_lib,  only: dust_model_t, build_astrodust, &

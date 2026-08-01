@@ -10,11 +10,12 @@ program calc_kext
    !   ./calc_kext.x from_files <descriptor> [data_dir]
    !
    ! Every model goes through the same two calls -- one build_* to set the
-   ! model up, then dust_extinction to do the size integral -- so the tables
-   ! written here ARE the optics an RT host gets in memory from the library.
-   ! What differs between models is only (a) which builder is called, (b) what
-   ! sets the short-wavelength floor, and (c) the model-specific text in the
-   ! file header.
+   ! model up, then size_integrated_extinction to do the size integral over its
+   ! optics from first principles.  The tables written here are what an RT host
+   ! then gets back from the library: dust_extinction reads these files rather
+   ! than repeating the integral during a transport run.  What differs between
+   ! models is only (a) which builder is called, (b) what sets the
+   ! short-wavelength floor, and (c) the model-specific text in the file header.
    !
    ! The extreme-ultraviolet extension (`euv`, or an explicit floor) carries
    ! the wavelength grid below the T-matrix Q table's 0.0912 um (13.6 eV) end,
@@ -25,9 +26,19 @@ program calc_kext
    ! its optics table IS the model definition and already reaches 0.001 um
    ! (1.24 keV), so no extension is needed or possible.
    !
+   ! MASS ABSORPTION COEFFICIENT.  Every product carries K_abs [cm^2/g] =
+   ! C_abs/H divided by the model's dust mass per H, which the model itself
+   ! reports (dust_mass_per_H) from its own size distribution and the solid
+   ! density of each grain population.  It is one wavelength-independent
+   ! constant, so it is as well defined in the EUV as in the optical, and the
+   ! header of each file states its value and where the densities came from.
+   !
    ! POLARIZED EXTINCTION.  ../data/kext_astrodust_MW.dat carries the dichroic
    ! extinction as an eighth column, because that file is tracked and hosts
-   ! read it; it comes from the same dust_extinction call, as Cpol_ext.  The
+   ! read it; it comes from the same size_integrated_extinction call, as
+   ! Cpol_ext.  (No column of it is read back by dust_extinction, which keeps
+   ! computing the polarized optics from the model so that they follow the
+   ! host's runtime alignment state.)  The
    ! EUV products deliberately do NOT carry it: shortward of 0.0912 um the
    ! dichroism needs the EUV companion polarized table (run_q_jori.x euv),
    ! which is not shipped, and without it build_Cpol leaves that band at a
@@ -36,14 +47,13 @@ program calc_kext
    ! so these files stay scalar-only and the manual states where the
    ! polarized EUV optics come from instead.
    !====================================================================
-   use constants,         only: wp, pi
+   use constants,         only: wp
    use sed_astrodust_mod, only: build_astrodust, build_dl07, build_zubko, &
-                                build_from_files, dust_extinction, dust_model_t, &
-                                NA, aeff, dn_ad, dn_pah
+                                build_from_files, size_integrated_extinction, &
+                                dust_mass_per_H, dust_model_t
    use q_astrodust_mod,   only: astrodust_index_lambda_range, get_astrodust_index_path
    use q_silicate_mod,    only: silicate_index_lambda_range
    use q_graphite_mod,    only: graphite_index_lambda_range
-   use enthalpy_astrodust_mod, only: RHO_AD    ! astrodust bulk density [g/cm^3] = 2.74
    implicit none
 
    ! ---- model inputs shared with the SED drivers -------------------------
@@ -57,8 +67,6 @@ program calc_kext
    character(len=*), parameter :: F_ZDA_DESC = '../data/zubko/zubko_descriptor.txt'
    character(len=*), parameter :: D_ZUBKO    = '../data/zubko/'
 
-   ! PAH mass density (HD23 eq. 21 / nc_coeff = 417 convention).
-   real(wp), parameter :: RHO_PAH = 2.0_wp          ! [g/cm^3]
    ! DL07 model: WD01 MW R_V = 3.1, b_C = 6e-5 (Draine's "60" model), MMP83 field.
    integer,  parameter :: SD_INDEX_DL07 = 7
    real(wp), parameter :: U_ISRF_DL07   = 1.0_wp
@@ -71,7 +79,7 @@ program calc_kext
    ! boundary of the refusal test, so stand this factor above it.
    real(wp), parameter :: LAM_LO_MARGIN = 1.001_wp
 
-   integer, parameter :: MAXNOTE = 80
+   integer, parameter :: MAXNOTE = 120
    character(len=200) :: note(MAXNOTE)
    integer            :: nnote
 
@@ -81,8 +89,8 @@ program calc_kext
    ! it; every other builder leaves it zero, which is why only the astrodust
    ! product writes it out.
    real(wp), allocatable :: Cpolext(:)
-   real(wp) :: lam_min, lam_lo, lam_hi, lam_lo2, Mdust_H, acm3
-   integer  :: narg, ios, ja, nlam_out
+   real(wp) :: lam_min, lam_lo, lam_hi, lam_lo2, Mdust_H
+   integer  :: narg, ios, nlam_out
    logical  :: euv, zubko_formula
    character(len=32)  :: model
    character(len=256) :: opt, fout, desc, ddir
@@ -126,7 +134,6 @@ program calc_kext
          call build_astrodust(m, F_QT, F_SD, NT_IN, T_LO, T_HI)
          fout = '../data/kext_astrodust_MW.dat'
       end if
-      call astrodust_dust_mass_per_H()
 
    ! ===================================================================
    case ('dl07')
@@ -194,9 +201,17 @@ program calc_kext
    nlam_out = m%NLAM
    allocate(Cext(nlam_out), Cabs(nlam_out), Csca(nlam_out), alb(nlam_out), gbar(nlam_out), &
             Cpolext(nlam_out))
-   call dust_extinction(m, Cext, Cabs, Csca, gbar=gbar, Cpol_ext=Cpolext, albedo=alb)
+   call size_integrated_extinction(m, Cext, Cabs, Csca, gbar=gbar, Cpol_ext=Cpolext, &
+                                   albedo=alb)
    write(*,'(a,i0,a,es12.5,a,es12.5,a)') ' size-integrated ', nlam_out, &
       ' wavelengths, ', m%lam(1), ' - ', m%lam(nlam_out), ' um'
+
+   ! ---- dust mass per H, the K_abs normalization, also model-independent --
+   ! It comes from the model object: every builder states the solid density of
+   ! each population's material, so this is the same size distribution the size
+   ! integral above just used, weighted by those densities.
+   Mdust_H = dust_mass_per_H(m)
+   write(*,'(a,es12.5,a)') ' M_dust/H = ', Mdust_H, ' g/H'
 
    ! ---- header text, the one part that is model-specific -----------------
    select case (trim(model))
@@ -212,11 +227,17 @@ program calc_kext
    end select
 
    ! ---- write ------------------------------------------------------------
-   ! The tracked ../data/kext_astrodust_MW.dat is a regression reference, so it
-   ! keeps its original narrow-field format, its K_abs column and its dichroic
-   ! C_polext column; every other product uses the wider default fields.
-   if (trim(model) == 'astrodust' .and. .not. euv) then
-      call write_kext_curve(trim(fout), kabs_norm=Mdust_H, legacy_format=.true.)
+   ! Every product carries K_abs, because every model states its grain densities
+   ! and so has a dust mass per H, and the header of each records the
+   ! M_dust/N_H the column is normalized by. The normalization is one
+   ! wavelength-independent constant, as well defined in the EUV as in the
+   ! optical. The tracked ../data/kext_astrodust_MW.dat is a regression
+   ! reference, so it alone keeps the original narrow-field format, and with it
+   ! the dichroic C_polext column the other products have no polarized optics
+   ! for; every other product uses the wider default fields.
+   if (Mdust_H > 0.0_wp) then
+      call write_kext_curve(trim(fout), kabs_norm=Mdust_H, &
+                            legacy_format=(trim(model) == 'astrodust' .and. .not. euv))
    else
       call write_kext_curve(trim(fout))
    end if
@@ -239,11 +260,11 @@ contains
       write(*,'(a)') '   ./calc_kext.x zubko     [formula | table]'
       write(*,'(a)') '   ./calc_kext.x from_files <descriptor> [data_dir]'
       write(*,'(a)') ''
-      write(*,'(a)') ' Writes lambda / albedo / <cos> / C_ext per H (+ C_abs, C_sca)'
-      write(*,'(a)') ' under ../data/.  `euv` carries the grid below 0.0912 um, down to'
+      write(*,'(a)') ' Writes lambda / albedo / <cos> / C_ext per H (+ C_abs, C_sca, and'
+      write(*,'(a)') ' K_abs = C_abs/H normalized by the model dust mass per H) under'
+      write(*,'(a)') ' ../data/.  `euv` carries the grid below 0.0912 um, down to'
       write(*,'(a)') ' whatever the model dielectric function itself covers.'
-      write(*,'(a)') ' kext_astrodust_MW.dat also carries K_abs and the dichroic'
-      write(*,'(a)') ' C_polext/H; the EUV products are scalar optics only.'
+      write(*,'(a)') ' kext_astrodust_MW.dat alone also carries the dichroic C_polext/H.'
    end subroutine print_usage
 
 
@@ -269,20 +290,6 @@ contains
       nnote = nnote + 1
       note(nnote) = s
    end subroutine add_note
-
-
-   subroutine astrodust_dust_mass_per_H()
-      ! Dust mass per H [g/H], self-consistent with the size distribution and
-      ! the model grain densities: M = (4/3) pi a^3 rho, summed over the binned
-      ! number per H of astrodust (rho_Ad = 2.74) and PAH (rho_PAH = 2.0) grains.
-      Mdust_H = 0.0_wp
-      do ja = 1, NA
-         acm3 = (aeff(ja) * 1.0e-4_wp)**3
-         Mdust_H = Mdust_H + (4.0_wp/3.0_wp)*pi*acm3 * &
-                   ( dn_ad(ja)*RHO_AD + dn_pah(ja)*RHO_PAH )
-      end do
-      write(*,'(a,es12.5,a)') ' M_dust/H = ', Mdust_H, ' g/H'
-   end subroutine astrodust_dust_mass_per_H
 
 
    ! ===================================================================
@@ -349,16 +356,21 @@ contains
    end subroutine write_kext_curve
 
 
-   subroutine header_common_format_and_scope()
-      ! Format and scope statements every new product carries.  (The tracked
-      ! ../data/kext_astrodust_MW.dat predates them and is frozen, so it does
-      ! not get these lines.)
+   subroutine header_common_format_and_scope(density_source)
+      ! Format and scope statements every new product carries, ending with the
+      ! K_abs normalization and where that model's grain densities come from.
+      ! (The tracked ../data/kext_astrodust_MW.dat predates these lines and is
+      ! frozen, so header_astrodust_qtable_grid does not call this routine and
+      ! that file keeps its own wording.)
+      character(len=*), intent(in) :: density_source
+      character(len=200) :: s
       call add_note('#')
       call add_note('# Column order follows Draine''s kext_albedo tables and MoCHII''s')
       call add_note('#   par%ion_dust_kext reader: the first four columns are')
       call add_note('#   lambda, albedo, <cos>, C_ext/H, and a reader may stop there.')
       call add_note('#   Draine''s 5th column is K_abs [cm^2/g]; ours is C_abs/H [cm^2/H],')
-      call add_note('#   so no dust-mass normalization is folded into these numbers.')
+      call add_note('#   so no dust-mass normalization is folded into the first six')
+      call add_note('#   columns; K_abs is a separate trailing column instead.')
       call add_note('#   A host running the Zubko model through an ionizing band needs')
       call add_note('#   exactly such a file: that model has no EUV extension of its own')
       call add_note('#   (its optics table IS the model definition), so the host reads the')
@@ -369,12 +381,23 @@ contains
       call add_note('#   Planck integral here, so stochastic heating and thermal emission')
       call add_note('#   cannot be computed from this file.  A host that needs emission must')
       call add_note('#   build the model (build_astrodust / build_dl07 / build_zubko /')
-      call add_note('#   build_from_files) and take these same curves from dust_extinction,')
-      call add_note('#   which keeps the absorbed power and the re-emitted spectrum')
-      call add_note('#   referring to one and the same grain.')
+      call add_note('#   build_from_files).  The builder reads this very curve back in, and')
+      call add_note('#   dust_extinction serves it on the model wavelength grid while')
+      call add_note('#   dust_emission supplies the re-emitted spectrum, so the absorbed')
+      call add_note('#   power and the emission refer to one and the same grain.')
       call add_note('#')
       call add_note('# Units: lambda micron; cross sections cm^2 per H nucleon;')
       call add_note('#   albedo and <cos> dimensionless.')
+      if (Mdust_H > 0.0_wp) then
+         call add_note('#')
+         write(s,'(a,es13.6,a)') '# K_abs [cm^2/g] = C_abs/H / (M_dust/N_H), ' // &
+              'M_dust/N_H = ', Mdust_H, ' g/H.'
+         call add_note(trim(s))
+         call add_note('#   The dust mass per H is this model''s own size distribution')
+         call add_note('#   weighted by the solid density of each grain material:')
+         call add_note('#   M_dust/N_H = sum_pop rho * sum_a (4/3) pi a^3 dn(a).')
+         call add_note('#   ' // density_source)
+      end if
    end subroutine header_common_format_and_scope
 
 
@@ -469,11 +492,8 @@ contains
       call add_note('#   is zero by construction, so the carbonaceous absorption there is')
       call add_note('#   entirely D03 graphite -- Mie on the Draine 2003 dielectric')
       call add_note('#   functions, random-orientation 1/3 parallel + 2/3 perpendicular.')
-      call header_common_format_and_scope()
-      write(s,'(a,es13.6,a)') '#   K_abs [cm^2/g] = C_abs/H / (M_dust/N_H), ' // &
-           'M_dust/N_H = ', Mdust_H, ' g/H'
-      call add_note(trim(s))
-      call add_note('#   (rho_Ad = 2.74, rho_PAH = 2.0 g/cm^3).')
+      call header_common_format_and_scope('Densities: rho_Ad = 2.74, ' // &
+           'rho_PAH = 2.0 g/cm^3 (HD23 conventions).')
       call add_note('#')
    end subroutine header_astrodust_euv
 
@@ -522,7 +542,8 @@ contains
       call add_note('#   table kext_albedo_WD_MW_3.1_60_D03.all (2003 vintage), which')
       call add_note('#   spans 1e-4 - 1e4 um.  Running this program prints that comparison')
       call add_note('#   decade by decade.')
-      call header_common_format_and_scope()
+      call header_common_format_and_scope('Densities: 3.5 g/cm^3 astrosilicate, ' // &
+           '2.2 g/cm^3 graphite (Draine & Li 2007 sec. 2).')
       call add_note('#')
    end subroutine header_dl07
 
@@ -555,7 +576,8 @@ contains
       call add_note('#   optics already cover the whole ionizing band, and those tables ARE')
       call add_note('#   the model definition, so there is no dielectric function to extend')
       call add_note('#   them with.')
-      call header_common_format_and_scope()
+      call header_common_format_and_scope('Densities: the Density entry in the ' // &
+           'header of each component''s own DustEM optics table.')
       call add_note('#')
    end subroutine header_zubko
 
@@ -574,7 +596,8 @@ contains
       call echo_descriptor()
       call header_wavelength_range('The range is the first population''s optics ' // &
            'table, which every other population must share.')
-      call header_common_format_and_scope()
+      call header_common_format_and_scope('Densities: the rho field of each ' // &
+           'pop: line, or the optics table''s own Density where that field is 0.')
       call add_note('#')
    end subroutine header_from_files
 

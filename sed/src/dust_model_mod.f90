@@ -23,6 +23,8 @@ module dust_model_mod
    !   kappB    [..]      Planck-integral table used by calc_P/calc_Teq (NT, NA)
    !   H        [erg]     grain enthalpy (NT, NA)
    !   kappCMB  [..]      CMB-pumped term for calc_P (NA)
+   !   rho_bulk [g/cm^3]  solid mass density of the grain material, which turns
+   !                      the binned number per H into a mass per H
    !
    ! Types plus trivial (de)allocation helpers.
    use constants,         only: wp
@@ -54,6 +56,14 @@ module dust_model_mod
       real(wp), allocatable :: Cbir_ext(:,:)        ! (NLAM, NA) [cm^2] birefringent extinction
       real(wp), allocatable :: gsca(:,:)            ! (NLAM, NA) scattering asymmetry <cos>
       real(wp), allocatable :: falign(:)            ! (NA) alignment efficiency
+      ! Solid mass density of the grain material [g/cm^3], as the model defines
+      ! it -- for a porous grain the density already reduced by the porosity.
+      ! It converts the binned number per H into a mass per H,
+      !   M/H = rho_bulk * sum_a (4/3) pi a_cm^3 dn(a),
+      ! which is what dust_mass_per_H sums over the populations.  A model that
+      ! states no density leaves it at 0, and that population then contributes
+      ! nothing to the model's dust mass.
+      real(wp)              :: rho_bulk = 0.0_wp    ! [g/cm^3]
       real(wp), allocatable :: kappB(:,:), log_kappB(:,:)   ! (NT, NA)
       real(wp), allocatable :: H(:,:),     log_H(:,:)       ! (NT, NA)
       real(wp), allocatable :: kappCMB(:)           ! (NA)
@@ -90,6 +100,20 @@ module dust_model_mod
       ! When .false. (default), the library solve path stays silent; when
       ! .true. it emits the same solver diagnostics as the CLI drivers.
       logical               :: verbose = .false.
+      ! Size-integrated extinction table this model serves to an RT host
+      ! through dust_extinction: wavelength [um], the cross sections per H
+      ! nucleon [cm^2/H] and the scattering asymmetry <cos>, as calc_kext.x
+      ! wrote them into data/.
+      !
+      ! It is read at BUILD time, not at query time, because the paths are
+      ! relative to sed/ and a host that changes directory around the build
+      ! call -- which is what MoCafe does -- would find them broken later.
+      ! kext_path records the file it came from. kext_n = 0 means no table was
+      ! loaded and dust_extinction has no scalar optics to return.
+      character(len=512)    :: kext_path = ''
+      integer               :: kext_n    = 0
+      real(wp), allocatable :: kext_lam(:), kext_Cext(:), kext_Cabs(:), &
+                               kext_Csca(:), kext_gbar(:)
    end type dust_model_t
 
 contains
@@ -367,7 +391,13 @@ contains
       if (allocated(m%T_first))      deallocate(m%T_first)
       if (allocated(m%log_T_first))  deallocate(m%log_T_first)
       if (allocated(m%channel_name)) deallocate(m%channel_name)
+      if (allocated(m%kext_lam))     deallocate(m%kext_lam)
+      if (allocated(m%kext_Cext))    deallocate(m%kext_Cext)
+      if (allocated(m%kext_Cabs))    deallocate(m%kext_Cabs)
+      if (allocated(m%kext_Csca))    deallocate(m%kext_Csca)
+      if (allocated(m%kext_gbar))    deallocate(m%kext_gbar)
       m%NA = 0; m%NLAM = 0; m%NT = 0; m%n_channel = 0
+      m%kext_n = 0;  m%kext_path = ''
    end subroutine free_dust_model
 
    subroutine free_pop(p)
