@@ -1,10 +1,9 @@
 # SEDust -- SED solver build.
 #
 # Targets:
-#   make                     main_astrodust.x main_dl07.x make_enthalpy.x
+#   make                     main_astrodust.x main_dl07.x make_enthalpy.x calc_kext.x
 #   make libsedust.a         the model-agnostic dust-emission library
-#   make calc_kext_astrodust.x   astrodust+PAH extinction/albedo/<cos>/K_abs
-#   make calc_kext_dl07.x        DL07 (WD01 MW) extinction/albedo/<cos>
+#   make calc_kext.x         size-integrated transport optics for any model
 #   make clean / cleanall
 #
 # Run (from this directory; data paths are relative to ../):
@@ -13,6 +12,11 @@
 #   ./main_astrodust.x qm              # energy-space, thermal-discrete
 #   ./main_astrodust.x qm_dbcon        # energy-space, thermal-continuous
 #   ./main_dl07.x
+#   ./calc_kext.x astrodust            # -> ../data/kext_astrodust_MW.dat
+#   ./calc_kext.x astrodust euv        # carried into the ionizing band
+#   ./calc_kext.x dl07 euv
+#   ./calc_kext.x zubko
+#   ./calc_kext.x from_files <descriptor> [data_dir]
 
 FC      = gfortran
 # Portable baseline by default so libsedust.a runs on any node it is copied
@@ -53,15 +57,7 @@ SRC_PIPE    = $(SRC_BASE) src/enthalpy_v2.f90 \
 SRC_ENTH    = $(SRC_BASE) src/enthalpy_v2.f90 \
               src/enthalpy_astrodust.f90 src/make_enthalpy.f90
 
-# Cross section / albedo / <cos> for the DL07 (WD01 MW) model.  Reuses the
-# same optics the SED model uses (silicate + graphite Mie, qpah xi-blend).
-SRC_KEXT    = $(SRC_BASE) src/mie.f90 \
-              src/q_graphite.f90 src/q_graphite_d16.f90 \
-              src/q_graphite_d16_sphere.f90 \
-              src/qpah.f90 src/pah_ioniz.f90 src/grain_dist.f90 \
-              src/q_silicate.f90 src/calc_kext_dl07.f90
-
-all: make_enthalpy.x main_astrodust.x main_dl07.x
+all: make_enthalpy.x main_astrodust.x main_dl07.x calc_kext.x
 
 make_enthalpy.x: $(SRC_ENTH)
 	$(FC) $(FFLAGS) $^ -o $@
@@ -75,16 +71,13 @@ main_dl07.x: $(SRC_PIPE) src/main_dl07.f90
 	$(FC) $(FFLAGS) $^ -o $@
 	@echo 'Built: ./main_dl07.x'
 
-calc_kext_dl07.x: $(SRC_KEXT)
+# Size-integrated transport optics (lambda, albedo, <cos>, C_ext/C_abs/C_sca
+# per H) for astrodust, DL07, Zubko or any file-defined model -> ../data/.
+# Reuses the full SED pipeline, so every table it writes is the same optics
+# the RT hosts get from dust_extinction; only the driver differs.
+calc_kext.x: $(SRC_PIPE) src/calc_kext.f90
 	$(FC) $(FFLAGS) $^ -o $@
-	@echo 'Built: ./calc_kext_dl07.x'
-
-# astrodust+PAH extinction/albedo/<cos>/K_abs -> ../data/kext_astrodust_MW.dat.
-# Reuses the full SED pipeline (sed_init) so the optics are identical to
-# main_astrodust.x; just swaps the driver.
-calc_kext_astrodust.x: $(SRC_PIPE) src/calc_kext_astrodust.f90
-	$(FC) $(FFLAGS) $^ -o $@
-	@echo 'Built: ./calc_kext_astrodust.x'
+	@echo 'Built: ./calc_kext.x'
 
 # ---- libsedust.a: the model-agnostic dust-emission library, for a Fortran
 # 3D RT code to link.  Usage from the RT:  use dust_lib ;  link
@@ -102,8 +95,7 @@ clean:
 	rm -f *.o *.mod
 
 cleanall: clean
-	rm -f *.a make_enthalpy.x main_astrodust.x main_dl07.x \
-	      calc_kext_dl07.x calc_kext_astrodust.x
+	rm -f *.a make_enthalpy.x main_astrodust.x main_dl07.x calc_kext.x
 	rm -f output/astrodust_irem_ours_*.dat output/enthalpy_*.dat
 
 .PHONY: all clean cleanall

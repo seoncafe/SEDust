@@ -8,9 +8,15 @@ module zubko_io
    !   2. Optics -- DustEM/Zubko Q-tables (one block for each radius).
    !   3. Calorimetry -- specific enthalpy/heat-capacity tables.
    !
-   ! This module currently implements the config parser + the ZDA size
-   ! distribution formula (the user's preferred path); the optics and
-   ! calorimetry readers and build_zubko follow.
+   ! All three readers live here: read_zda_config + zda_gofa for the formula
+   ! path, read_dnda_table for the tabulated path, read_zubko_optics for the
+   ! Q-tables and read_zubko_calor for the calorimetry.  sed_astrodust_mod
+   ! assembles them into a model two ways -- build_zubko (size distribution from
+   ! the ZDA formula) and build_from_files (size distribution from the tabulated
+   ! SzDist files named in a descriptor).  The two agree in SHAPE to ~1e-5 but
+   ! the distributed tables carry a normalization 0.4 - 1.1% below A*g(a) of the
+   ! config, component by component, which propagates to ~1% in the
+   ! size-integrated cross sections.
    !
    ! ZDA size distribution (per component):
    !   log10 g(a) = c0 + b0*log10(a)

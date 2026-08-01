@@ -43,7 +43,8 @@ SEDust/
   mc/           Draine & Anderson (1985) Monte Carlo solver (independent check)
   tmatrix/      Mishchenko T-matrix engine + driver; writes the Q table
   data/         dielectric functions, the HD23 public release tables,
-                and the Zubko (ZDA BARE-GR-S) optical constants
+                the Zubko (ZDA BARE-GR-S) optical constants, and the
+                size-integrated `kext_*.dat` transport-optics curves
   docs/         technical reports and the library user manual
   pyutil/       small Python helpers (radiation fields, SED from Cabs)
 ```
@@ -59,16 +60,19 @@ top-level configure; each subdirectory has its own `Makefile`.
 ```sh
 # the SED solver
 cd sed
-make                        # make_enthalpy.x  main_astrodust.x  main_dl07.x
+make                        # make_enthalpy.x main_astrodust.x main_dl07.x calc_kext.x
 ./main_astrodust.x             # astrodust+PAH SED at log U = 0.20 -> output/
 ./main_dl07.x               # Draine & Li (2007) SED at U = 1   -> output/
 
 # the library, for embedding in an RT code
 make libsedust.a            # link with:  -L. -lsedust -I.
 
-# optical-property tables (extinction, albedo, <cos>, K_abs)
-make calc_kext_astrodust.x && ./calc_kext_astrodust.x
-make calc_kext_dl07.x      && ./calc_kext_dl07.x
+# size-integrated transport optics: lambda, albedo, <cos>, C_ext/C_abs/C_sca per H
+./calc_kext.x astrodust     # -> ../data/kext_astrodust_MW.dat
+./calc_kext.x astrodust euv # the same model carried into the ionizing band
+./calc_kext.x dl07 euv      # -> ../data/kext_dl07_MW_euv.dat
+./calc_kext.x zubko         # -> ../data/kext_zubko_BARE_GR_S.dat
+./calc_kext.x from_files ../data/zubko/zubko_descriptor.txt
 
 # the Monte Carlo cross-check
 cd ../mc && make && ./main_mc_sed.x run_sed.nml
@@ -77,7 +81,37 @@ cd ../mc && make && ./main_mc_sed.x run_sed.nml
 cd ../tmatrix && make && ./run_tmatrix.x test   # then ./run_tmatrix.x for the full sweep
 ```
 
-Outputs are plain ASCII `.dat` files written to each subdirectory's `output/`.
+Outputs are plain ASCII `.dat` files written to each subdirectory's `output/`;
+`calc_kext.x` writes into `data/` instead.
+
+## The ionizing band
+
+The astrodust wavelength grid is the T-matrix Q table's, and that table stops at
+0.0912 um — 13.6 eV, the Lyman limit. A host that transports ionizing radiation
+passes the shortest wavelength it needs as the optional `lam_min` to
+`build_astrodust` or `build_dl07`; the grid is then carried down to it. **Omit
+`lam_min` and nothing changes** — the unextended model is bit-identical to
+before.
+
+| product | rows | lambda [um] | what sets the floor |
+|---|---:|---|---|
+| `data/kext_astrodust_MW.dat` | 1129 | 0.0912 - 39810 | the Q-table grid (no extension) |
+| `data/kext_astrodust_MW_euv.dat` | 1719 | 1.001e-4 - 39810 | the DH21 astrodust dielectric function |
+| `data/kext_dl07_MW_euv.dat` | 1761 | 6.205e-5 - 39810 | the D03 dielectric functions |
+| `data/kext_zubko_BARE_GR_S.dat` | 1201 | 1e-3 - 1e4 | the ZDA optics table itself |
+
+No floor is a free choice: each is the shortest wavelength the data the model is
+made of actually covers, and a shorter request is refused rather than served
+with a refractive index frozen at the table boundary.
+
+In the extended band the astrodust optics are Mie for the volume-equivalent
+sphere on the same DH21 dielectric function the Q table was computed from. That
+shape approximation is bounded by about 2% and converges to a constant -2.08% in
+the large-particle limit, not to zero. **There is no external reference for this
+band**: the HD23 release stops at 12.4 eV, exactly where the extension begins.
+The DL07 model *can* be checked, and agrees with Draine's published table for
+the same model to 0.056-0.86% in C_ext per decade. See
+`docs/SEDust_user_manual.pdf` for the full accounting.
 
 ## Stochastic heating
 
@@ -131,4 +165,4 @@ Kwang-il Seon (KASI/UST)
 
 ---
 
-Last updated: 2026-08-01 20:35 KST
+Last updated: 2026-08-01 23:03 KST

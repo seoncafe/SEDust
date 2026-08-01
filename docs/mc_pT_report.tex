@@ -415,6 +415,10 @@ the rest of the astrodust pipeline.
   (\verb|main_mc_sed.x|).  Reads a namelist, calls \verb|sed_init|
   from the astrodust pipeline to load the grain Q table, size
   distribution, and PAH cross sections, then loops via \verb|mc_sed|.
+  It calls \verb|sed_init| without the optional \verb|lam_min|, so the
+  wavelength grid is the plain T-matrix $Q$-table grid
+  (\SIrange{0.0912}{3.98e4}{\micro\meter}) and the extreme-ultraviolet
+  extension available to the library does not enter here.
 \end{itemize}
 
 \begin{table}[ht]
@@ -425,7 +429,7 @@ the rest of the astrodust pipeline.
 \toprule
 key & enthalpy model \\
 \midrule
-\texttt{gra\_dl01} & DL01 \texttt{Car0} graphite (Debye-2 with $\Theta_1=863$ K, $\Theta_2=2504$ K, plus CH modes for $n_{\rm atom}<10^4$).  \textbf{Default for graphite and PAH.} \\
+\texttt{gra\_dl01} & DL01 \texttt{Car0} graphite (Debye-2 with $\Theta_1=863$ K, $\Theta_2=2504$ K, plus C--H modes for $n_{\rm atom}\le5.75\times10^4$, i.e.\ $a\lesssim\SI{50}{\angstrom}$ --- the Draine \& Li 2001 threshold).  \textbf{Default for graphite and PAH.} \\
 \texttt{gra\_d85}  & Single Debye-3, $\Theta_D=420$ K, $n_{\rm atom}=1.14\times10^{23}$ cm$^{-3}$.  Original \citet{DraineAnderson1985} prescription. \\
 \texttt{sil\_dl01} & DL01 silicate (\texttt{Sil}). \\
 \texttt{ad\_s1\_c1} & Astrodust Stage 1, C1 prefactor (pure DL01 \texttt{Sil}). \\

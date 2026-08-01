@@ -176,7 +176,7 @@ module sed_astrodust_mod
    ! scattering is negligible, so the two charge states share one scattering
    ! description.  The xi_gra blend that splits the ABSORPTION between PAH and
    ! graphite therefore does not enter here: the graphite Q_sca carries the
-   ! whole scattering, the treatment calc_kext_dl07 documents.  Computed from
+   ! whole scattering -- the standard DL07 treatment.  Computed from
    ! the graphite dielectric function by Mie theory (q_graphite_full), on the
    ! same random-orientation average as the absorption, rather than
    ! interpolated off a precomputed Q table.
@@ -583,6 +583,10 @@ contains
       ! readers keep their message + stop behavior (as the CLI drivers expect).
       !   status = 1  Q-table load failed
       !   status = 2  size-distribution load failed
+      !   status = 4  lam_min below the D03 dielectric functions' own shortest
+      !               wavelength (EUV band only).  There is no code 3 here:
+      !               this model needs no separate EUV dielectric function, so
+      !               nothing corresponds to sed_init's "index load failed".
       integer, optional, intent(out) :: status
       ! Optional shortest wavelength [um] the model must cover; see sed_init.
       ! The Q table supplies this model's wavelength grid only -- its silicate
@@ -736,8 +740,8 @@ contains
             ! absorption features only, and a PAH is a molecule whose Rayleigh
             ! scattering is negligible, so both charge states scatter as the
             ! graphite sphere does -- random-orientation Mie (1/3 || + 2/3 perp)
-            ! on the graphite dielectric function, the same treatment
-            ! calc_kext_dl07 uses.
+            ! on the graphite dielectric function -- the standard DL07
+            ! treatment.
             call q_graphite_full(a_um, lam(jw), qext1, qsca1, qabs1, gsca1)
             Csca_car(jw, ja) = qsca1 * geo
             gsca_car(jw, ja) = gsca1
@@ -1912,6 +1916,8 @@ contains
       ! the process; when absent the build stops on error (CLI behavior).
       !   status = 1  Q-table load failed
       !   status = 2  size-distribution load failed
+      !   status = 4  lam_min below the D03 dielectric functions' shortest
+      !               wavelength (EUV band only); see sed_init_dl07
       integer, optional,  intent(out) :: status
       ! Optional shortest wavelength [um] the model must cover; see
       ! build_astrodust. This model's optics are dielectric-function Mie
