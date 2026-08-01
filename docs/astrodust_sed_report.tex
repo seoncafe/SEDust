@@ -9,7 +9,7 @@
 
 \title{Reproducing the Hensley \& Draine (2023) Astrodust SED}
 \author{Kwang-il Seon}
-\date{2026 May 16}
+\date{2026 August 1}
 
 \newcommand{\Cabs}{\ensuremath{C_{\rm abs}}}
 \newcommand{\Qabs}{\ensuremath{Q_{\rm abs}}}
@@ -108,6 +108,7 @@ Heating intensity $U$                      & $10^{0.2} \approx 1.585$ & HD23 \S2
 Radiation-field shape                      & Mathis 1983 ISRF, scaled by $U$ & HD23 \S2.3.1 \\
 $a_{\rm eff}$ range                        & \SIrange{3.16e-4}{5.012}{\micro\meter} & DH21a, 169 points \\
 $\lambda$ range                            & \SIrange{0.0912}{3.98e4}{\micro\meter} & DH21a, 1129 points \\
+$\lambda$ range, extended                  & \SIrange{1.001e-4}{3.98e4}{\micro\meter} & optional, 1719 points; see \S\ref{sec:euv} \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -1417,6 +1418,18 @@ extinction or emission (PAH grains are spherical in the model and not
 aligned). The polarization comparison below therefore uses the
 astrodust population only.
 
+The comparison below is a \emph{verification of the T-matrix optics}
+against the HD23 release, carried out by a standalone utility. In this
+tree --- v1.20, the polarized branch --- the same quantity is also a
+library capability: \texttt{dust\_extinction} returns the dichroic
+extinction $C_{\rm pol}^{\rm ext}$ and the birefringent extinction
+$C_{\rm bir}^{\rm ext}$ alongside the scalar cross sections, and the
+aligned-grain scattering matrix is reached through a separate query
+API. Both are documented in
+\texttt{docs/sedust\_polarization\_implementation.tex}. The scalar
+branch (v1.00) carries the emission and extinction API without any of
+them.
+
 For perfectly oblate spheroids with the short (symmetry) axis aligned
 perpendicular to a magnetic field in the plane of the sky (the
 ``MPFA'' geometry of HD23 \S2.2), the maximum polarized extinction per
@@ -1574,6 +1587,30 @@ for $U\times(\text{fixed shape})$: stochastic emission is a nonlinear
 functional of the full $J(\lambda)$, so cells with a hardened spectrum
 must use the exact solve. This caveat is documented in the API contract.
 
+\paragraph{Extinction from the same object.} A transfer code needs
+opacity as well as emission, and taking the two from different files is
+how a run ends up transporting one dust model while re-emitting
+another. \texttt{dust\_extinction(m, Cext, Cabs, Csca [, gbar]
+[, Cpol\_ext] [, Cbir\_ext] [, albedo] [, status])} is therefore the
+extinction twin of \texttt{dust\_emission}: it returns the
+size-distribution-integrated cross sections per H on the model's own
+grid \texttt{m\%lam}, as the plain binned sums
+$C_{\rm abs} = \sum_{\rm pop}\sum_a {\rm d}n(a) C_{\rm abs}(\lambda,a)$
+and likewise for $C_{\rm sca}$, with
+$\langle\cos\theta\rangle = \sum {\rm d}n\,C_{\rm sca}g / \sum {\rm
+d}n\,C_{\rm sca}$ and albedo $C_{\rm sca}/C_{\rm ext}$. All four
+builders now carry scattering optics --- astrodust from the T-matrix
+$Q$ table, DL07 from Mie on the D03 astrosilicate and graphite
+dielectric functions, Zubko and the file-defined models from the
+$Q_{\rm sca}$ and $g$ columns of their own tables --- so the albedo is
+a physical quantity for every model, not just astrodust. Populations
+that genuinely do not scatter (the astrodust PAHs, which are
+Rayleigh-negligible) leave those arrays unallocated and contribute
+zero. The two polarized outputs follow the same summation weighted by
+the alignment efficiency, $\sum_a {\rm d}n(a) C(\lambda,a)
+f_{\rm align}(a)$, and stay zero for a model with no aligned
+population.
+
 \paragraph{Linking and validation.} \texttt{make libsedust.a} produces a
 static archive that an external Fortran RT links with
 \texttt{gfortran -I<sed> rt.f90 libsedust.a -fopenmp}; a minimal working
@@ -1583,6 +1620,340 @@ precision; the table interpolated at a grid point matches the direct
 solve to $\sim 10^{-15}$; and the two equilibrium options conserve
 energy to $0.1\%$. The complete API and usage are documented separately
 in \texttt{docs/SEDust\_user\_manual.tex}.
+
+\section{Transport optics and the ionizing band}
+\label{sec:euv}
+
+\subsection{One driver, four models}
+
+\texttt{sed/src/calc\_kext.f90} builds a model and calls
+\texttt{dust\_extinction} on it, so the curve files it writes into
+\texttt{data/} \emph{are} the optics an RT host gets in memory rather
+than a separately maintained product:
+\begin{verbatim}
+   ./calc_kext.x astrodust [euv | <lam_min in um>]
+   ./calc_kext.x dl07      [euv | <lam_min in um>]
+   ./calc_kext.x zubko     [formula | table]
+   ./calc_kext.x from_files <descriptor> [data_dir]
+\end{verbatim}
+Every product carries $\lambda$\,[\si{\micro\meter}], albedo,
+$\langle\cos\theta\rangle$, $C_{\rm ext}$/H, $C_{\rm abs}$/H,
+$C_{\rm sca}$/H. The first four are in the order of Draine's
+\texttt{kext\_albedo} tables, so a reader written for those files parses
+these unchanged; the fifth is not, being $C_{\rm abs}$/H rather than
+Draine's $K_{\rm abs}$. \texttt{data/kext\_astrodust\_MW.dat}, which is
+a tracked regression reference and keeps a frozen on-disk format, adds
+two more: $K_{\rm abs}$\,[\si{cm^2/g}] from the model's own dust mass
+per H, and the dichroic extinction $C_{\rm pol}^{\rm ext}$/H, for eight
+columns in all. Its polarized column is the sum of
+eq.~\ref{eq:pmax}, written with the opposite sign convention
+$C_{\rm pol}^{\rm ext} = \tfrac12\pi a^2[\Qext^{\,E\perp a} -
+\Qext^{\,E\parallel a}]$: the \emph{maximum} polarized extinction,
+quoted before the $\sin^2\gamma$ geometry factor and before any
+turbulent depolarization, both of which a host must apply. Codes
+reading only the first seven columns are unaffected.
+
+The two Zubko routes are the same optics with two size distributions:
+\texttt{formula} (the default) evaluates the ZDA log-polynomial on the
+optics-table radii, \texttt{table} interpolates the distributed
+\texttt{SzDist} files onto the same radii. Those files sit below the
+config formula by $0.79\%$ (PAH), $1.13\%$ (graphite) and $0.41\%$
+(silicate) in normalization, and are given on 24, 62 and 63 points that
+must be interpolated, so the two routes differ in size-integrated
+$C_{\rm ext}$ by up to $2.10\%$ (median $1.02\%$). The formula is
+faithful to the ZDA model definition and is what the tracked product
+uses.
+
+\subsection{Extending the grid below the Lyman limit}
+
+The astrodust wavelength grid is the T-matrix $Q$ table's, and that
+table stops at \SI{0.0912}{\micro\meter} --- \SI{13.6}{\electronvolt},
+the Lyman limit. A host that transports ionizing radiation needs
+shorter wavelengths, so \texttt{build\_astrodust} and
+\texttt{build\_dl07} take an optional \texttt{lam\_min}
+[\si{\micro\meter}] and prepend log-spaced points from it up to the
+table, at a step no coarser than the table's own
+$\Delta\ln\lambda = 0.01156$. Omitting \texttt{lam\_min} prepends
+nothing, so every earlier result is bit-identical. The same is true of
+the other options added at the same time --- the
+\texttt{astrodust\_index\_path} of \texttt{sed\_init} /
+\texttt{build\_astrodust}, and the \texttt{albedo} output of
+\texttt{dust\_extinction}: absent, they change nothing.
+
+In the extended band the astrodust optics come from Bohren--Huffman Mie
+on the DH21 dielectric function --- the same material as the table, so
+the model does not change composition at the seam. The carbonaceous
+side changes character at \SI{21.4}{\electronvolt}
+($1/\lambda = 17.25\,\mu\mathrm{m}^{-1}$), where the DL07 PAH cross
+section is zero by construction and graphite becomes the whole
+carbonaceous absorption. There the D16 turbostratic sphere table can no
+longer be used: its radius axis bottoms out at
+\SI{1e-3}{\micro\meter} while the astrodust size grid starts at
+\SI{3.55e-4}{\micro\meter}, and since $Q_{\rm abs}\propto a$ in the
+Rayleigh limit, clamping to the table's first radius overestimates the
+absorption by $10^{-3}\,\mu\mathrm{m}/a$ --- up to $2.4\times$ for the
+smallest PAH the size distribution populates
+(\SI{4.22e-4}{\micro\meter}). Above the cutoff the code therefore takes
+graphite from the D03 dielectric functions by Mie
+($\tfrac13$ parallel $+\ \tfrac23$ perpendicular), which has no radius
+clamp. The unextended grid never reaches this branch
+($1/0.0912 = 10.96 < 17.25$).
+
+\subsection{The shape approximation and its two limits}
+
+The $Q$ table is a random-orientation T-matrix solution for a
+$b/a = 1.4$ oblate spheroid; the extended band uses Mie for the
+volume-equivalent \emph{sphere}. The justification is \emph{not} the
+anomalous-diffraction condition $|m-1|\ll1$: for this material
+$|m-1| = 0.77$ at the seam and still $0.56$ at
+\SI{20}{\electronvolt}. It is instead that the two ends of the size
+range are governed by limits in which the shape drops out or enters as
+a constant:
+
+\begin{itemize}
+  \item \textbf{Rayleigh limit (small grains).} At the seam the
+        smallest populated radius has $x = 2\pi a/\lambda = 0.033$, and
+        only $0.24$ at \SI{100}{\electronvolt}. The ellipsoid
+        polarizability
+        $\alpha_j = V(\epsilon-1)/\{4\pi[1+L_j(\epsilon-1)]\}$ contains
+        the shape only through $L_j(\epsilon-1)$, and $|\epsilon-1|$
+        falls from $1.86$ at \SI{13.5}{\electronvolt} to $1.10$ at
+        \SI{20}{\electronvolt}, $0.28$ at \SI{40}{\electronvolt} and
+        $0.061$ at \SI{100}{\electronvolt}. The depolarization factors
+        drop out and the two shapes converge.
+  \item \textbf{Geometric-optics limit (large grains).}
+        $C_{\rm ext}\to2\times$ the orientation-averaged projected
+        area, which by Cauchy's theorem is $S/4$. For $b/a = 1.4$ that
+        exceeds $\pi a_{\rm eff}^2$ of the volume-equivalent sphere by
+        $2.12\%$, so Mie is low by $1-1/1.0212 = 2.08\%$. The error
+        converges to a \emph{constant}, not to zero.
+\end{itemize}
+
+\noindent The error therefore does not improve monotonically with
+photon energy: only $a\lesssim\SI{2e-3}{\micro\meter}$ does, while
+$a\gtrsim\SI{0.01}{\micro\meter}$ worsens between 13.6 and
+\SI{30}{\electronvolt} before recovering to the constant $-1.9$ to
+$-2.0\%$. Over the whole band and size range it stays within about
+$2\%$; \texttt{sed/src/q\_astrodust.f90} tabulates it size by size.
+Independently, an external review of this extension compared 28
+T-matrix cells with $10\le x\le50$ at exactly
+\SI{0.0912}{\micro\meter} against equal-volume Mie spheres and found
+mean $(\mathrm{Mie}-\mathrm{TM})/\mathrm{TM}$ of $-1.92\%$ in
+$Q_{\rm ext}$, $-1.89\%$ in $Q_{\rm abs}$ and $-1.94\%$ in
+$Q_{\rm sca}$ --- the geometric-optics constant, arrived at from the
+other side.
+
+In the size-integrated curve the step across
+\SI{0.0912}{\micro\meter} is $-1.54\%$ in $C_{\rm ext}$ and $-1.90\%$
+in $C_{\rm abs}$, \emph{smaller} than the neighboring steps of the
+table's own grid ($-1.95\%$ / $-1.72\%$ and $-2.20\%$ / $-1.94\%$), so
+absorption and extinction join without a visible discontinuity.
+Scattering does show one: $C_{\rm sca}$ steps $+0.74\%$ where its
+neighbors step $-0.39\%$ and $-0.36\%$, and the albedo $+2.31\%$
+against $+1.59\%$ and $+1.39\%$ --- a seam of roughly one percentage
+point, consistent with the $2\%$ shape error being carried mostly by
+$Q_{\rm sca}$.
+
+\subsection{Two invariants that had to be protected}
+
+Extending the grid must not move quantities that live in the infrared.
+Two places needed explicit care.
+
+\paragraph{The hardest photon.} The stochastic solver sets the top of
+its enthalpy window from the energy of the hardest single photon a
+grain can absorb. That bound was a hard-coded
+\SI{13.6}{\electronvolt}, which an ionizing band makes wrong. It is now
+$\max(\SI{13.6}{\electronvolt},\ hc/\lambda_{\rm hard})$, where
+$\lambda_{\rm hard}$ is the shortest wavelength at which the incident
+$J_\lambda$ exceeds $10^{-12}$ of its own peak
+(\texttt{hardest\_photon\_energy} in \texttt{sed/src/radfield.f90},
+called from \texttt{sed\_grain\_loop} and \texttt{narrow\_iterative} in
+\texttt{sed\_astrodust.f90} and from \texttt{qm\_solve\_grain} in
+\texttt{stoch\_qm.f90}).
+
+\medskip
+\noindent\emph{The bound is a property of the radiation field, not of the
+wavelength grid.} That distinction is invisible for astrodust and DL07,
+whose $Q$ table stops at the Lyman limit itself:
+$hc/\SI{0.0912}{\micro\meter} = \SI{13.595}{\electronvolt} <
+\SI{13.6}{\electronvolt}$, so the maximum returns the old constant and
+nothing in this report moves. It is not invisible for Zubko, whose
+DustEM tables start at \SI{1e-3}{\micro\meter}: measuring the grid
+there gives \SI{1239.8}{\electronvolt}, ninety-one times the Lyman
+limit, for a Mathis field that carries no photon below
+\SI{0.0912}{\micro\meter}.
+
+\medskip
+\noindent Ninety-one times too high is not a change of physics but a
+change of resolution. \texttt{umax} sets the upper edge of a
+\emph{fixed} number of enthalpy bins, and the refinement loops do not
+walk it back: contraction stops once \texttt{umax} reaches
+\texttt{1.02*umaxlo} or \texttt{1.01*ub(jcut)}, and the loop is capped
+at ten iterations, while expansion carries no such guard. Measured
+through a host code with no
+\texttt{lam\_min} requested at all, the residual coarseness moved the
+Zubko dust temperature by \SI{+0.07}{\kelvin} in every cell, the ten
+brightest SED bins by $-0.9$ to $-1.9\%$ and the emission image by up
+to $5.4\%$, at $-0.08\%$ in total emitted energy
+(\texttt{docs/EUV\_EXTENSION\_HOST\_REGRESSION.md}).
+
+\medskip
+\noindent The $10^{-12}$ floor is there to reject denormal and roundoff residue
+in the unilluminated bins of a field handed over by a host, which an
+exact $J_\lambda>0$ test would accept. It is a safe place to cut: a
+component that far below the peak contributes at most that fraction of
+the photon absorption rate, and allowing two decades for the run of
+$C_{\rm abs}$ across the illuminated band, the enthalpy states it could
+populate hold probability $\lesssim10^{-10}$ of the peak --- below the
+$10^{-13}$ level at which both solvers already truncate the window. The
+one-sidedness is deliberate: the loops widen a window that is too
+narrow but are guarded against narrowing one that is too wide, so an
+overestimated bound leaves the bins coarse where an underestimated one
+is corrected as the loop runs. The ten-iteration cap bounds the
+correction either way.
+
+\medskip
+\noindent Nothing in the tree ran the emission solvers on a model whose optics
+grid reaches past the illuminated band, which is why the grid-based
+form survived review. \texttt{sed/src/main\_zubko.f90} closes that gap
+and is built by the default \texttt{make}: \texttt{./main\_zubko.x}
+heats the ZDA model with a Mathis field that stops at the Lyman limit,
+\texttt{./main\_zubko.x euv} adds a hard component below it, and each
+prints the grid candidate against the field candidate ---
+\SI{1239.8}{\electronvolt} against \SI{13.59}{\electronvolt} and
+against \SI{370.1}{\electronvolt} respectively. The first run leaves
+the bound at exactly \SI{13.6}{\electronvolt} and so reproduces what
+the hard-coded constant produced; the second shows the bound following
+the field up.
+
+\paragraph{The Planck integrals.} $\kappa_B(T,a) = \int
+C_{\rm abs}B_\lambda\,{\rm d}\lambda$ is evaluated on an internal
+log-$\lambda$ grid. Spending a fixed budget of points on a widened
+interval would coarsen the sampling of the range that actually carries
+the integrand --- below \SI{0.0912}{\micro\meter}, $B_\lambda$ is
+$\sim10^{-231}$ of its peak at \SI{288}{\kelvin} --- and would have
+moved $\kappa_B$ by $\sim10^{-4}$ for a purely numerical reason. The
+integration grid is therefore \emph{anchored} to the optics-table
+range: its step and its sample points there are fixed, and the extra
+points are prepended below. Measured with a
+\SI{1.001e-4}{\micro\meter} floor: $\max|\Delta\kappa_B|/\kappa_B =
+3.4\times10^{-16}$ over $T\le\SI{3000}{\kelvin}$ (and exactly zero
+below $\sim\SI{2400}{\kelvin}$), and $\kappa_{\rm CMB}$ bit-identical.
+The only non-zero difference is $1.1\times10^{-8}$ at the very top of a
+\SI{5000}{\kelvin} grid, where the Wien tail genuinely reaches into the
+extended band --- real extra emission, not a sampling artifact.
+
+\subsection{What can be checked, and what cannot}
+\label{sec:euv-refs}
+
+\begin{tabularx}{0.98\textwidth}{@{}l l X@{}}
+\toprule
+author-provided data & coverage & contents \\
+\midrule
+Draine \texttt{kext\_albedo\_WD\_MW\_3.1\_60\_D03} &
+\SIrange{1e-4}{1e4}{\micro\meter} &
+$\lambda$, albedo, $\langle\cos\theta\rangle$, $C_{\rm ext}$/H,
+$K_{\rm abs}$, $\langle\cos^2\theta\rangle$ \\
+HD23 release (\texttt{extinction.dat}, \texttt{scattering.dat}) &
+\SIrange{0.1}{3e4}{\micro\meter} &
+absorption and scattering $\tau/N_H$ only; \textbf{no
+$\langle\cos\theta\rangle$ product exists in the release} \\
+Zubko ZDA optics tables & \SIrange{1e-3}{1e4}{\micro\meter} &
+$Q_{\rm abs}$, $Q_{\rm sca}$, $Q_{\rm ext}$, $g$ per radius \\
+\bottomrule
+\end{tabularx}
+
+\medskip
+\noindent The HD23 release stops at \SI{12.4}{\electronvolt} --- exactly
+where the extension begins. \textbf{The astrodust EUV band therefore
+has no external reference at all}, and its accuracy rests entirely on
+the internal argument above and on the seam being continuous. This
+should be stated plainly whenever the extended astrodust curve is used.
+
+The DL07 model, by contrast, can be compared with Draine's own
+published table for the same model over the whole range. Evaluating
+\texttt{data/kext\_dl07\_MW\_euv.dat} at the reference's wavelengths
+and counting only points where the reference grid is no finer than ours
+(elsewhere the comparison measures our grid, not our optics) gives, per
+decade in $\lambda$, mean $|\Delta C_{\rm ext}|/C_{\rm ext}$ of
+$0.056$--$0.86\%$, mean $|\Delta\,\text{albedo}| \le 0.0019$ and mean
+$|\Delta\langle\cos\theta\rangle| \le 0.00054$. The excluded points
+cluster at the X-ray absorption edges (Fe\,K, Si\,K, Mg\,K, Fe\,L,
+O\,K, C\,K), which the reference brackets far more finely than our
+$\Delta\ln\lambda = 0.0116$ grid resolves. The largest single
+deviation, $7.9\%$ in the \SIrange{1}{10}{\micro\meter} decade, is
+confined to the 6.2, 7.6 and \SI{7.9}{\micro\meter} PAH C--C features,
+where Draine's 2003 table uses a different vintage of the PAH cross
+sections (\S\ref{sec:phaseE-residual-analysis} documents the same
+vintage split on the emission side).
+
+\subsection{What the extension does not do}
+
+The extension fixes the photon-energy mapping and the absorbed-energy
+accounting in the ionizing band. It does \emph{not} make hard-photon
+stochastic heating correct. The enthalpy grid is finite, and upward
+transitions above its top are accumulated into the highest temperature
+bin; for the smallest PAHs a \SI{54}{\electronvolt} photon already
+exceeds $H(\SI{5000}{\kelvin})$. Nor is there any treatment of
+photoionization, electron energy loss, fragmentation or PAH
+destruction. The extended band should be used for extinction and for
+absorbed-energy bookkeeping, not as a validated hard-EUV PAH
+\emph{emission} model.
+
+\subsection{Products}
+
+\begin{tabularx}{0.98\textwidth}{@{}l r l X@{}}
+\toprule
+file (under \texttt{data/}) & rows & $\lambda$ [\si{\micro\meter}] &
+what sets the short-wavelength floor \\
+\midrule
+\texttt{kext\_astrodust\_MW.dat} & 1129 & 0.0912--39810 &
+the $Q$-table grid; no extension requested \\
+\texttt{kext\_astrodust\_MW\_euv.dat} & 1719 & 1.001e-4--39810 &
+the DH21 astrodust dielectric function, which stops at
+$1.00003\times10^{-4}$ \\
+\texttt{kext\_dl07\_MW\_euv.dat} & 1761 & 6.205e-5--39810 &
+the D03 dielectric functions; the shorter-reaching of astrosilicate and
+graphite stops at $6.1992\times10^{-5}$ \\
+\texttt{kext\_zubko\_BARE\_GR\_S.dat} & 1201 & 1e-3--1e4 &
+the ZDA optics table itself; no extension is possible or needed \\
+\bottomrule
+\end{tabularx}
+
+\medskip
+\noindent No floor here is a free choice: each is the shortest
+wavelength the data the model is made of actually covers, and a request
+below it is refused (\texttt{status = 7} from \texttt{build\_astrodust}
+and \texttt{build\_dl07}, or $6$ if the astrodust dielectric function
+cannot be read at all) rather than served with a refractive index
+frozen at the table boundary.
+\texttt{kext\_astrodust\_MW.dat} is a tracked regression reference and
+is reproduced byte for byte by \texttt{./calc\_kext.x astrodust}. The
+three extended products are byte-identical to the files of the same
+name on the scalar branch (v1.00), which is the check that the
+polarized branch did not disturb the scalar optics.
+
+\paragraph{Why the extended products carry no polarized column.}
+Shortward of \SI{0.0912}{\micro\meter} the dichroic and birefringent
+extinction need the EUV companion of the orientation-resolved table,
+covering \SIrange{0.0124}{0.0912}{\micro\meter}. That table is not
+distributed --- it is generated on demand --- and without it
+\texttt{build\_Cpol} announces on \texttt{stderr} that the band is
+``zero by omission, not by physics'' and leaves it at zero. Writing
+that zero into a data file would launder a known deficit into a
+physical value, so the three extended products stay scalar. When the
+table \emph{is} present, the grid must lie inside it: an EUV block
+reaching outside \SIrange{0.0124}{0.0912}{\micro\meter} is refused with
+\texttt{status = 9}, and a table that was requested but cannot be read
+with \texttt{status = 8}. Below \SI{0.0124}{\micro\meter}
+(\SI{100}{\electronvolt}) the opaque geometric-optics limit the table
+relies on is itself invalid, which is why that is the floor. Measured
+first-principles size integrals put the true
+$|C_{\rm pol}^{\rm ext}|/C_{\rm ext}$ at $1.26\times10^{-3}$ at the
+\SI{0.0912}{\micro\meter} join, rising to $3.64\times10^{-3}$ near
+\SI{20.6}{\electronvolt} and decaying to $1.56\times10^{-4}$ at
+\SI{100}{\electronvolt}, with the sign opposite to the optical band ---
+small, but not the zero a missing table would report.
 
 \section{Conclusions and next steps}
 
@@ -1725,7 +2096,7 @@ than temperature space, using mode-aware enthalpy bins and a
 thermal-discrete (\texttt{dbdis}) transition matrix solved with a BiCG
 sparse linear solver.  A second cooling treatment,
 thermal-continuous (\texttt{dbcon}), collapses the downward rates into
-the nearest-neighbour transition and so reproduces the
+the nearest-neighbor transition and so reproduces the
 continuous-cooling approximation of the temperature-space GD recursion;
 comparing the two isolates the cost of that approximation.  The
 energy-space solver agrees with the production GD solver to within a
@@ -1738,6 +2109,13 @@ The two-step solver API (\texttt{sed\_init} once, \texttt{sed\_solve}
 per cell) is exercised end-to-end and is ready to be embedded in a 3D
 radiative-transfer driver. Memory cost per process is $\sim 5$~MB;
 wall-clock time per cell is $\sim 0.5$~s on Apple Silicon for the full
-three-enthalpy-stage AD + PAH solve.
+three-enthalpy-stage AD + PAH solve. The same model object now also
+supplies the transport optics (\texttt{dust\_extinction}, scalar and
+dichroic), and the wavelength grid can be carried into the ionizing
+band; see \S\ref{sec:euv} Three caveats are recorded there: the
+astrodust extreme-ultraviolet band has no external reference,
+hard-photon stochastic \emph{emission} is not yet a solved problem, and
+the polarized optics stop at the Lyman limit unless the EUV companion
+table is generated.
 
 \end{document}

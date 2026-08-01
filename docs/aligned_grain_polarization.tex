@@ -336,6 +336,72 @@ figures (ratio $1.0000$), and a fit of the alignment function to the same
 data returns $\aalign = 0.07492$\um, $\alpha = 1.799$, $f_{\max} = 1.0$,
 identical to HD23 Table~1.
 
+\subsection{Wavelength coverage of the polarized optics}
+\label{sec:polcoverage}
+
+Two different objects have two different coverages, and confusing them is
+easy.
+
+The polarized \emph{extinction} optics --- \Cpol\ (polarized absorption,
+which drives the emission), $C_{\rm pol,ext}$ (dichroism) and
+$C_{\rm bir,ext}$ (birefringence) --- are tabulated on the full DH21
+wavelength axis, all 1129 nodes from $0.0912$ to $39810\um$. Nothing about
+them is restricted to a band.
+
+The angle-resolved \emph{scattering} matrices of
+\S\ref{sec:alignedscat} are stored at five wavelengths, $0.36$, $0.44$,
+$0.55$, $0.64$ and $0.79\um$. That is a deliberate scope, not an
+incomplete sweep. Polarized radiative transfer is essentially never run
+on a whole wavelength grid: it is run at the few wavelengths an
+observation was made at, and five optical bands cover the update this
+work exists for. What the design has to guarantee is not that every
+wavelength is precomputed, but that a wavelength one later needs
+\emph{can} be computed --- and it can, by naming it on the generator's
+command line
+(\code{sedust\_polarization\_implementation.pdf}, \S7 and \S8).
+
+\subsection{Dichroism below the Lyman limit}
+\label{sec:euvdichroism}
+
+The polarized tables stop at $0.0912\um$ because the DH21 wavelength axis
+does. A model grid can be extended shortward of it, and when it is, the
+dichroic and birefringent entries of the extreme-ultraviolet block are
+currently \emph{zero} --- and that zero is a documented deficit, not a
+physical statement. The distinction matters because a vanishing
+polarization is a plausible-looking asymptote, so it can be mistaken for
+a result.
+
+It is not one. First-principles size integrals over the aligned astrodust
+population give, for the alignment-weighted ratio,
+\begin{equation}
+  \frac{|C_{\rm pol,ext}|}{\Cext}
+  \;=\;
+  \begin{cases}
+    1.26\times10^{-3}, & \lambda = 0.0912\um\ \hbox{(the seam)},\\[2pt]
+    3.64\times10^{-3}, & 20.6\ \hbox{eV},\\[2pt]
+    1.6\times10^{-4},  & 100\ \hbox{eV},
+  \end{cases}
+  \label{eq:euvpol}
+\end{equation}
+so the dichroism \emph{rises} by a factor $2.9$ above the seam before it
+decays, and it does so with the sign \emph{opposite} to the optical band;
+the reversal falls near $0.106\um$. The birefringent ratio
+$|C_{\rm bir,ext}|/\Cext$ decreases monotonically from $7.2\times10^{-3}$
+at the seam and changes sign near $51$\,eV.
+
+Zero would be the correct limit only where both $x \gg 1$ and
+$|m-1| \ll 1$. Neither holds: $|m-1|$ is $0.765$ at the seam, $0.564$ at
+$20$\,eV, and drops below $0.1$ only above ${\sim}50$\,eV, while the
+grains that carry the signal sit at $x = 5$--$50$.
+
+One structural point follows and is worth stating on its own. A sphere
+has \emph{exactly} zero dichroic extinction and \emph{exactly} zero
+birefringence, by symmetry. Scalar extreme-ultraviolet optics computed on
+the volume-equivalent sphere therefore could not have produced these
+entries at any accuracy: the grain shape has to be retained to obtain
+them at all, which is why the band needs the orientation-resolved
+spheroid calculation rather than an extension of the Mie table.
+
 \subsection{Index convention traps}
 
 The orientation index ordering is not consistent across Draine's own

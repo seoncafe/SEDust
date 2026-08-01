@@ -133,13 +133,15 @@ the size integral in f_align, without approximating the physics:
   F_ref is the same matrix weighted by n(a) f_ref(a). So three stored integrals
   give the exact scattering optics of any eta.
 - **Profile changes.** A different f_ref(a) (a_align, alpha_align, f_max, or a
-  tabulated RAT profile) requires re-integrating over size. The generator therefore
-  also writes a size-resolved intermediate (single-size Z and F on the size grid,
-  not tracked in git); re-integrating it under a new profile takes seconds and
-  needs no new T-matrix computation. If the intermediate file is available, the
-  library performs this integration itself at load time with the model's current
-  f_align, so a profile set through `dust_set_alignment` /
-  `dust_set_alignment_profile` is honored exactly.
+  tabulated RAT profile) requires re-integrating over size. *As built* this is
+  done by rerunning the generator with `profile=FILE`; the size-resolved
+  intermediate sketched here (single-size Z and F kept on disk so that a new
+  profile could be re-integrated at load time) was not implemented, and neither
+  the driver nor the library writes or reads one. Instead the library records the
+  profile the table was integrated under and compares it against the model's
+  current f_align: `dust_set_alignment` / `dust_set_alignment_profile` return the
+  non-fatal status 4 when the two differ, so a mismatch is reported rather than
+  silently honored. The sanctioned runtime variation is eta.
 
 ## 3. Products
 
@@ -148,9 +150,12 @@ the size integral in f_align, without approximating the physics:
   `rayleigh_mueller_matrix_oriented` (analytic dipole limit).
 - `tmatrix/driver/run_scatmat_aligned.f90` -> `run_scatmat_aligned.x` — size-
   integrated production driver; CLI like run_scatmat (wavelengths, `test`, default
-  UBVRI bands 0.36, 0.44, 0.55, 0.64, 0.79 um). Writes
-  `output/scatmat_aligned_astrodust_P0.20_Fe0.00_1.400.dat` (aligned part) and
-  `output/scatmat_unaligned_astrodust_P0.20_Fe0.00_1.400.dat` (remainder).
+  UBVRI bands 0.36, 0.44, 0.55, 0.64, 0.79 um). *As built* it writes a single file,
+  `output/scatmat_aligned_astrodust_P0.20_Fe0.00_1.400.dat`, carrying all three
+  blocks per band: K (theta_i grid), F (both F_tot and the f_align-weighted
+  F_ref), and Z. The separate `scatmat_unaligned_...dat` planned here was not
+  needed: F_tot and F_ref in one file give the remainder for any eta through
+  `Csca_tot F_tot - eta Csca_ref F_ref`.
 - `tmatrix/driver/compare_scatmat_aligned.f90` — verification program (Section 5).
 - Makefile targets for both; docs updated after verification.
 
@@ -302,3 +307,38 @@ Per (band, size) in the T-matrix regime: one TMD_ONE_SCATMAT (seconds at most) p
 ~127k AMPL evaluations (tens of microseconds each) — minutes per size at the largest
 x. With ~100 populated sizes per band and 5 bands, a few hours serial; the driver
 prints progress and the bands can run as separate processes.
+
+## 8. Wavelength coverage, as built
+
+Five bands (0.36, 0.44, 0.55, 0.64, 0.79 um) are the deliverable, not a sweep left
+unfinished. Polarized transfer is run at the few wavelengths an observation was
+made at, never on a whole grid, and five optical bands cover the update this work
+exists for. The requirement is only that a wavelength one later needs *can* be
+computed.
+
+It can: `run_scatmat_aligned.x` already takes wavelengths on its command line
+(`./run_scatmat_aligned.x 0.44 0.55 0.79`). Three limitations of that path are
+real and should not be discovered by surprise:
+
+1. **The output stem is fixed.** A custom run writes the same
+   `output/scatmat_aligned_astrodust_P0.20_Fe0.00_1.400.dat` and therefore
+   overwrites the shipped five-band table. Move the shipped file aside first.
+2. **There is no merge mode.** A band cannot be appended to an existing table;
+   every wavelength asked for is recomputed into a new file (the five together
+   are ~8 min at 32 threads).
+3. **There is no radius-window split and no large-x certification.** The driver
+   has no `ja=` equivalent of `run_q_jori.x`, and it applies the plain
+   `X_LARGE = 50` cut without the two-setting cross-check that `run_q_jori.x`
+   uses above x = 50 (see `sedust_polarization_implementation.tex`, "Certifying
+   the T-matrix above x = 50").
+
+Lifting any of these is straightforward; none is done, because the wavelengths in
+hand have not called for it.
+
+The polarized *extinction* optics are a separate matter and are **not** limited to
+five bands: `Cpol`, `Cpol_ext` and `Cbir_ext` come from the orientation-resolved Q
+table and cover all 1129 DH21 wavelengths, 0.0912-39810 um.
+
+Below 0.0912 um the dichroism and birefringence are currently zero because the
+extreme-ultraviolet companion Q table is not shipped. That zero is a documented
+deficit, not the physics — see `tmatrix_orientation_resolved_plan.md` §9.2.

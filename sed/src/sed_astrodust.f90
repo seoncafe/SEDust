@@ -23,7 +23,7 @@ module sed_astrodust_mod
    use, intrinsic :: iso_fortran_env, only: real64, error_unit
    use constants,             only: wp
    use sed_mathlib,               only: interp, first_location, last_location
-   use radfield,              only: bbody, calc_bbody
+   use radfield,              only: bbody, calc_bbody, hardest_photon_energy
    use p_sub,                 only: p_sub_setup, calc_Teq, calc_P
    use q_table_mod,           only: load_q_table, &
                                     qt_n_lam=>n_lam, qt_n_aeff=>n_aeff, &
@@ -34,7 +34,15 @@ module sed_astrodust_mod
                                     qj_n_lam=>nj_lam, qj_lam=>lam_j, &
                                     qj_aeff=>aeff_j, qj_qpol_abs=>qpol_abs, &
                                     qj_qpol_ext=>qpol_ext, &
-                                    qj_qbir_ext=>qbir_ext, qj_has_bir=>has_bir
+                                    qj_qbir_ext=>qbir_ext, qj_has_bir=>has_bir, &
+                                    load_q_table_jori_euv, &
+                                    qj_n_lam_euv=>nj_lam_euv, qj_lam_euv=>lam_j_euv, &
+                                    qj_aeff_euv=>aeff_j_euv, &
+                                    qj_qpol_abs_euv=>qpol_abs_euv, &
+                                    qj_qpol_ext_euv=>qpol_ext_euv, &
+                                    qj_qbir_ext_euv=>qbir_ext_euv, &
+                                    qj_has_bir_euv=>has_bir_euv, &
+                                    free_q_table_jori_euv
    use size_dist_mod,         only: load_size_dist, sd_n=>n_size, &
                                     sd_aeff=>a_dist, sd_dn=>dn_ad, &
                                     sd_dn_pah=>dn_pah, sd_fion=>f_ion
@@ -46,7 +54,16 @@ module sed_astrodust_mod
    use stoch_qm_mod,          only: qm_solve_grain, qm_verbose
    ! DL07 (silicate + carbonaceous) model support
    use grain_dist_mod,        only: grain_dist_dl07, gd_apply_d03_reduction
-   use q_silicate_mod,        only: q_silicate_abs
+   use q_silicate_mod,        only: q_silicate_abs, q_silicate_full, &
+                                    silicate_index_lambda_range
+   use q_graphite_mod,        only: q_graphite_full, &
+                                    graphite_index_lambda_range
+   ! Astrodust optics from the DH21 dielectric function, for the EUV band
+   ! below the T-matrix Q table's 0.0912 um (13.6 eV) short-wavelength end.
+   use q_astrodust_mod,       only: q_astrodust_full, load_astrodust_index, &
+                                    set_astrodust_index_path, &
+                                    get_astrodust_index_path, &
+                                    astrodust_index_lambda_range
    use pah_ioniz_mod,         only: pah_ionfrac
    use dust_model_mod,        only: dust_model_t, grain_pop_t, free_dust_model, &
                                     dust_set_alignment, dust_set_alignment_profile
@@ -116,7 +133,6 @@ module sed_astrodust_mod
    ! Zubko). build_astrodust reads it to decide whether the populations carry
    ! polarized optics; dust_has_polarized_optics then reports it off the model.
    logical, save :: polarized_optics_loaded = .false.
-
    ! dbdis-style photon-energy cutoff in the heuristic GD emission sum:
    ! a grain in a T bin cannot emit a photon more energetic than the bin
    ! enthalpy (hc/lambda <= H). Default OFF: on the coarse GD T-grid this
@@ -137,6 +153,16 @@ module sed_astrodust_mod
 
    ! Module state set by sed_init
    integer  :: NLAM = 0, NA = 0, NT = 0
+   ! Number of wavelength points the model grid carries into the extreme
+   ! ultraviolet, below the T-matrix Q table's 0.0912 um (13.6 eV) end; 0 for
+   ! the plain table grid. The table block is therefore lam(n_lam_euv+1:), and
+   ! everything read off the Q tables -- the scalar Q's here, the polarized Q's
+   ! in build_Cpol -- lands there. Every init path sets it, so it can never
+   ! describe a grid other than the current one. The Planck integrals also read
+   ! it, to anchor their internal ln(lambda) grid on the table range so that
+   ! neither the step nor the sample points move as the grid widens -- see
+   ! planck_integration_grid.
+   integer, save :: n_lam_euv = 0
    real(wp), allocatable :: lam(:)              ! [um] (NLAM)
    real(wp), allocatable :: aeff(:)             ! [um] (NA), the size-dist grid
    real(wp), allocatable :: T_first(:)          ! [K]  (NT), log-spaced full range
@@ -197,6 +223,16 @@ module sed_astrodust_mod
    ! share the 'Car0' enthalpy (H_pah_first). The Cabs_pah/kappB_pah/kappCMB_pah
    ! arrays above are reused as charge-resolved scratch inside sed_solve_dl07.
    real(wp), allocatable :: Cabs_cneu(:,:), Cabs_cion(:,:)   ! [cm^2] (NLAM, NA)
+   ! Scattering of the DL07 carbonaceous grains.  Charge changes the PAH
+   ! absorption features only, and a PAH is a molecule whose Rayleigh
+   ! scattering is negligible, so the two charge states share one scattering
+   ! description.  The xi_gra blend that splits the ABSORPTION between PAH and
+   ! graphite therefore does not enter here: the graphite Q_sca carries the
+   ! whole scattering -- the standard DL07 treatment.  Computed from
+   ! the graphite dielectric function by Mie theory (q_graphite_full), on the
+   ! same random-orientation average as the absorption, rather than
+   ! interpolated off a precomputed Q table.
+   real(wp), allocatable :: Csca_car(:,:), gsca_car(:,:)     ! [cm^2], - (NLAM, NA)
    real(wp), allocatable :: dn_cneu(:), dn_cion(:)           ! [1/H per bin] (NA)
    ! Charge-resolved kappB / kappCMB for the astrodust path (sed_init / sed_solve_pah /
    ! sed_solve_qm_batch), where both charge states must be available at once
@@ -247,13 +283,23 @@ module sed_astrodust_mod
         '../data/dielectric/q_DH21Ad_P0.20_Fe0.00_1.400.dat.gz'
    character(len=*), parameter :: QPOL_W_DEF = '../data/dielectric/DH21_wave'
    character(len=*), parameter :: QPOL_A_DEF = '../data/dielectric/DH21_aeff'
+   ! Companion table for the extreme ultraviolet, 0.0124 um (100 eV) up to the
+   ! 0.0912 um (13.6 eV) node where the table above starts. Computed by
+   ! tmatrix/driver/run_q_jori.f90 in its `euv` mode from the same DH21
+   ! dielectric function and the same b/a = 1.4 spheroid, so it is the same
+   ! material and shape as the table above, only at shorter wavelengths. It
+   ! shares the DH21_aeff size axis (QPOL_A_DEF).
+   character(len=*), parameter :: QPOL_EUV_Q_DEF = &
+        '../tmatrix/output/q_astrodust_jori_euv_P0.20_Fe0.00_1.400.dat.gz'
+   character(len=*), parameter :: QPOL_EUV_W_DEF = '../data/dielectric/DH21_wave_euv'
 
 contains
 
    ! =====================================================================
    subroutine sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status, &
                        qpol_path, qpol_wave_path, qpol_aeff_path, scatmat_path, &
-                       load_polarized_optics)
+                       load_polarized_optics, lam_min, astrodust_index_path, &
+                       qpol_euv_path, qpol_euv_wave_path)
       character(len=*), intent(in) :: qtable_path, sizedist_path
       integer,          intent(in) :: NT_in
       real(wp),         intent(in) :: T_lo, T_hi
@@ -270,6 +316,13 @@ contains
       !   status = 5  load_polarized_optics = .false. was combined with an
       !               explicit polarized-optics path (qpol_path / qpol_wave_path
       !               / qpol_aeff_path / scatmat_path) -- a contradictory request
+      !   status = 6  astrodust dielectric function load failed (EUV band only)
+      !   status = 7  lam_min below the astrodust dielectric function's own
+      !               shortest wavelength (EUV band only)
+      !   status = 8  the polarized table's wavelength grid does not match the
+      !               model's grid (a missing EUV companion table is NOT an
+      !               error -- that band degrades to a reported zero)
+      !   status = 9  lam_min runs outside the EUV companion table's coverage
       integer, optional, intent(out) :: status
       ! Orientation-resolved DH21 table and its grid axes, supplying the
       ! polarized optics. Default to QPOL_*_DEF. An implicit-default table that
@@ -291,12 +344,37 @@ contains
       ! alignment. Combining .false. with an explicit qpol_*/scatmat path is a
       ! caller contradiction (status 5).
       logical, optional, intent(in) :: load_polarized_optics
-      integer  :: i, ja, jw, jt, is, scstat
+      ! Optional shortest wavelength [um] the model must cover. When it is
+      ! shorter than the Q table's 0.0912 um the grid is carried down to it and
+      ! the astrodust optics there come from the DH21 dielectric function
+      ! (q_astrodust_mod) instead of the table. Absent = the table grid alone.
+      ! The polarized optics of that EUV block come from the EUV companion
+      ! table (QPOL_EUV_*_DEF); see build_Cpol.
+      real(wp), optional, intent(in) :: lam_min
+      ! Optional dielectric function for that EUV band. It must be the file the
+      ! Q table was computed from -- same porosity, iron fraction and axial
+      ! ratio -- or the model changes material at the seam. Omitted = the
+      ! q_astrodust_mod default, which pairs with
+      ! q_astrodust_P0.20_Fe0.00_1.400.dat.
+      character(len=*), optional, intent(in) :: astrodust_index_path
+      ! Optional EUV companion polarized table and its wavelength axis, used
+      ! only when lam_min carries the grid below the main table. Omitted = the
+      ! QPOL_EUV_*_DEF defaults, which pair with the same material. Unlike the
+      ! main polarized table, a failure here is ALWAYS an error (status 8/9):
+      ! the whole point of the companion table is that this band no longer
+      ! returns an unannounced zero.
+      character(len=*), optional, intent(in) :: qpol_euv_path, qpol_euv_wave_path
+      integer  :: i, ja, jw, jt, is, scstat, euv_stat
       real(wp) :: a_um, x, t, Q_neu, Q_ion
+      real(wp) :: qext1, qsca1, qabs1, gsca1
+      real(wp) :: ad_lam_lo, ad_lam_hi
+      real(wp), allocatable :: lam_grid(:)
       logical  :: rok, want_pol, pol_explicit, pol_loaded
-      character(len=512) :: pol_q, pol_w, pol_a
+      character(len=512) :: pol_q, pol_w, pol_a, pol_eq, pol_ew
 
       if (present(status)) status = 0
+      if (present(astrodust_index_path)) &
+         call set_astrodust_index_path(astrodust_index_path)
 
       ! Scalar-only vs polarized: load the polarized optics unless told not to.
       want_pol = .true.
@@ -304,7 +382,8 @@ contains
       ! A scalar-only build must not also be handed polarized inputs: which does
       ! the caller mean? Report the contradiction rather than silently guessing.
       pol_explicit = present(qpol_path) .or. present(qpol_wave_path) .or. &
-                     present(qpol_aeff_path) .or. present(scatmat_path)
+                     present(qpol_aeff_path) .or. present(scatmat_path) .or. &
+                     present(qpol_euv_path) .or. present(qpol_euv_wave_path)
       if (.not. want_pol .and. pol_explicit) then
          if (present(status)) then
             status = 5;  return
@@ -326,9 +405,43 @@ contains
          call load_size_dist(sizedist_path)
       end if
 
-      NLAM = qt_n_lam
-      NA   = sd_n
-      NT   = NT_in
+      call euv_extended_lambda_grid(lam_grid, lam_min, n_extra=n_lam_euv)
+
+      ! ---- EUV band below the Q table -----------------------------------
+      ! Its optics are Mie on the DH21 dielectric function, so load that file
+      ! HERE, before anything is built, rather than letting the first optics
+      ! call load it lazily inside the size loop: a missing file or a lam_min
+      ! the file cannot cover has to reach the caller through `status`, which
+      ! is what sed_init promises, and not stop the process out of an RT host.
+      ! Also name the file, so its pairing with the Q table is visible.
+      if (n_lam_euv > 0) then
+         if (present(status)) then
+            call load_astrodust_index(ok=rok)
+            if (.not. rok) then;  status = 6;  return;  end if
+         else
+            call load_astrodust_index()
+         end if
+         call astrodust_index_lambda_range(ad_lam_lo, ad_lam_hi)
+         if (lam_grid(1) < ad_lam_lo) then
+            write(*,'(a,es10.3,a)') ' sed_init: lam_min =', lam_grid(1), &
+               ' um is shorter than the astrodust dielectric function,'
+            write(*,'(a,es10.3,a)') '           which stops at', ad_lam_lo, &
+               ' um; (n, k) below it would be frozen at the boundary value.'
+            if (present(status)) then
+               status = 7;  return
+            else
+               stop 1
+            end if
+         end if
+         write(*,'(a,i0,a)') ' sed_init: EUV extension active, ', n_lam_euv, &
+            ' wavelengths below the Q table.'
+         write(*,'(a,a)')    '           astrodust dielectric function: ', &
+            trim(get_astrodust_index_path())
+      end if
+
+      NLAM      = size(lam_grid)
+      NA        = sd_n
+      NT        = NT_in
 
       if (allocated(lam))      deallocate(lam, aeff, T_first, dn_ad, &
                                           Cabs, Csca, kappB_first, H_first, kappCMB, &
@@ -357,10 +470,11 @@ contains
                log_kappB_cneu(NT, NA), log_kappB_cion(NT, NA), &
                kappCMB_cneu(NA), kappCMB_cion(NA))
 
-      lam    = qt_lam
+      lam    = lam_grid
       aeff   = sd_aeff
       dn_ad  = sd_dn
       dn_pah = sd_dn_pah
+      deallocate(lam_grid)
 
       ! ---- Build wide T grid (log-spaced) used for the smallest grain
       ! and as the source for narrowed T windows for subsequent grains ----
@@ -379,11 +493,22 @@ contains
       do ja = 1, NA
          a_um = aeff(ja)
          x = log(a_um)
-         call interp_q_grid(x, qt_aeff, qt_qabs, Cabs(:, ja))
-         call interp_q_grid(x, qt_aeff, qt_qsca, Csca(:, ja))
+         call interp_q_grid(x, qt_aeff, qt_qabs, Cabs(n_lam_euv+1:, ja))
+         call interp_q_grid(x, qt_aeff, qt_qsca, Csca(n_lam_euv+1:, ja))
          ! Asymmetry <cos> comes from the same table on the same grid, but it
          ! is already dimensionless -- no pi a^2 conversion.
-         call interp_q_grid(x, qt_aeff, qt_gpar, gsca_ad(:, ja))
+         call interp_q_grid(x, qt_aeff, qt_gpar, gsca_ad(n_lam_euv+1:, ja))
+         ! EUV band below the Q table (n_lam_euv = 0 unless lam_min asked for
+         ! it): Mie on the DH21 astrodust dielectric function, i.e. the same
+         ! material as the table, for the volume-equivalent sphere rather than
+         ! the b/a = 1.4 spheroid. q_astrodust_mod carries the domain of
+         ! validity of that shape approximation.
+         do jw = 1, n_lam_euv
+            call q_astrodust_full(a_um, lam(jw), qext1, qsca1, qabs1, gsca1)
+            Cabs(jw, ja)    = qabs1
+            Csca(jw, ja)    = qsca1
+            gsca_ad(jw, ja) = gsca1
+         end do
          ! Convert Q -> C: C = pi * (a_cm)^2 * Q
          Cabs(:, ja) = Cabs(:, ja) * PI * (a_um * UM2CM)**2
          Csca(:, ja) = Csca(:, ja) * PI * (a_um * UM2CM)**2
@@ -398,8 +523,25 @@ contains
          pol_q = QPOL_Q_DEF;  if (present(qpol_path))      pol_q = qpol_path
          pol_w = QPOL_W_DEF;  if (present(qpol_wave_path)) pol_w = qpol_wave_path
          pol_a = QPOL_A_DEF;  if (present(qpol_aeff_path)) pol_a = qpol_aeff_path
-         call build_Cpol(trim(pol_q), trim(pol_w), trim(pol_a), pol_loaded)
+         pol_eq = QPOL_EUV_Q_DEF
+         if (present(qpol_euv_path))      pol_eq = qpol_euv_path
+         pol_ew = QPOL_EUV_W_DEF
+         if (present(qpol_euv_wave_path)) pol_ew = qpol_euv_wave_path
+         call build_Cpol(trim(pol_q), trim(pol_w), trim(pol_a), &
+                         trim(pol_eq), trim(pol_ew), pol_loaded, euv_stat)
          polarized_optics_loaded = pol_loaded
+         ! The EUV band never degrades silently: whichever way the table was
+         ! named, a host that asked for those wavelengths gets physics or an
+         ! error, so this is checked before the explicit/implicit rule below.
+         if (euv_stat /= 0) then
+            if (present(status)) then
+               status = euv_stat;  return
+            else
+               write(error_unit,'(a,i0,a)') ' sed_init: EUV polarized optics '// &
+                  'unavailable (code ', euv_stat, '); see the message above.'
+               stop 1
+            end if
+         end if
          if (.not. pol_loaded .and. present(qpol_path)) then
             ! An explicitly requested table that cannot be read is an error: the
             ! capability the caller asked for must not disappear silently. (An
@@ -621,7 +763,7 @@ contains
    ! grain-charging model (pah_ionfrac) at intensity u_isrf.
    ! =====================================================================
    subroutine sed_init_dl07(qtable_path, sizedist_path, sd_index, u_isrf, &
-                            NT_in, T_lo, T_hi, status)
+                            NT_in, T_lo, T_hi, status, lam_min)
       character(len=*), intent(in) :: qtable_path, sizedist_path
       integer,          intent(in) :: sd_index, NT_in
       real(wp),         intent(in) :: u_isrf, T_lo, T_hi
@@ -630,11 +772,21 @@ contains
       ! readers keep their message + stop behavior (as the CLI drivers expect).
       !   status = 1  Q-table load failed
       !   status = 2  size-distribution load failed
+      !   status = 7  lam_min below the D03 dielectric functions' own shortest
+      !               wavelength (EUV band only)
       integer, optional, intent(out) :: status
+      ! Optional shortest wavelength [um] the model must cover; see sed_init.
+      ! The Q table supplies this model's wavelength grid only -- its silicate
+      ! and carbonaceous optics are already Mie on the D03 dielectric
+      ! functions, which run to 6.2e-5 um, so extending the grid is all the EUV
+      ! needs here.
+      real(wp), optional, intent(in) :: lam_min
 
       integer  :: i, ja, jw, jt
       real(wp) :: a_um, t, da, qabs1, Q_neu, Q_ion
-      real(wp), allocatable :: fion(:), lna(:)
+      real(wp) :: geo, qext1, qsca1, gsca1
+      real(wp) :: sil_lam_lo, sil_lam_hi, gra_lam_lo, gra_lam_hi, d03_lam_lo
+      real(wp), allocatable :: fion(:), lna(:), lam_grid(:)
       logical  :: rok
       ! Draine's size grid: A(KA) = 1e-8*10^(0.55+(KA-1)*0.05) cm,
       ! NSIZE=84 (3.548 A .. 5.012 um, 0.05-dex log spacing). A(30)=100 A lands
@@ -657,7 +809,31 @@ contains
          call load_size_dist(sizedist_path)
       end if
 
-      NLAM = qt_n_lam
+      call euv_extended_lambda_grid(lam_grid, lam_min, n_extra=n_lam_euv)
+
+      ! This model's optics are Mie on the D03 dielectric functions throughout,
+      ! so an EUV extension is a grid extension only -- as long as the grid
+      ! stays inside those functions' own coverage. Past it `interp` freezes
+      ! (n, k) at the boundary value, which would pass a constant index off as
+      ! physics, so refuse instead. Silicate and graphite are both required.
+      if (n_lam_euv > 0) then
+         call silicate_index_lambda_range(sil_lam_lo, sil_lam_hi)
+         call graphite_index_lambda_range(gra_lam_lo, gra_lam_hi)
+         d03_lam_lo = max(sil_lam_lo, gra_lam_lo)
+         if (lam_grid(1) < d03_lam_lo) then
+            write(*,'(a,es10.3,a)') ' sed_init_dl07: lam_min =', lam_grid(1), &
+               ' um is shorter than the D03 dielectric functions,'
+            write(*,'(a,es10.3,a)') '                which stop at', d03_lam_lo, &
+               ' um; (n, k) below it would be frozen at the boundary value.'
+            if (present(status)) then
+               status = 7;  deallocate(lam_grid);  return
+            else
+               stop 1
+            end if
+         end if
+      end if
+
+      NLAM = size(lam_grid)
       NA   = NSIZE_BD
       NT   = NT_in
 
@@ -670,11 +846,14 @@ contains
       ! init left behind rather than leave stale arrays on the wrong grid.
       polarized_optics_loaded = .false.
       if (allocated(Cpol)) deallocate(Cpol, Cpol_ext, Cbir_ext, falign_ad)
-      ! Likewise the astrodust asymmetry table: DL07 optics carry no <cos> here.
-      if (allocated(gsca_ad)) deallocate(gsca_ad)
+      ! Drop a stale astrodust asymmetry table; the DL07 scattering optics
+      ! below are computed on this model's own size/wavelength grids.
+      if (allocated(gsca_ad))  deallocate(gsca_ad)
+      if (allocated(Csca_car)) deallocate(Csca_car, gsca_car)
       allocate(lam(NLAM), aeff(NA), T_first(NT), dn_ad(NA))
       allocate(Cabs(NLAM, NA), Csca(NLAM, NA), kappB_first(NT, NA), &
                H_first(NT, NA, NSTAGE), kappCMB(NA))
+      allocate(gsca_ad(NLAM, NA), Csca_car(NLAM, NA), gsca_car(NLAM, NA))
       allocate(log_T_first(NT), log_H_first(NT, NA, NSTAGE), &
                log_kappB_first(NT, NA))
       allocate(dn_pah(NA), Cabs_pah(NLAM, NA), kappB_pah_first(NT, NA), &
@@ -684,7 +863,8 @@ contains
       allocate(Cabs_cneu(NLAM, NA), Cabs_cion(NLAM, NA), dn_cneu(NA), dn_cion(NA))
       allocate(fion(NA), lna(NA))
 
-      lam  = qt_lam
+      lam  = lam_grid
+      deallocate(lam_grid)
       ! Draine's 84-pt log grid in microns (1e-8 cm = 1e-4 um).
       do ja = 1, NA
          aeff(ja) = 1.0e-4_wp * 10.0_wp**(A0_BD + real(ja-1,wp)*DLGA_BD)
@@ -702,12 +882,17 @@ contains
       end do
 
       ! ---- Silicate population (dust slot) ----
+      ! Mie on the D03 astrosilicate dielectric function keeps every return,
+      ! so the scattering cross section and its asymmetry come from the same
+      ! calculation as the absorption rather than from a tabulated albedo.
       do ja = 1, NA
          a_um = aeff(ja)
+         geo  = PI * (a_um * UM2CM)**2
          do jw = 1, NLAM
-            call q_silicate_abs(a_um, lam(jw), qabs1)
-            Cabs(jw, ja) = qabs1 * PI * (a_um * UM2CM)**2
-            Csca(jw, ja) = 0.0_wp
+            call q_silicate_full(a_um, lam(jw), qext1, qsca1, qabs1, gsca1)
+            Cabs(jw, ja)    = qabs1 * geo
+            Csca(jw, ja)    = qsca1 * geo
+            gsca_ad(jw, ja) = gsca1
          end do
          dn_ad(ja) = grain_dist_dl07(sd_index, 'sil', a_um) * bin_da(ja, lna)
       end do
@@ -734,11 +919,20 @@ contains
       end do
       do ja = 1, NA
          a_um = aeff(ja)
+         geo  = PI * (a_um * UM2CM)**2
          do jw = 1, NLAM
             call qpah_dl07(0, a_um, lam(jw), Q_neu)
             call qpah_dl07(1, a_um, lam(jw), Q_ion)
-            Cabs_cneu(jw, ja) = Q_neu * PI * (a_um * UM2CM)**2
-            Cabs_cion(jw, ja) = Q_ion * PI * (a_um * UM2CM)**2
+            Cabs_cneu(jw, ja) = Q_neu * geo
+            Cabs_cion(jw, ja) = Q_ion * geo
+            ! Scattering of the carbonaceous grain.  Charge shifts the PAH
+            ! absorption features only, and a PAH is a molecule whose
+            ! Rayleigh scattering is negligible, so both charge states
+            ! scatter as the graphite sphere does -- random-orientation Mie
+            ! (1/3 || + 2/3 perp) on the graphite dielectric function.
+            call q_graphite_full(a_um, lam(jw), qext1, qsca1, qabs1, gsca1)
+            Csca_car(jw, ja) = qsca1 * geo
+            gsca_car(jw, ja) = gsca1
          end do
          ! full carbonaceous number per bin (graphite-split + PAH-split),
          ! partitioned into neutral / cation by the ionization fraction.
@@ -988,8 +1182,24 @@ contains
             if (.not. Equil) then
                ! --- window for THIS grain ---
                call interp(T_first, H_pop(:, ir), Teq, EEQ)
-               call U_to_T(U_UV1_ERG + 2.0_wp*EEQ, H_pop(:, ir), &
-                           log_H_pop(:, ir), Tmax_n)
+               ! The bound needs the hardest single photon the FIELD can
+                ! The bound needs the hardest single photon the FIELD can
+               ! deliver, hardest_photon_energy(lam, J_lam) -- NOT hc/lam(1),
+               ! which is only the short end of the model's optics grid.  The
+               ! two coincide for astrodust and DL07, whose Q tables stop at
+               ! the Lyman limit, and there hc/0.0912 um = 13.595 eV < 13.6 eV
+               ! so the max() returns U_UV1_ERG unchanged.  They diverge for
+               ! Zubko/ZDA, whose DustEM tables start at 1.0e-3 um (1.24 keV)
+               ! while the illuminating field still stops at the Lyman limit:
+               ! reading the grid there would raise the top of the enthalpy bin
+               ! set by a factor 91 with no photon behind it.  U_UV1_ERG
+               ! (13.6 eV) is the correct bound only when the field itself
+               ! stops at the Lyman limit; a field carried into the EUV raises
+               ! it, and a top set from 13.6 eV would clip the excursions its
+               ! hardest photons drive.
+               call U_to_T(max(U_UV1_ERG, hardest_photon_energy(lam, J_lam)) &
+                           + 2.0_wp*EEQ, &
+                           H_pop(:, ir), log_H_pop(:, ir), Tmax_n)
                ! Pad the analytic top by one guard step (e^0.5 in T): the
                ! multi-photon tail at U ~ a few extends slightly past the
                ! single-photon bound at the 1e-12 level, which otherwise
@@ -1438,8 +1648,21 @@ contains
 
       allocate(H(NT), kappB(NT), lnP(NT), U(NT))
 
-      ! Initial guesses (Draine v7 lines 637-651)
-      UMAX = max(U_UV1_ERG + 2.0_wp*EEQ, UMAXMIN_ERG)
+      ! Initial guesses (Draine v7 lines 637-651).  The single-photon term is
+      ! the hardest photon the FIELD carries, hardest_photon_energy(lam,J_lam),
+      ! not hc/lam(1): the latter is the short end of the model's optics grid,
+      ! which coincides with the field only when the grid stops where the
+      ! illumination does.  It does for astrodust and DL07 (Lyman limit,
+      ! 13.595 eV, so U_UV1_ERG stays selected); it does not for Zubko/ZDA,
+      ! whose DustEM tables reach 1.0e-3 um and would hand back 1.24 keV for a
+      ! field that carries nothing below 0.0912 um.  A field genuinely carried
+      ! into the EUV does raise the bound, which is the point.  This is only
+      ! the starting window -- the loop below expands UMAX until the tail is
+      ! resolved -- but starting it away from the true single-photon bound
+      ! wastes iterations, and starting it too high leaves the bins coarse
+      ! because the contraction is guarded and iteration-capped.
+      UMAX = max(max(U_UV1_ERG, hardest_photon_energy(lam, J_lam)) &
+                 + 2.0_wp*EEQ, UMAXMIN_ERG)
       if (EEQ < 0.1_wp * EEQSS_ERG) then
          UMIN = 0.0_wp
       else
@@ -1558,20 +1781,20 @@ contains
 
    subroutine build_kappB_pah()
       ! Same algorithm as build_kappB() but using Cabs_pah → kappB_pah_first.
-      integer,  parameter :: NW_INT = 1001
-      real(wp) :: w(NW_INT), lnw(NW_INT)
-      real(wp) :: Cross(NW_INT)
+      integer  :: NW_INT, n_below
+      real(wp), allocatable :: w(:), lnw(:), Cross(:)
       real(wp), allocatable :: Bt(:,:)
-      real(wp) :: lnlam(NLAM), w1, w2, dlnw
+      real(wp) :: lnlam(NLAM), w1, dlnw
       integer  :: jt, ja, iw
+
+      call planck_integration_grid(lam, NW_INT, n_below, w1, dlnw)
+      allocate(w(NW_INT), lnw(NW_INT), Cross(NW_INT))
 
       do iw = 1, NLAM
          lnlam(iw) = log(lam(iw))
       end do
-      w1   = lam(1);  w2 = lam(NLAM)
-      dlnw = log(w2/w1) / real(NW_INT-1, wp)
       do iw = 1, NW_INT
-         w(iw)   = w1 * exp(real(iw-1, wp) * dlnw)
+         w(iw)   = w1 * exp(real(iw-1-n_below, wp) * dlnw)
          lnw(iw) = log(w(iw))
       end do
 
@@ -1593,7 +1816,7 @@ contains
             kappB_pah_first(jt, ja) = sum(Cross * Bt(:, jt) * w) * dlnw
          end do
       end do
-      deallocate(Bt)
+      deallocate(Bt, w, lnw, Cross)
    end subroutine build_kappB_pah
 
 
@@ -1626,6 +1849,50 @@ contains
    ! =====================================================================
    ! Internal helpers
    ! =====================================================================
+
+   subroutine euv_extended_lambda_grid(lam_out, lam_min, n_extra)
+      ! Model wavelength grid = the T-matrix Q table's grid, optionally carried
+      ! into the extreme ultraviolet below its short-wavelength end (0.0912 um
+      ! = 13.6 eV, the Lyman limit).  A photoionization RT host transports
+      ! 6-100 eV, so half of that band lies off the table.
+      !
+      ! When lam_min is shorter than the table's first wavelength, log-spaced
+      ! points are prepended from lam_min up to just below it.  Their spacing
+      ! is at most the table's own spacing at its short-wavelength end
+      ! (dln lam = 0.01156), so the extension is never coarser than the grid it
+      ! joins.  lam_out(1) is set to lam_min exactly, so the caller's requested
+      ! floor is covered rather than approached.  n_extra = 0 (and the plain
+      ! table grid) when lam_min is absent, non-positive, or not shorter than
+      ! the table -- which is what keeps the unextended model bit-identical.
+      real(wp), allocatable, intent(out) :: lam_out(:)
+      real(wp), optional,    intent(in)  :: lam_min
+      ! Number of points prepended; 0 when the grid is the plain table grid.
+      integer,  optional,    intent(out) :: n_extra
+      real(wp) :: dln_qt, dln_ext, span
+      integer  :: j, nx
+
+      nx = 0
+      if (present(lam_min)) then
+         if (lam_min > 0.0_wp .and. lam_min < qt_lam(1)) then
+            span   = log(qt_lam(1) / lam_min)
+            dln_qt = log(qt_lam(2) / qt_lam(1))
+            ! span > 0 inside this branch, so the ceiling is already >= 1.
+            nx     = ceiling(span / dln_qt)
+         end if
+      end if
+      if (present(n_extra)) n_extra = nx
+
+      allocate(lam_out(nx + qt_n_lam))
+      if (nx > 0) then
+         dln_ext = log(qt_lam(1) / lam_min) / real(nx, wp)
+         do j = 1, nx
+            lam_out(j) = qt_lam(1) * exp(-real(nx - j + 1, wp) * dln_ext)
+         end do
+         lam_out(1) = lam_min
+      end if
+      lam_out(nx+1:) = qt_lam
+   end subroutine euv_extended_lambda_grid
+
 
    subroutine interp_q_grid(loga_target, aeff_in, q_in, q_out)
       ! Interpolate q_in(NLAM, NA_in) at log(a_target) -> q_out(NLAM)
@@ -1660,7 +1927,8 @@ contains
    end subroutine interp_q_grid
 
 
-   subroutine build_Cpol(q_file, wave_file, aeff_file, loaded)
+   subroutine build_Cpol(q_file, wave_file, aeff_file, euv_q_file, euv_wave_file, &
+                         loaded, euv_status)
       ! Fill Cpol(NLAM, NA), Cpol_ext(NLAM, NA), Cbir_ext(NLAM, NA) and
       ! falign_ad(NA) from the orientation-resolved DH21 spheroid table:
       !
@@ -1696,18 +1964,36 @@ contains
       ! harmless here. It would NOT be in the ultraviolet, where the median
       ! rises to 0.21% and the worst case to 9.5%.
       character(len=*), intent(in)  :: q_file, wave_file, aeff_file
+      ! The extreme-ultraviolet companion table and its wavelength axis, read
+      ! only when the model grid actually reaches below the main table
+      ! (n_lam_euv > 0). It shares aeff_file as its size axis.
+      character(len=*), intent(in)  :: euv_q_file, euv_wave_file
       ! .true. iff the orientation-resolved table was read successfully. .false.
       ! leaves the polarized arrays allocated and zero (graceful degradation);
       ! the caller decides whether that is an error (see sed_init status 4).
       logical,          intent(out) :: loaded
+      ! Extreme-ultraviolet report, 0 when the band was covered (or not asked
+      ! for). Unlike the main table, this one never degrades silently: a host
+      ! that asked for EUV wavelengths AND polarized optics is never left with
+      ! an unannounced zero: a missing companion table is reported on stderr and
+      ! the band stays zero (a documented deficit), while a table that does not
+      ! reach the requested wavelengths is an error.
+      !   euv_status = 8  the polarized table's wavelength grid does not match
+      !                   the model's table block (count or node positions)
+      !   euv_status = 9  the requested grid runs outside the wavelengths the
+      !                   EUV companion table covers
+      integer,          intent(out) :: euv_status
       integer  :: ja, jw
       logical  :: rok
+      logical  :: euv_pol      ! an EUV companion table was read for this grid
+      real(wp), allocatable :: qeuv_a(:)      ! one size, all EUV table lambdas
 
-      Cpol      = 0.0_wp
-      Cpol_ext  = 0.0_wp
-      Cbir_ext  = 0.0_wp
-      falign_ad = 0.0_wp
-      loaded    = .false.
+      Cpol       = 0.0_wp
+      Cpol_ext   = 0.0_wp
+      Cbir_ext   = 0.0_wp
+      falign_ad  = 0.0_wp
+      loaded     = .false.
+      euv_status = 0
 
       call load_q_table_jori(q_file, wave_file, aeff_file, ok=rok)
       if (.not. rok) then
@@ -1719,64 +2005,227 @@ contains
       end if
 
       ! The polarized table and the Cabs table are both computed on the DH21
-      ! wavelength grid, so they must agree node for node. A mismatch means
-      ! inconsistent input, not a recoverable condition.
-      if (qj_n_lam /= NLAM) then
-         write(*,'(a,i0,a,i0)') ' sed_init: polarized table has ', qj_n_lam, &
-            ' wavelengths but the Q table has ', NLAM
-         stop 1
+      ! wavelength grid, so they must agree node for node over the block the
+      ! tables cover, lam(n_lam_euv+1:). A mismatch there means inconsistent
+      ! input, not a recoverable condition. The n_lam_euv points below it are
+      ! the EUV extension, which no table reaches; they are treated separately.
+      if (qj_n_lam /= NLAM - n_lam_euv) then
+         write(error_unit,'(a,i0,a,i0)') ' build_Cpol: polarized table has ', &
+            qj_n_lam, ' wavelengths but the Q table block has ', NLAM - n_lam_euv
+         euv_status = 8;  return
       end if
-      do jw = 1, NLAM
-         if (abs(qj_lam(jw) - lam(jw)) > 1.0e-10_wp * abs(lam(jw))) then
-            write(*,'(a,i0)') &
-               ' sed_init: polarized and Q wavelength grids differ at jw=', jw
-            stop 1
+      do jw = 1, qj_n_lam
+         if (abs(qj_lam(jw) - lam(n_lam_euv+jw)) > 1.0e-10_wp * abs(lam(n_lam_euv+jw))) then
+            write(error_unit,'(a,i0)') &
+               ' build_Cpol: polarized and Q wavelength grids differ at jw=', jw
+            euv_status = 8;  return
          end if
       end do
 
-      ! The size axes DO differ (169 table nodes vs the size-distribution
-      ! grid), so interpolate in log(a) exactly as Cabs/Csca are.
+      ! EUV EXTENSION (n_lam_euv > 0). The prepended points lie shortward of
+      ! the main table, and their polarized optics come from the companion
+      ! table computed on the DH21_wave_euv axis by run_q_jori.f90's `euv`
+      ! mode: the SAME first-principles core (Rayleigh dipole / Mishchenko
+      ! T-matrix / geometric optics), the same DH21 dielectric function and the
+      ! same b/a = 1.4 spheroid, only at shorter wavelengths.
+      !
+      ! This band is NOT a neighborhood of small error, which is why it is
+      ! computed rather than set to zero: the alignment-weighted,
+      ! size-integrated |C_pol,ext| / C_ext RISES from 1.3e-3 at the join to
+      ! 3.6e-3 near 20.6 eV -- a factor 2.9 -- before decaying to 1.6e-4 at
+      ! 100 eV, and it changes sign relative to the optical band between 0.1072
+      ! and 0.1059 um. |C_bir,ext| / C_ext falls monotonically from 7.2e-3 at
+      ! the join and changes sign near 51 eV. Zero would be the right asymptote
+      ! only for x >> 1 AND |m - 1| << 1, and |m - 1| is 0.765 at the join,
+      ! 0.564 at 20 eV, and below 0.1 only above ~50 eV, while the grains that
+      ! carry the signal sit at x = 5-50. A sphere has exactly zero dichroic
+      ! extinction and exactly zero birefringence, so the scalar EUV optics
+      ! (q_astrodust_mod, Mie on the volume-equivalent sphere) could not have
+      ! supplied these entries either.
+      !
+      ! WHAT REMAINS UNRESOLVED. The companion table keeps the T-matrix only
+      ! where two independent convergence settings agree (run_q_jori.f90,
+      ! cross_sections_large_x), which in practice certifies it to x ~ 56;
+      ! above that the geometric-optics limit is used, and it carries
+      ! Q_pol,ext = Q_bir,ext = 0 exactly. No extrapolation is put in their
+      ! place. The dichroic extinction lost that way is nothing at the join,
+      ! ~8% of the band total at 0.031 um, ~20% at 0.022 um and ~46% at
+      ! 0.0124 um -- but by then |C_pol,ext| / C_ext is itself below 6e-4,
+      ! about 1% of the 5.5e-2 the V band reaches, so the residual is a small
+      ! fraction of an already small number. C_pol (the ABSORPTION dichroism,
+      ! which drives polarized emission) has no such gap: the geometric-optics
+      ! limit gets it from the opaque-grain Fresnel surface integral.
+      !
+      ! The table stops at 0.0124 um (100 eV) because that opaque limit needs
+      ! the chord optical depth 4 Im(m) x to be large, and for astrodust it is
+      ! 3.7 at x = 50 there and falls below 1 by 200 eV. A grid reaching
+      ! shortward of the table is rejected (euv_status = 9) rather than filled
+      ! with a limit known to be invalid.
+      !
+      ! GRIDS. The size axes DO differ (169 table nodes vs the
+      ! size-distribution grid), so both blocks interpolate in log(a) exactly
+      ! as Cabs/Csca do. The EUV wavelengths differ too -- the model's EUV
+      ! spacing is set at run time by lam_min (euv_extended_lambda_grid), so it
+      ! cannot coincide with the precomputed axis -- and are therefore
+      ! interpolated in log(lambda) as well.
+      euv_pol = .false.
+      if (n_lam_euv > 0) then
+         call load_q_table_jori_euv(euv_q_file, euv_wave_file, aeff_file, ok=euv_pol)
+         if (.not. euv_pol) then
+            ! No EUV companion table. This is the DEFAULT state: the polarized
+            ! optics are generated band by band, on demand, rather than swept
+            ! over a full EUV axis, so most models simply have none here. Say so
+            ! and leave the EUV block at the zero set on entry -- a KNOWN
+            ! DEFICIT, not the correct value. Measured first-principles size
+            ! integrals (tmatrix/driver/euv_polarized_optics.f90) put the true
+            ! |C_pol,ext| / C_ext at 1.26e-3 at the 0.0912 um join, rising to
+            ! 3.64e-3 near 20.6 eV before decaying to 1.56e-4 at 100 eV, with
+            ! the sign opposite to the optical band. Generate the band with
+            ! tmatrix/driver/run_q_jori.f90 (euv mode) if the host needs it.
+            write(error_unit,'(a,a)') &
+               ' build_Cpol: no EUV polarized table (', trim(euv_q_file)//')'
+            write(error_unit,'(a,es10.3,a)') &
+               '             dichroic extinction and birefringence are zero below', &
+               lam(n_lam_euv+1), ' um (zero by omission, not by physics).'
+         end if
+      end if
+      if (euv_pol) then
+         if (lam(1) < qj_lam_euv(1) * (1.0_wp - 1.0e-12_wp)) then
+            write(error_unit,'(a,es10.3,a,es10.3,a)') &
+               ' sed_init: lam_min =', lam(1), &
+               ' um is shorter than the EUV polarized table, which starts at', &
+               qj_lam_euv(1), ' um.'
+            write(error_unit,'(a)') &
+               '           Below it the opaque geometric-optics limit that '// &
+               'table relies on is invalid.'
+            euv_status = 9
+            return
+         end if
+         if (lam(n_lam_euv) > qj_lam_euv(qj_n_lam_euv) * (1.0_wp + 1.0e-12_wp)) then
+            write(error_unit,'(a,es10.3,a,es10.3,a)') &
+               ' sed_init: the EUV block reaches', lam(n_lam_euv), &
+               ' um but the EUV polarized table stops at', &
+               qj_lam_euv(qj_n_lam_euv), ' um.'
+            euv_status = 9
+            return
+         end if
+      else
+         ! No EUV block on this grid: drop any companion table a previous build
+         ! left loaded, so the module state always describes the current model.
+         call free_q_table_jori_euv()
+      end if
+
+      allocate(qeuv_a(max(qj_n_lam_euv, 1)))
       do ja = 1, NA
-         call interp_q_grid(log(aeff(ja)), qj_aeff, qj_qpol_abs, Cpol(:, ja))
-         call interp_q_grid(log(aeff(ja)), qj_aeff, qj_qpol_ext, Cpol_ext(:, ja))
+         call interp_q_grid(log(aeff(ja)), qj_aeff, qj_qpol_abs, Cpol(n_lam_euv+1:, ja))
+         call interp_q_grid(log(aeff(ja)), qj_aeff, qj_qpol_ext, Cpol_ext(n_lam_euv+1:, ja))
+         if (euv_pol) then
+            call interp_q_grid(log(aeff(ja)), qj_aeff_euv, qj_qpol_abs_euv, qeuv_a)
+            call interp_loglam_grid(qj_lam_euv, qeuv_a, lam(1:n_lam_euv), Cpol(1:n_lam_euv, ja))
+            call interp_q_grid(log(aeff(ja)), qj_aeff_euv, qj_qpol_ext_euv, qeuv_a)
+            call interp_loglam_grid(qj_lam_euv, qeuv_a, lam(1:n_lam_euv), Cpol_ext(1:n_lam_euv, ja))
+         end if
          Cpol(:, ja)     = Cpol(:, ja)     * PI * (aeff(ja) * UM2CM)**2
          Cpol_ext(:, ja) = Cpol_ext(:, ja) * PI * (aeff(ja) * UM2CM)**2
          falign_ad(ja)   = falign_hd23(aeff(ja))
       end do
 
-      ! Birefringent extinction, present only when the table carries the 4th
-      ! (forward-amplitude real-part) block.
-      if (qj_has_bir) then
+      ! Birefringent extinction. Each block is filled from whichever table
+      ! carries the 4th (forward-amplitude real-part) block; the block of a
+      ! 3-block table keeps the zero set at entry. The two are independent --
+      ! withholding a birefringence one table does carry, because the other
+      ! does not, would discard a measured optic.
+      if (qj_has_bir .or. (euv_pol .and. qj_has_bir_euv)) then
          do ja = 1, NA
-            call interp_q_grid(log(aeff(ja)), qj_aeff, qj_qbir_ext, Cbir_ext(:, ja))
+            if (qj_has_bir) &
+               call interp_q_grid(log(aeff(ja)), qj_aeff, qj_qbir_ext, &
+                                  Cbir_ext(n_lam_euv+1:, ja))
+            if (euv_pol .and. qj_has_bir_euv) then
+               call interp_q_grid(log(aeff(ja)), qj_aeff_euv, qj_qbir_ext_euv, qeuv_a)
+               call interp_loglam_grid(qj_lam_euv, qeuv_a, lam(1:n_lam_euv), &
+                                       Cbir_ext(1:n_lam_euv, ja))
+            end if
             Cbir_ext(:, ja) = Cbir_ext(:, ja) * PI * (aeff(ja) * UM2CM)**2
          end do
+      end if
+      deallocate(qeuv_a)
+
+      ! One table with a Q_re block and one without leaves the birefringence
+      ! zero on one side of the join and not the other -- a step the host
+      ! should know about, so say it rather than let it pass as physics.
+      if (euv_pol .and. (qj_has_bir .neqv. qj_has_bir_euv)) then
+         if (qj_has_bir) then
+            write(error_unit,'(a,es10.3,a)') &
+               ' build_Cpol: the EUV polarized table has no Q_re block, so the '// &
+               'birefringence is zero below', lam(n_lam_euv+1), ' um.'
+         else
+            write(error_unit,'(a,es10.3,a)') &
+               ' build_Cpol: the main polarized table has no Q_re block, so the '// &
+               'birefringence is zero above', lam(n_lam_euv+1), ' um.'
+         end if
       end if
 
       loaded = .true.
    end subroutine build_Cpol
 
 
+   subroutine interp_loglam_grid(lam_in, q_in, lam_out, q_out)
+      ! Linear interpolation of q_in(lam_in) onto lam_out, in log(lambda).
+      ! Both axes ascending; values outside lam_in are clamped to its ends,
+      ! which the caller has already excluded (build_Cpol rejects a grid that
+      ! runs outside the table). Used for the EUV block, whose model
+      ! wavelengths are set at run time by lam_min and so never coincide with
+      ! the precomputed axis.
+      real(wp), intent(in)  :: lam_in(:), q_in(:)     ! (N_in)
+      real(wp), intent(in)  :: lam_out(:)             ! (N_out)
+      real(wp), intent(out) :: q_out(:)               ! (N_out)
+      integer  :: n_in, k, lo, hi, mid
+      real(wp) :: x, t
+
+      n_in = size(lam_in)
+      do k = 1, size(lam_out)
+         x = log(lam_out(k))
+         if (x <= log(lam_in(1))) then
+            q_out(k) = q_in(1);  cycle
+         end if
+         if (x >= log(lam_in(n_in))) then
+            q_out(k) = q_in(n_in);  cycle
+         end if
+         lo = 1;  hi = n_in
+         do while (hi - lo > 1)
+            mid = (lo + hi) / 2
+            if (log(lam_in(mid)) <= x) then
+               lo = mid
+            else
+               hi = mid
+            end if
+         end do
+         t = (x - log(lam_in(lo))) / (log(lam_in(hi)) - log(lam_in(lo)))
+         q_out(k) = (1.0_wp - t) * q_in(lo) + t * q_in(hi)
+      end do
+   end subroutine interp_loglam_grid
+
+
    subroutine build_kappB()
       ! kappB_first(jt, ja) = integral_lam Cabs(lam, ja) * B_lam(T_first(jt), lam) dlam
-      ! Uses a denser internal log-lam grid (1001 pts) over [min(lam),
-      ! max(lam)] and trapezoidal log-integration, matching the
-      ! setup_kappB1's algorithm.
-      integer,  parameter :: NW_INT = 1001
-      real(wp) :: w(NW_INT), lnw(NW_INT)
-      real(wp) :: Cross(NW_INT)
+      ! Uses a denser internal log-lam grid over [min(lam), max(lam)] and
+      ! trapezoidal log-integration, matching setup_kappB1's algorithm. The
+      ! grid comes from planck_integration_grid, so neither the step nor the
+      ! sample points depend on how far the model grid reaches into the EUV.
+      integer  :: NW_INT, n_below
+      real(wp), allocatable :: w(:), lnw(:), Cross(:)
       real(wp), allocatable :: Bt(:,:)
-      real(wp) :: lnlam(NLAM), w1, w2, dlnw
+      real(wp) :: lnlam(NLAM), w1, dlnw
       integer  :: jt, ja, iw
+
+      call planck_integration_grid(lam, NW_INT, n_below, w1, dlnw)
+      allocate(w(NW_INT), lnw(NW_INT), Cross(NW_INT))
 
       do iw = 1, NLAM
          lnlam(iw) = log(lam(iw))
       end do
-      w1   = lam(1)
-      w2   = lam(NLAM)
-      dlnw = log(w2/w1) / real(NW_INT-1, wp)
       do iw = 1, NW_INT
-         w(iw)   = w1 * exp(real(iw-1, wp) * dlnw)
+         w(iw)   = w1 * exp(real(iw-1-n_below, wp) * dlnw)
          lnw(iw) = log(w(iw))
       end do
 
@@ -1798,8 +2247,49 @@ contains
             kappB_first(jt, ja) = sum(Cross * Bt(:, jt) * w) * dlnw
          end do
       end do
-      deallocate(Bt)
+      deallocate(Bt, w, lnw, Cross)
    end subroutine build_kappB
+
+
+   subroutine planck_integration_grid(lam_in, nw, n_below, w1, dlnw)
+      ! Internal log-lambda grid for the Planck integrals over lam_in.
+      !
+      ! NW_TABLE points span the model's own optics-table wavelength range,
+      ! [lam_in(n_below+1), lam_in(size(lam_in))], at the step that range
+      ! implies.  An EUV extension only widens the interval downward, and it
+      ! carries no Planck signal: below 0.0912 um B_lam is ~1e-231 of the peak
+      ! at 288 K and still only ~1e-10 at 5000 K.  Spending a fixed budget of
+      ! points on the widened interval would therefore coarsen the sampling of
+      ! the range that does carry the integrand, moving kappB by ~1e-4 relative
+      ! for a purely numerical reason.  Instead the extra points are PREPENDED
+      ! at the same step, so both the step and the sample points over the table
+      ! range are independent of how far the model reaches into the EUV -- which
+      ! is what makes kappB, an infrared quantity, invariant under the
+      ! extension.
+      !
+      ! With no extension n_below is 0 and w1 is lam_in(1), so the grid is
+      ! exactly the historical NW_TABLE points and an unextended model
+      ! integrates bit for bit as before.
+      real(wp), intent(in)  :: lam_in(:)
+      integer,  intent(out) :: nw        ! total number of points
+      integer,  intent(out) :: n_below   ! points prepended below the table range
+      real(wp), intent(out) :: w1        ! anchor: shortest table wavelength [um]
+      real(wp), intent(out) :: dlnw      ! step in ln(lambda)
+      integer, parameter :: NW_TABLE = 1001
+      integer :: nl, nx
+
+      nl = size(lam_in)
+      nx = 0
+      ! n_lam_euv counts the prepended points of the ACTIVE model's grid, so it
+      ! applies only to a grid of that model's length.
+      if (n_lam_euv > 0 .and. nl == NLAM) nx = n_lam_euv
+
+      w1      = lam_in(nx+1)
+      dlnw    = log(lam_in(nl) / w1) / real(NW_TABLE-1, wp)
+      n_below = 0
+      if (nx > 0) n_below = ceiling(log(w1 / lam_in(1)) / dlnw)
+      nw      = NW_TABLE + n_below
+   end subroutine planck_integration_grid
 
 
    subroutine build_kappCMB()
@@ -1910,7 +2400,8 @@ contains
    ! (PAH = neutral + cation populations summed into one channel).
    subroutine build_astrodust(m, qtable_path, sizedist_path, NT_in, T_lo, T_hi, status, &
                               qpol_path, qpol_wave_path, qpol_aeff_path, scatmat_path, &
-                              load_polarized_optics)
+                              load_polarized_optics, lam_min, astrodust_index_path, &
+                              qpol_euv_path, qpol_euv_wave_path)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: qtable_path, sizedist_path
       integer,            intent(in)  :: NT_in
@@ -1927,6 +2418,14 @@ contains
       !               gracefully instead)
       !   status = 5  load_polarized_optics = .false. combined with an explicit
       !               polarized-optics path (qpol_*/scatmat) -- a contradiction
+      !   status = 6  astrodust dielectric function load failed (EUV band only)
+      !   status = 7  lam_min below the astrodust dielectric function's own
+      !               shortest wavelength (EUV band only)
+      !   status = 8  the polarized table's wavelength grid does not match the
+      !               model's grid (a missing EUV companion table is NOT an
+      !               error -- that band degrades to a reported zero)
+      !   status = 9  the EUV band of the grid runs outside the wavelengths the
+      !               EUV companion table covers
       integer, optional,  intent(out) :: status
       ! Orientation-resolved DH21 table + grid axes for the polarized optics,
       ! forwarded to sed_init. Omit to use the defaults; an implicit-default
@@ -1943,6 +2442,22 @@ contains
       ! no polarized optics (the polarized Q table is never opened); combining
       ! it with an explicit qpol_*/scatmat path is a contradiction (status 5).
       logical, optional, intent(in) :: load_polarized_optics
+      ! Optional shortest wavelength [um] the model must cover, for a host that
+      ! transports shortward of the T-matrix Q table's 0.0912 um (13.6 eV) end
+      ! -- a photoionization RT spanning 6-100 eV, say. Omitting it gives the
+      ! table grid, unchanged. In the extended band Cpol_ext and Cbir_ext come
+      ! from the EUV companion table, computed from the same dielectric
+      ! function and the same spheroid; build_Cpol states what that table
+      ! resolves and what it leaves at the geometric-optics zero. lam_min below
+      ! 0.0124 um (100 eV) is refused (status 9) rather than answered with an
+      ! invalid limit.
+      real(wp), optional, intent(in)  :: lam_min
+      ! Optional dielectric function for that EUV band; must be the file
+      ! qtable_path was computed from. See sed_init.
+      character(len=*), optional, intent(in) :: astrodust_index_path
+      ! Optional EUV companion polarized table and its wavelength axis,
+      ! forwarded to sed_init. Omit for the shipped defaults.
+      character(len=*), optional, intent(in) :: qpol_euv_path, qpol_euv_wave_path
 
       if (present(status)) status = 0
 
@@ -1954,7 +2469,11 @@ contains
       call sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status=status, &
                     qpol_path=qpol_path, qpol_wave_path=qpol_wave_path, &
                     qpol_aeff_path=qpol_aeff_path, scatmat_path=scatmat_path, &
-                    load_polarized_optics=load_polarized_optics)  ! sets globals
+                    load_polarized_optics=load_polarized_optics, &
+                    lam_min=lam_min, &
+                    astrodust_index_path=astrodust_index_path, &
+                    qpol_euv_path=qpol_euv_path, &
+                    qpol_euv_wave_path=qpol_euv_wave_path)  ! sets globals
       if (present(status)) then
          if (status /= 0) return
       end if
@@ -2006,7 +2525,7 @@ contains
    ! Build the DL07 model into m. Channels: SIL, CARB (carbonaceous =
    ! neutral + cation summed). Reuses sed_init_dl07 to set the globals.
    subroutine build_dl07(m, qtable_path, sizedist_path, sd_index, u_isrf, &
-                         NT_in, T_lo, T_hi, status)
+                         NT_in, T_lo, T_hi, status, lam_min)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: qtable_path, sizedist_path
       integer,            intent(in)  :: sd_index, NT_in
@@ -2017,6 +2536,10 @@ contains
       !   status = 1  Q-table load failed
       !   status = 2  size-distribution load failed
       integer, optional,  intent(out) :: status
+      ! Optional shortest wavelength [um] the model must cover; see
+      ! build_astrodust. This model's optics are dielectric-function Mie
+      ! throughout, so the extension is a grid extension only.
+      real(wp), optional, intent(in)  :: lam_min
 
       if (present(status)) status = 0
 
@@ -2025,7 +2548,7 @@ contains
       nc_coeff = 470.0d0;  nc_integer = .true.;  qpah_use_d03_graphite = .true.
       gd_apply_d03_reduction = .true.
       call sed_init_dl07(qtable_path, sizedist_path, sd_index, u_isrf, NT_in, T_lo, T_hi, &
-                         status=status)
+                         status=status, lam_min=lam_min)
       if (present(status)) then
          if (status /= 0) return
       end if
@@ -2063,12 +2586,18 @@ contains
       log_kappB_cion = log(max(kappB_cion, tiny(0.0_wp)))
 
       allocate(m%pops(3))
+      ! All three populations scatter, so all three carry their scattering
+      ! optics into dust_extinction.  The two charge states share one
+      ! scattering description and differ in dn and absorption only.
       call set_pop(m%pops(1), 'sil', 1, dn_ad, Cabs, kappB_first, H_first(:,:,1), &
-                   log_H_first(:,:,1), log_kappB_first, kappCMB)
+                   log_H_first(:,:,1), log_kappB_first, kappCMB, &
+                   Csca_in=Csca, gsca_in=gsca_ad)
       call set_pop(m%pops(2), 'pah', 2, dn_cneu, Cabs_cneu, kappB_cneu, H_pah_first, &
-                   log_H_pah_first, log_kappB_cneu, kappCMB_cneu)
+                   log_H_pah_first, log_kappB_cneu, kappCMB_cneu, &
+                   Csca_in=Csca_car, gsca_in=gsca_car)
       call set_pop(m%pops(3), 'pah', 2, dn_cion, Cabs_cion, kappB_cion, H_pah_first, &
-                   log_H_pah_first, log_kappB_cion, kappCMB_cion)
+                   log_H_pah_first, log_kappB_cion, kappCMB_cion, &
+                   Csca_in=Csca_car, gsca_in=gsca_car)
    end subroutine build_dl07
 
 
@@ -2097,7 +2626,7 @@ contains
       type(zda_comp_t)      :: comps(ZDA_MAXCOMP)
       integer               :: ncomp, ic, jt, ja, jw, nsize, nwave, ntc
       real(wp)              :: rho, vol_fac, mass, dlna, uspec, t, wdev
-      real(wp), allocatable :: a_opt(:), lam_opt(:), qa(:,:), qs(:,:)
+      real(wp), allocatable :: a_opt(:), lam_opt(:), qa(:,:), qs(:,:), gg(:,:)
       real(wp), allocatable :: Tcal(:), Ucal(:), Ccal(:), Hcol(:)
       logical               :: rok
       character(len=16)     :: cn(3)
@@ -2135,11 +2664,14 @@ contains
          optf = trim(comps(ic)%xsec)//'.dat'
          if (present(status)) then
             call read_zubko_optics(trim(data_dir)//trim(optf), nsize, nwave, &
-                                   a_opt, lam_opt, qa, qs, rho, ok=rok)
+                                   a_opt, lam_opt, qa, qs, rho, ok=rok, gpar=gg)
             if (.not. rok) then;  status = 3;  return;  end if
          else
+            ! The ZDA model is defined by these tables -- Zubko's own
+            ! multilayer-sphere solution -- so the scattering side is read
+            ! from the same file as the absorption (Q_sca and <cos>).
             call read_zubko_optics(trim(data_dir)//trim(optf), nsize, nwave, &
-                                   a_opt, lam_opt, qa, qs, rho)
+                                   a_opt, lam_opt, qa, qs, rho, gpar=gg)
          end if
 
          ! The endpoint dln(a) below reads a_opt(2), so demand at least 2 radii.
@@ -2157,6 +2689,8 @@ contains
          ! and the calc_P setup. All three components share the lambda grid.
          if (ic == 1) then
             NLAM = nwave;  NT = NT_in
+            ! This model's grid is the optics file's own; nothing is prepended.
+            n_lam_euv = 0
             if (allocated(lam)) deallocate(lam, T_first, log_T_first)
             allocate(lam(NLAM), T_first(NT), log_T_first(NT))
             lam = lam_opt
@@ -2195,10 +2729,14 @@ contains
          ! --- component-by-component working set in the module globals (scratch) ---
          NA = nsize
          if (allocated(Cabs)) deallocate(Cabs, kappB_first, kappCMB)
+         if (allocated(Csca)) deallocate(Csca, gsca_ad)
          allocate(Cabs(NLAM, nsize), kappB_first(NT, nsize), kappCMB(nsize))
+         allocate(Csca(NLAM, nsize), gsca_ad(NLAM, nsize))
          do ja = 1, nsize
             do jw = 1, NLAM
-               Cabs(jw, ja) = qa(jw, ja) * PI * (a_opt(ja)*UM2CM)**2   ! cm^2
+               Cabs(jw, ja)    = qa(jw, ja) * PI * (a_opt(ja)*UM2CM)**2   ! cm^2
+               Csca(jw, ja)    = qs(jw, ja) * PI * (a_opt(ja)*UM2CM)**2   ! cm^2
+               gsca_ad(jw, ja) = gg(jw, ja)
             end do
          end do
          call build_kappB()         ! Cabs, lam, T_first, NA -> kappB_first
@@ -2227,6 +2765,8 @@ contains
             m%pops(ic)%grain_type = gt(ic)
             m%pops(ic)%out_channel = ic
             m%pops(ic)%Cabs    = Cabs
+            m%pops(ic)%Csca    = Csca
+            m%pops(ic)%gsca    = gsca_ad
             m%pops(ic)%kappB   = kappB_first
             m%pops(ic)%log_kappB = log(max(kappB_first, tiny(0.0_wp)))
             m%pops(ic)%H       = Hmat
@@ -2258,7 +2798,7 @@ contains
 
          m%pops(ic)%aeff = a_opt        ! [um] radii of this component (needed by 'qm')
 
-         deallocate(a_opt, lam_opt, qa, qs, Tcal, Ucal, Ccal)
+         deallocate(a_opt, lam_opt, qa, qs, gg, Tcal, Ucal, Ccal)
       end do
    end subroutine build_zubko
 
@@ -2327,7 +2867,7 @@ contains
       real(wp)           :: t, rho, mass, vf, dlna, uspec, fa, loga, wdev
       logical            :: rok
       character(len=256) :: line
-      real(wp), allocatable :: a_opt(:), lam_opt(:), qa(:,:), qs(:,:)
+      real(wp), allocatable :: a_opt(:), lam_opt(:), qa(:,:), qs(:,:), gg(:,:)
       real(wp), allocatable :: a_dn(:), f_dn(:), la_dn(:), lf_dn(:), Tc(:), Uc(:), Cc(:)
 
       if (present(status)) status = 0
@@ -2394,11 +2934,11 @@ contains
       do ip = 1, npop
          if (present(status)) then
             call read_zubko_optics(trim(data_dir)//trim(p_opt(ip)), nsize, nwave, &
-                                   a_opt, lam_opt, qa, qs, rho, ok=rok)
+                                   a_opt, lam_opt, qa, qs, rho, ok=rok, gpar=gg)
             if (.not. rok) then;  status = 5;  return;  end if
          else
             call read_zubko_optics(trim(data_dir)//trim(p_opt(ip)), nsize, nwave, &
-                                   a_opt, lam_opt, qa, qs, rho)
+                                   a_opt, lam_opt, qa, qs, rho, gpar=gg)
          end if
          if (p_rho(ip) > 0.0_wp) rho = p_rho(ip)         ! descriptor rho overrides file
 
@@ -2415,6 +2955,8 @@ contains
 
          if (ip == 1) then
             NLAM = nwave;  NT = NT_in
+            ! This model's grid is the optics file's own; nothing is prepended.
+            n_lam_euv = 0
             if (allocated(lam)) deallocate(lam, T_first, log_T_first)
             allocate(lam(NLAM), T_first(NT), log_T_first(NT))
             lam = lam_opt
@@ -2452,10 +2994,14 @@ contains
 
          NA = nsize
          if (allocated(Cabs)) deallocate(Cabs, kappB_first, kappCMB)
+         if (allocated(Csca)) deallocate(Csca, gsca_ad)
          allocate(Cabs(NLAM, nsize), kappB_first(NT, nsize), kappCMB(nsize))
+         allocate(Csca(NLAM, nsize), gsca_ad(NLAM, nsize))
          do ja = 1, nsize
             do jw = 1, NLAM
-               Cabs(jw, ja) = qa(jw, ja) * PI * (a_opt(ja)*UM2CM)**2
+               Cabs(jw, ja)    = qa(jw, ja) * PI * (a_opt(ja)*UM2CM)**2
+               Csca(jw, ja)    = qs(jw, ja) * PI * (a_opt(ja)*UM2CM)**2
+               gsca_ad(jw, ja) = gg(jw, ja)
             end do
          end do
          call build_kappB();  call build_kappCMB()
@@ -2505,6 +3051,8 @@ contains
             m%pops(ip)%out_channel = p_ch(ip)
             m%pops(ip)%dn = dn
             m%pops(ip)%Cabs = Cabs
+            m%pops(ip)%Csca = Csca
+            m%pops(ip)%gsca = gsca_ad
             m%pops(ip)%kappB = kappB_first
             m%pops(ip)%log_kappB = log(max(kappB_first, tiny(0.0_wp)))
             m%pops(ip)%H = Hmat
@@ -2515,7 +3063,7 @@ contains
 
          m%pops(ip)%aeff = a_opt        ! [um] radii of this population (needed by 'qm')
 
-         deallocate(a_opt, lam_opt, qa, qs, a_dn, f_dn, la_dn, lf_dn, Tc, Uc, Cc)
+         deallocate(a_opt, lam_opt, qa, qs, gg, a_dn, f_dn, la_dn, lf_dn, Tc, Uc, Cc)
       end do
    end subroutine build_from_files
 
@@ -2656,7 +3204,7 @@ contains
    ! are NOT applied. C_polext is the IQ-block optic and C_birext the UV-block
    ! optic of the extinction matrix (see extinction_matrix_aligned).
    ! REQUIRES: m is the most recently built model (its grids == the globals).
-   subroutine dust_extinction(m, Cext, Cabs, Csca, gbar, Cpol_ext, Cbir_ext, status)
+   subroutine dust_extinction(m, Cext, Cabs, Csca, gbar, Cpol_ext, Cbir_ext, albedo, status)
       type(dust_model_t), intent(in)  :: m
       real(wp),           intent(out) :: Cext(:), Cabs(:), Csca(:)   ! (NLAM) [cm^2/H]
       ! Scattering-weighted asymmetry; 0 where nothing scatters.
@@ -2664,6 +3212,10 @@ contains
       real(wp), optional, intent(out) :: Cpol_ext(:)                 ! (NLAM) [cm^2/H]
       ! Birefringent extinction; 0 for a 3-block model or where nothing aligns.
       real(wp), optional, intent(out) :: Cbir_ext(:)                 ! (NLAM) [cm^2/H]
+      ! Scattering albedo C_sca/C_ext; 0 where the medium is transparent.
+      ! Derived here so that every caller gets the same convention at the
+      ! wavelengths where C_ext underflows to zero.
+      real(wp), optional, intent(out) :: albedo(:)                   ! (NLAM)
       ! Optional error report (0 = success). When present, a size mismatch is
       ! reported through it instead of stopping the process; when absent such a
       ! call stops the run, matching dust_emission.
@@ -2679,6 +3231,7 @@ contains
       if (present(gbar))     bad = bad .or. size(gbar)     /= m%NLAM
       if (present(Cpol_ext)) bad = bad .or. size(Cpol_ext) /= m%NLAM
       if (present(Cbir_ext)) bad = bad .or. size(Cbir_ext) /= m%NLAM
+      if (present(albedo))   bad = bad .or. size(albedo)   /= m%NLAM
       if (bad) then
          if (present(status)) then
             status = 1;  return
@@ -2742,6 +3295,12 @@ contains
          gbar = 0.0_wp
          do jw = 1, m%NLAM
             if (Csca(jw) > 0.0_wp) gbar(jw) = gnum(jw) / Csca(jw)
+         end do
+      end if
+      if (present(albedo)) then
+         albedo = 0.0_wp
+         do jw = 1, m%NLAM
+            if (Cext(jw) > 0.0_wp) albedo(jw) = Csca(jw) / Cext(jw)
          end do
       end if
       deallocate(gnum)
@@ -2812,18 +3371,18 @@ contains
       real(wp), intent(in)  :: lam_in(:), Cabs1(:), T_in(:)
       integer,  intent(in)  :: ntemp
       real(wp), intent(out) :: kappB1(:)
-      integer,  parameter :: NW_INT = 1001
-      real(wp) :: w(NW_INT), lnw(NW_INT), Cross(NW_INT), B(NW_INT)
+      integer  :: NW_INT, n_below
+      real(wp), allocatable :: w(:), lnw(:), Cross(:), B(:)
       real(wp), allocatable :: lnlam(:)
-      real(wp) :: w1, w2, dlnw
+      real(wp) :: w1, dlnw
       integer  :: nl, jt, iw
 
+      call planck_integration_grid(lam_in, NW_INT, n_below, w1, dlnw)
+      allocate(w(NW_INT), lnw(NW_INT), Cross(NW_INT), B(NW_INT))
       nl = size(lam_in)
       allocate(lnlam(nl));  lnlam = log(lam_in)
-      w1 = lam_in(1);  w2 = lam_in(nl)
-      dlnw = log(w2/w1) / real(NW_INT-1, wp)
       do iw = 1, NW_INT
-         w(iw)   = w1 * exp(real(iw-1, wp) * dlnw)
+         w(iw)   = w1 * exp(real(iw-1-n_below, wp) * dlnw)
          lnw(iw) = log(w(iw))
       end do
       do iw = 1, NW_INT
@@ -2835,7 +3394,7 @@ contains
          end do
          kappB1(jt) = sum(Cross * B * w) * dlnw
       end do
-      deallocate(lnlam)
+      deallocate(lnlam, w, lnw, Cross, B)
    end subroutine planck_integral_one
 
 end module sed_astrodust_mod

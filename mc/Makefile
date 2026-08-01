@@ -30,8 +30,10 @@ SHARED_ENT  = $(SED_DIR)/enthalpy_v2.f90 $(SED_DIR)/enthalpy_astrodust.f90
 # Astrodust pipeline modules pulled in for the SED comparison
 SED_PIPELINE = $(SED_DIR)/size_dist.f90 $(SED_DIR)/q_table.f90 \
                $(SED_DIR)/q_table_jori.f90 \
-               $(SED_DIR)/mie.f90 $(SED_DIR)/q_graphite.f90 \
-               $(SED_DIR)/q_graphite_d16.f90 $(SED_DIR)/qpah.f90 \
+               $(SED_DIR)/mie.f90 $(SED_DIR)/q_astrodust.f90 \
+               $(SED_DIR)/q_graphite.f90 \
+               $(SED_DIR)/q_graphite_d16.f90 \
+               $(SED_DIR)/q_graphite_d16_sphere.f90 $(SED_DIR)/qpah.f90 \
                $(SED_DIR)/p_sub.f90 $(SED_DIR)/stoch_qm.f90 \
                $(SED_DIR)/pah_ioniz.f90 $(SED_DIR)/grain_dist.f90 \
                $(SED_DIR)/q_silicate.f90 $(SED_DIR)/pah_ld01.f90 \

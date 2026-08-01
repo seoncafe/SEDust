@@ -36,6 +36,17 @@ module q_table_jori_mod
    !
    ! and a cross section follows from C = Q * pi * a_eff^2 with a_eff in cm.
    !
+   ! THE EXTREME-ULTRAVIOLET COMPANION TABLE.  load_q_table_jori_euv reads a
+   ! second file of exactly the same stream format computed on the wavelength
+   ! axis data/dielectric/DH21_wave_euv, which runs from 0.0124 um (100 eV) up
+   ! to the 0.0912 um (13.6 eV) node where the table above starts.  It is a
+   ! separate entry point with its own module state (nj_*_euv, lam_j_euv,
+   ! qpol_*_euv, qbir_ext_euv) because the two tables have different grid
+   ! lengths and are loaded independently; the reader itself is shared
+   ! (read_jori_stream) so the two go through identical parsing and validation.
+   ! Its grid lengths come from the axis files rather than a compiled-in
+   ! constant.  Nothing about load_q_table_jori changes when it is used.
+   !
    ! gzip handling: the table ships compressed and Fortran cannot read a
    ! deflate stream, so the reader shells out to `gzip -dc` once, writes a
    ! scratch copy into TMPDIR (or /tmp), reads it, and deletes it. The scratch
@@ -66,6 +77,10 @@ module q_table_jori_mod
    public :: qpol_ext, qpol_abs, qran_ext, qran_abs, qran_sca
    public :: qbir_ext, has_bir
    public :: A_ALIGN, ALPHA_ALIGN, FMAX_ALIGN
+   ! Extreme-ultraviolet companion table (see the note above).
+   public :: load_q_table_jori_euv, free_q_table_jori_euv
+   public :: nj_lam_euv, nj_aeff_euv, lam_j_euv, aeff_j_euv
+   public :: qpol_ext_euv, qpol_abs_euv, qbir_ext_euv, has_bir_euv
 
    integer, parameter :: wp = real64
 
@@ -82,9 +97,6 @@ module q_table_jori_mod
 
    integer  :: nj_lam = 0, nj_aeff = 0
    real(wp), allocatable :: lam_j(:), aeff_j(:)                ! grid axes [um]
-   ! Orientation-resolved Q, read from the table and kept only until the
-   ! combinations below are formed (see load_q_table_jori).
-   real(wp), allocatable :: qext_j(:,:,:), qabs_j(:,:,:), qsca_j(:,:,:)  ! (NLAM, NA, 3)
    real(wp), allocatable :: qpol_ext(:,:), qpol_abs(:,:)       ! (NLAM, NA)
    real(wp), allocatable :: qran_ext(:,:), qran_abs(:,:), qran_sca(:,:)
    ! Birefringence 0.5*(Q_re(jori=3)-Q_re(jori=2)), formed from the optional
@@ -92,6 +104,14 @@ module q_table_jori_mod
    ! table, in which case qbir_ext is left unallocated.
    real(wp), allocatable :: qbir_ext(:,:)                      ! (NLAM, NA)
    logical  :: has_bir = .false.
+
+   ! Extreme-ultraviolet companion table, 0.0124-0.0912 um.  Same quantities,
+   ! its own grid, loaded and freed independently of the arrays above.
+   integer  :: nj_lam_euv = 0, nj_aeff_euv = 0
+   real(wp), allocatable :: lam_j_euv(:), aeff_j_euv(:)             ! [um]
+   real(wp), allocatable :: qpol_ext_euv(:,:), qpol_abs_euv(:,:)    ! (NLAM_euv, NA)
+   real(wp), allocatable :: qbir_ext_euv(:,:)                       ! (NLAM_euv, NA)
+   logical  :: has_bir_euv = .false.
 
 contains
 
@@ -140,48 +160,174 @@ contains
       character(len=*),  intent(in)  :: q_file, wave_file, aeff_file
       logical, optional, intent(out) :: ok
 
-      integer  :: u, ios, iq, jori, jw, ja, i
-      logical  :: gz, sub_ok
-      real(wp) :: xextra
-      real(wp), allocatable :: row(:)
+      logical  :: sub_ok, bir
+      real(wp), allocatable :: qext_j(:,:,:), qabs_j(:,:,:), qsca_j(:,:,:)  ! (NLAM, NA, 3)
       real(wp), allocatable :: qre_j(:,:,:)      ! (NLAM, NA, 3), optional 4th block
-      character(len=512)    :: read_path, line
+      character(len=512)    :: msg
 
       if (present(ok)) ok = .true.
 
       ! free_state() zeroes the grid counters, so set them only afterwards.
       call free_state()
+
+      call read_jori_stream(q_file, wave_file, aeff_file, NA_DEF, NW_DEF, &
+                            lam_j, aeff_j, qext_j, qabs_j, qsca_j, qre_j, &
+                            bir, sub_ok, msg)
+      if (.not. sub_ok) then
+         if (present(ok)) then
+            call free_state();  ok = .false.
+         else
+            write(error_unit,'(a,a)') 'load_q_table_jori: ', trim(msg)
+            stop 1
+         end if
+         return
+      end if
+
       nj_aeff = NA_DEF
       nj_lam  = NW_DEF
 
-      allocate(lam_j(nj_lam), aeff_j(nj_aeff), row(nj_aeff))
-      allocate(qext_j(nj_lam, nj_aeff, NORI), qabs_j(nj_lam, nj_aeff, NORI), &
-               qsca_j(nj_lam, nj_aeff, NORI))
+      ! ---- derived combinations --------------------------------------
       allocate(qpol_ext(nj_lam, nj_aeff), qpol_abs(nj_lam, nj_aeff))
       allocate(qran_ext(nj_lam, nj_aeff), qran_abs(nj_lam, nj_aeff), &
                qran_sca(nj_lam, nj_aeff))
+      qpol_ext = 0.5_wp * (qext_j(:,:,3) - qext_j(:,:,2))
+      qpol_abs = 0.5_wp * (qabs_j(:,:,3) - qabs_j(:,:,2))
+      qran_ext = (qext_j(:,:,1) + qext_j(:,:,2) + qext_j(:,:,3)) / 3.0_wp
+      qran_abs = (qabs_j(:,:,1) + qabs_j(:,:,2) + qabs_j(:,:,3)) / 3.0_wp
+      qran_sca = (qsca_j(:,:,1) + qsca_j(:,:,2) + qsca_j(:,:,3)) / 3.0_wp
+
+      ! Birefringence, only from a 4-block table.
+      has_bir = bir
+      if (bir) then
+         allocate(qbir_ext(nj_lam, nj_aeff))
+         qbir_ext = 0.5_wp * (qre_j(:,:,3) - qre_j(:,:,2))
+      end if
+
+      ! The three orientations enter the optics only through Q_pol, Q_ran and
+      ! the birefringence, so once those are formed the orientation-resolved
+      ! arrays are spent; being locals, their ~13.7 MB go back on return rather
+      ! than staying resident until unload.
+   end subroutine load_q_table_jori
+
+
+   subroutine load_q_table_jori_euv(q_file, wave_file, aeff_file, ok)
+      ! Reads the extreme-ultraviolet companion table (0.0124-0.0912 um) and
+      ! fills the polarized combinations on its own grid.  The wavelength and
+      ! size axes are counted out of the axis files, so the EUV grid length is
+      ! a property of the data rather than a compiled-in constant.
+      !
+      ! Only the polarized channels are formed: the random-orientation optics
+      ! of this band come from the volume-equivalent Mie sphere in the SED
+      ! model (q_astrodust_mod), not from here.
+      !
+      ! ok follows load_q_table_jori: absent -> message + stop; present ->
+      ! .false. with the EUV state left unloaded.
+      character(len=*),  intent(in)  :: q_file, wave_file, aeff_file
+      logical, optional, intent(out) :: ok
+
+      integer  :: na, nw
+      logical  :: sub_ok, bir
+      real(wp), allocatable :: qext_j(:,:,:), qabs_j(:,:,:), qsca_j(:,:,:)
+      real(wp), allocatable :: qre_j(:,:,:)
+      character(len=512)    :: msg
+
+      if (present(ok)) ok = .true.
+      call free_q_table_jori_euv()
+
+      nw = count_grid_values(wave_file)
+      na = count_grid_values(aeff_file)
+      if (nw < 2 .or. na < 2) then
+         call bail_euv('cannot count the EUV grid axes '//trim(wave_file)// &
+                       ' / '//trim(aeff_file))
+         return
+      end if
+
+      call read_jori_stream(q_file, wave_file, aeff_file, na, nw, &
+                            lam_j_euv, aeff_j_euv, qext_j, qabs_j, qsca_j, &
+                            qre_j, bir, sub_ok, msg)
+      if (.not. sub_ok) then
+         call bail_euv(trim(msg))
+         return
+      end if
+
+      nj_lam_euv  = nw
+      nj_aeff_euv = na
+      allocate(qpol_ext_euv(nw, na), qpol_abs_euv(nw, na))
+      qpol_ext_euv = 0.5_wp * (qext_j(:,:,3) - qext_j(:,:,2))
+      qpol_abs_euv = 0.5_wp * (qabs_j(:,:,3) - qabs_j(:,:,2))
+      has_bir_euv = bir
+      if (bir) then
+         allocate(qbir_ext_euv(nw, na))
+         qbir_ext_euv = 0.5_wp * (qre_j(:,:,3) - qre_j(:,:,2))
+      end if
+
+   contains
+
+      subroutine bail_euv(m)
+         character(len=*), intent(in) :: m
+         if (present(ok)) then
+            call free_q_table_jori_euv();  ok = .false.
+         else
+            write(error_unit,'(a,a)') 'load_q_table_jori_euv: ', m
+            stop 1
+         end if
+      end subroutine bail_euv
+
+   end subroutine load_q_table_jori_euv
+
+
+   subroutine read_jori_stream(q_file, wave_file, aeff_file, na, nw, &
+                               lam_out, aeff_out, qe, qa, qs, qr, bir, ok, msg)
+      ! Shared parser for both orientation-resolved tables: reads the two grid
+      ! axes, checks them for strict monotonicity, decompresses the Q file if
+      ! it is gzipped, skips the NHEAD header lines and reads the three
+      ! mandatory (Q_ext, Q_abs, Q_sca) blocks plus the optional 4th (Q_re)
+      ! block in (iq, jori, jw) stream order.
+      !
+      ! bir = .true. iff the 4th block was present, in which case qr is
+      ! allocated; otherwise qr is left unallocated.  ok = .false. leaves every
+      ! output array unallocated and puts the reason in msg.
+      character(len=*), intent(in)  :: q_file, wave_file, aeff_file
+      integer,          intent(in)  :: na, nw
+      real(wp), allocatable, intent(out) :: lam_out(:), aeff_out(:)
+      real(wp), allocatable, intent(out) :: qe(:,:,:), qa(:,:,:), qs(:,:,:), qr(:,:,:)
+      logical,          intent(out) :: bir, ok
+      character(len=*), intent(out) :: msg
+
+      integer  :: u, ios, iq, jori, jw, ja, i
+      logical  :: gz, sub_ok
+      real(wp) :: xextra
+      real(wp), allocatable :: row(:)
+      character(len=512)    :: read_path, line
+
+      ok  = .true.
+      bir = .false.
+      msg = ''
+
+      allocate(lam_out(nw), aeff_out(na), row(na))
+      allocate(qe(nw, na, NORI), qa(nw, na, NORI), qs(nw, na, NORI))
 
       ! ---- grid axes -------------------------------------------------
-      call read_grid(wave_file, nj_lam, lam_j, sub_ok)
+      call read_grid(wave_file, nw, lam_out, sub_ok)
       if (.not. sub_ok) then
-         call bail('cannot read wavelength grid '//trim(wave_file))
+         call fail('cannot read wavelength grid '//trim(wave_file))
          return
       end if
-      call read_grid(aeff_file, nj_aeff, aeff_j, sub_ok)
+      call read_grid(aeff_file, na, aeff_out, sub_ok)
       if (.not. sub_ok) then
-         call bail('cannot read size grid '//trim(aeff_file))
+         call fail('cannot read size grid '//trim(aeff_file))
          return
       end if
 
-      do jw = 2, nj_lam
-         if (lam_j(jw) <= lam_j(jw-1)) then
-            call bail('lam_j not strictly increasing')
+      do jw = 2, nw
+         if (lam_out(jw) <= lam_out(jw-1)) then
+            call fail('lam_j not strictly increasing')
             return
          end if
       end do
-      do ja = 2, nj_aeff
-         if (aeff_j(ja) <= aeff_j(ja-1)) then
-            call bail('aeff_j not strictly increasing')
+      do ja = 2, na
+         if (aeff_out(ja) <= aeff_out(ja-1)) then
+            call fail('aeff_j not strictly increasing')
             return
          end if
       end do
@@ -198,7 +344,7 @@ contains
             ! The redirection creates the target before gzip can fail, so
             ! remove the empty file rather than leave it behind in TMPDIR.
             call discard_scratch_copy(.true., trim(read_path))
-            call bail('gzip -dc failed on '//trim(q_file))
+            call fail('gzip -dc failed on '//trim(q_file))
             return
          end if
       else
@@ -209,7 +355,7 @@ contains
       open(newunit=u, file=trim(read_path), status='old', action='read', iostat=ios)
       if (ios /= 0) then
          call discard_scratch_copy(gz, trim(read_path))
-         call bail('cannot open '//trim(read_path))
+         call fail('cannot open '//trim(read_path))
          return
       end if
 
@@ -217,33 +363,33 @@ contains
          read(u,'(a)',iostat=ios) line
          if (ios /= 0) then
             close(u);  call discard_scratch_copy(gz, trim(read_path))
-            call bail('unexpected EOF in header')
+            call fail('unexpected EOF in header')
             return
          end if
       end do
 
       ! Stream order: quantity (ext, abs, sca) outermost, then orientation,
-      ! then one record of nj_aeff values for each wavelength.
+      ! then one record of na values for each wavelength.
       do iq = 1, 3
          do jori = 1, NORI
-            do jw = 1, nj_lam
-               read(u,*,iostat=ios) row(1:nj_aeff)
+            do jw = 1, nw
+               read(u,*,iostat=ios) row(1:na)
                if (ios /= 0) then
                   close(u);  call discard_scratch_copy(gz, trim(read_path))
-                  call bail('read error in Q block')
+                  call fail('read error in Q block')
                   return
                end if
-               do ja = 1, nj_aeff
+               do ja = 1, na
                   if (.not. ieee_is_finite(row(ja))) then
                      close(u);  call discard_scratch_copy(gz, trim(read_path))
-                     call bail('non-finite Q value')
+                     call fail('non-finite Q value')
                      return
                   end if
                end do
                select case (iq)
-               case (1);  qext_j(jw, :, jori) = row(1:nj_aeff)
-               case (2);  qabs_j(jw, :, jori) = row(1:nj_aeff)
-               case (3);  qsca_j(jw, :, jori) = row(1:nj_aeff)
+               case (1);  qe(jw, :, jori) = row(1:na)
+               case (2);  qa(jw, :, jori) = row(1:na)
+               case (3);  qs(jw, :, jori) = row(1:na)
                end select
             end do
          end do
@@ -253,48 +399,41 @@ contains
       ! A 4-block table carries a further Q_re block in the same
       ! (jori, jw) nesting; its real-part forward amplitude gives the
       ! birefringence 0.5*(Qre3-Qre2).  An older 3-block table hits EOF right
-      ! here: leave qbir_ext unallocated and has_bir = .false.
-      read(u,*,iostat=ios) row(1:nj_aeff)
+      ! here: leave qr unallocated and bir = .false.
+      read(u,*,iostat=ios) row(1:na)
       if (is_iostat_end(ios)) then
-         has_bir = .false.
+         bir = .false.
       else if (ios /= 0) then
          close(u);  call discard_scratch_copy(gz, trim(read_path))
-         call bail('read error probing the Q_re block')
+         call fail('read error probing the Q_re block')
          return
       else
-         allocate(qre_j(nj_lam, nj_aeff, NORI))
+         allocate(qr(nw, na, NORI))
          ! The record just read is (jori = 1, jw = 1).
-         if (.not. row_is_finite(row, nj_aeff)) then
+         if (.not. row_is_finite(row, na)) then
             close(u);  call discard_scratch_copy(gz, trim(read_path))
-            call bail('non-finite Q_re value')
+            call fail('non-finite Q_re value')
             return
          end if
-         qre_j(1, :, 1) = row(1:nj_aeff)
+         qr(1, :, 1) = row(1:na)
          do jori = 1, NORI
-            do jw = 1, nj_lam
+            do jw = 1, nw
                if (jori == 1 .and. jw == 1) cycle
-               read(u,*,iostat=ios) row(1:nj_aeff)
+               read(u,*,iostat=ios) row(1:na)
                if (ios /= 0) then
                   close(u);  call discard_scratch_copy(gz, trim(read_path))
-                  call bail('read error in Q_re block')
+                  call fail('read error in Q_re block')
                   return
                end if
-               if (.not. row_is_finite(row, nj_aeff)) then
+               if (.not. row_is_finite(row, na)) then
                   close(u);  call discard_scratch_copy(gz, trim(read_path))
-                  call bail('non-finite Q_re value')
+                  call fail('non-finite Q_re value')
                   return
                end if
-               qre_j(jw, :, jori) = row(1:nj_aeff)
+               qr(jw, :, jori) = row(1:na)
             end do
          end do
-         ! qre_j is fully populated here (allocated at the top of this branch),
-         ! so form the birefringence in the same block -- the only place qre_j is
-         ! read. That keeps the allocated-before-use invariant obvious to both
-         ! the reader and the compiler (no cross-block liveness on qre_j).
-         allocate(qbir_ext(nj_lam, nj_aeff))
-         qbir_ext = 0.5_wp * (qre_j(:,:,3) - qre_j(:,:,2))
-         deallocate(qre_j)
-         has_bir = .true.
+         bir = .true.
       end if
 
       ! Reject a file that carries more than the expected payload, checked after
@@ -302,43 +441,30 @@ contains
       read(u,*,iostat=ios) xextra
       if (ios == 0) then
          close(u);  call discard_scratch_copy(gz, trim(read_path))
-         call bail('file has more data than the declared grid')
+         call fail('file has more data than the declared grid')
          return
       end if
       close(u)
       call discard_scratch_copy(gz, trim(read_path))
 
-      ! ---- derived combinations --------------------------------------
-      qpol_ext = 0.5_wp * (qext_j(:,:,3) - qext_j(:,:,2))
-      qpol_abs = 0.5_wp * (qabs_j(:,:,3) - qabs_j(:,:,2))
-      qran_ext = (qext_j(:,:,1) + qext_j(:,:,2) + qext_j(:,:,3)) / 3.0_wp
-      qran_abs = (qabs_j(:,:,1) + qabs_j(:,:,2) + qabs_j(:,:,3)) / 3.0_wp
-      qran_sca = (qsca_j(:,:,1) + qsca_j(:,:,2) + qsca_j(:,:,3)) / 3.0_wp
-
-      ! qbir_ext was formed above, inside the 4-block branch, from qre_j.
-
-      ! The three orientations enter the optics only through Q_pol, Q_ran and
-      ! the birefringence, so once those are formed the orientation-resolved
-      ! table is spent and its ~13.7 MB are returned here rather than at unload.
-      if (allocated(qext_j)) deallocate(qext_j)
-      if (allocated(qabs_j)) deallocate(qabs_j)
-      if (allocated(qsca_j)) deallocate(qsca_j)
-
       deallocate(row)
 
    contains
 
-      subroutine bail(msg)
-         ! Report an error the way the caller asked for: status flag, or
-         ! message plus stop when no flag was supplied.
-         character(len=*), intent(in) :: msg
-         if (present(ok)) then
-            call free_state();  ok = .false.
-         else
-            write(error_unit,'(a,a)') 'load_q_table_jori: ', msg
-            stop 1
-         end if
-      end subroutine bail
+      subroutine fail(m)
+         ! Drop every partially filled output and report the reason.
+         character(len=*), intent(in) :: m
+         ok  = .false.
+         bir = .false.
+         msg = m
+         if (allocated(lam_out))  deallocate(lam_out)
+         if (allocated(aeff_out)) deallocate(aeff_out)
+         if (allocated(qe)) deallocate(qe)
+         if (allocated(qa)) deallocate(qa)
+         if (allocated(qs)) deallocate(qs)
+         if (allocated(qr)) deallocate(qr)
+         if (allocated(row)) deallocate(row)
+      end subroutine fail
 
       logical function row_is_finite(v, n)
          ! .true. iff v(1:n) are all finite.
@@ -354,16 +480,65 @@ contains
          end do
       end function row_is_finite
 
-   end subroutine load_q_table_jori
+   end subroutine read_jori_stream
+
+
+   integer function count_grid_values(filename) result(n)
+      ! Number of whitespace-separated values in a grid-axis file after its two
+      ! title lines.  Returns 0 when the file cannot be opened or holds none.
+      !
+      ! The record is consumed in fixed-size chunks with a non-advancing read
+      ! rather than in one plain read: a grid file may put its whole axis on a
+      ! single line (data/dielectric/DH21_wave puts all 1129 values on an
+      ! 11289-character one), and a plain read into a fixed buffer would
+      ! silently drop everything past the buffer and undercount. in_tok carries
+      ! across chunks so a token straddling a boundary is counted once.
+      character(len=*), intent(in) :: filename
+      integer :: u, ios, i, L
+      character(len=4096) :: line
+      logical :: in_tok
+      n = 0
+      open(newunit=u, file=filename, status='old', action='read', iostat=ios)
+      if (ios /= 0) return
+      read(u,'(a)',iostat=ios) line
+      read(u,'(a)',iostat=ios) line
+      in_tok = .false.
+      do
+         read(u,'(a)',advance='no',size=L,iostat=ios) line
+         do i = 1, L
+            if (line(i:i) == ' ' .or. line(i:i) == char(9)) then
+               in_tok = .false.
+            else
+               if (.not. in_tok) n = n + 1
+               in_tok = .true.
+            end if
+         end do
+         if (is_iostat_eor(ios)) then
+            in_tok = .false.            ! end of record ends any open token
+         else if (ios /= 0) then
+            exit                        ! end of file
+         end if
+      end do
+      close(u)
+   end function count_grid_values
+
+
+   subroutine free_q_table_jori_euv()
+      ! Drop the EUV companion table and mark it unloaded.
+      if (allocated(lam_j_euv))    deallocate(lam_j_euv)
+      if (allocated(aeff_j_euv))   deallocate(aeff_j_euv)
+      if (allocated(qpol_ext_euv)) deallocate(qpol_ext_euv)
+      if (allocated(qpol_abs_euv)) deallocate(qpol_abs_euv)
+      if (allocated(qbir_ext_euv)) deallocate(qbir_ext_euv)
+      has_bir_euv = .false.
+      nj_lam_euv = 0;  nj_aeff_euv = 0
+   end subroutine free_q_table_jori_euv
 
 
    subroutine free_state()
       ! Drop everything and mark the table unloaded.
       if (allocated(lam_j))    deallocate(lam_j)
       if (allocated(aeff_j))   deallocate(aeff_j)
-      if (allocated(qext_j))   deallocate(qext_j)
-      if (allocated(qabs_j))   deallocate(qabs_j)
-      if (allocated(qsca_j))   deallocate(qsca_j)
       if (allocated(qpol_ext)) deallocate(qpol_ext)
       if (allocated(qpol_abs)) deallocate(qpol_abs)
       if (allocated(qran_ext)) deallocate(qran_ext)

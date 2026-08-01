@@ -51,19 +51,29 @@ module dust_lib
    ! dust_emission, so an RT host takes its opacity from the same model object
    ! and on the same wavelength grid (m%lam) as its emission, rather than
    ! parsing data/kext_astrodust_MW.dat and interpolating off that file's grid:
-   !   call dust_extinction(m, Cext, Cabs, Csca [, gbar] [, Cpol_ext] [, status])
+   !   call dust_extinction(m, Cext, Cabs, Csca [, gbar] [, Cpol_ext] &
+   !                        [, Cbir_ext] [, albedo] [, status])
    ! All three required outputs are (m%NLAM) cross sections per H atom
    ! [cm^2/H], integrated over the size distribution of every population:
    ! Cext = Cabs + Csca. Optional gbar is the scattering-weighted asymmetry
    ! <cos>, sum dn*Csca*g / sum dn*Csca, and is 0 at wavelengths where nothing
-   ! scatters. Optional Cpol_ext is the dichroic (polarized) extinction,
-   ! sum dn*Cpol_ext*f_align [cm^2/H]; the size integral and the alignment
-   ! weight are done here, but the sin^2(gamma) geometry factor and any
-   ! turbulent depolarization are left to the radiative transfer, exactly as
-   ! for lamI_pol. Populations without scattering or polarized optics (the
+   ! scatters; optional albedo is Csca/Cext, 0 where Cext underflows -- derived
+   ! here rather than by the caller so every host gets the same convention at
+   ! those wavelengths. Optional Cpol_ext is the dichroic (polarized)
+   ! extinction, sum dn*Cpol_ext*f_align [cm^2/H], and Cbir_ext the
+   ! birefringent extinction from the same weighting; the size integral and the
+   ! alignment weight are done here, but the sin^2(gamma) geometry factor and
+   ! any turbulent depolarization are left to the radiative transfer, exactly
+   ! as for lamI_pol. Populations without scattering or polarized optics (the
    ! PAHs) contribute zero to those terms and enter through absorption only.
    ! status is 0 on success and 1 if an output array is not of size m%NLAM;
    ! when it is omitted such a call stops the run.
+   !
+   ! All four builders carry scattering optics, so albedo and gbar are physical
+   ! for every model: astrodust from the T-matrix Q table (and Mie on the same
+   ! dielectric function below 0.0912 um), DL07 from Mie on the D03 silicate
+   ! and graphite functions, Zubko and file-defined models from the Q_sca and g
+   ! columns of their own tables. Only astrodust carries polarized optics.
    !
    ! GRAIN ALIGNMENT. Both the polarized emission (lamI_pol) and the dichroic
    ! extinction (Cpol_ext) are weighted by an alignment efficiency
@@ -132,6 +142,17 @@ module dust_lib
    ! is simply "0 = built, non-zero = build failed". Codes per builder:
    !   build_astrodust / build_dl07:  1 Q-table load failed
    !                                  2 size-distribution load failed
+   !                                  6 astrodust dielectric function load
+   !                                    failed (EUV band only)
+   !                                  7 lam_min below the dielectric function's
+   !                                    own shortest wavelength (EUV band only)
+   !                                  8 EUV polarized table load failed
+   !                                    (build_astrodust only)
+   !                                  9 the EUV band runs outside the
+   !                                    wavelengths that table covers,
+   !                                    0.0124-0.0912 um (build_astrodust only)
+   !                                  (build_astrodust also forwards sed_init's
+   !                                   polarized-optics codes 3, 4, 5)
    !   build_zubko:   1 config read failed        2 fewer than 3 components
    !                  3 a component's optics read  4 grid inconsistent
    !                  5 a component's calorimetry read failed
@@ -139,6 +160,33 @@ module dust_lib
    !                     3 invalid channel   4 no pop: lines
    !                     5 optics read       6 grid inconsistent
    !                     7 size-dist read    8 calorimetry read failed
+   !
+   ! WAVELENGTH GRID AND THE EUV. m%lam is the T-matrix Q table's grid, which
+   ! ends at 0.0912 um (13.6 eV, the Lyman limit). build_astrodust and
+   ! build_dl07 take an optional lam_min [um] that carries the grid down to
+   ! that wavelength, log-spaced no more coarsely than the table's own spacing,
+   ! for a host that transports the 6-100 eV band a photoionization RT needs.
+   ! Omitting it leaves the grid, and every result, exactly as before. In the
+   ! extended band the SCALAR astrodust optics come from the DH21 dielectric
+   ! function for the volume-equivalent sphere rather than the b/a = 1.4
+   ! spheroid; Cext, Cabs, Csca, gbar and albedo are complete over the whole
+   ! extended grid.
+   !
+   ! The POLARIZED optics are NOT extended by default, and this is the one
+   ! place where a caller can be misled by a zero. Cpol_ext and Cbir_ext below
+   ! 0.0912 um require an EUV companion table computed for the spheroid itself,
+   ! from the same dielectric function and the same first-principles core as
+   ! the main table -- and that table is NOT distributed. Without it build_Cpol
+   ! reports on error_unit that the band is "zero by omission, not by physics"
+   ! and leaves it at zero. The true dichroism there is not small: it grows by
+   ! a factor 2.9 below the Lyman limit, peaking at 3.6e-3 of C_ext near
+   ! 20.6 eV with the sign opposite to the optical band. Generate the table
+   ! with tmatrix/driver/run_q_jori.f90 (lam / lamfile mode) and pass the
+   ! resulting .dat + .wave pair as qpol_euv_path / qpol_euv_wave_path. It
+   ! stops at 0.0124 um (100 eV), and a polarized build with lam_min shortward
+   ! of that is refused (status 9) rather than answered with an invalid
+   ! large-x limit. See build_Cpol for what the table resolves and what it
+   ! leaves at the geometric-optics zero.
    !
    ! The validated solver core (sed_grain_loop & helpers in sed_astrodust_mod)
    ! is untouched; this module only re-exports the model API and adds the

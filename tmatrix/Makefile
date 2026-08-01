@@ -149,6 +149,22 @@ compare_birefringence.x: $(SRC_TM) $(SRC_CMP5)
 	@echo 'Built: ./compare_birefringence.x'
 	@echo 'Run:   ./compare_birefringence.x'
 
+# Orientation-resolved optics shortward of the Q table's 0.0912 um end, at
+# arbitrary (lambda, a_eff) nodes: the Rayleigh dipole limit, the T-matrix with
+# its status IERR reported per node, and the geometric-optics limit side by
+# side, plus the volume-equivalent Mie sphere.  Locates the size-parameter
+# range over which each description is trustworthy -- which is what sets the
+# certification ceiling used by run_q_jori.x's `euv` mode.
+SRC_EUVOPT = $(SRC_COMM) ../sed/src/mie.f90 driver/tmatrix_oriented.f90 \
+             driver/euv_polarized_optics.f90
+
+euv_polarized_optics.x: $(SRC_TM) $(SRC_EUVOPT)
+	@mkdir -p build/euv
+	$(FC) $(FFLAGS) -Isrc -Jbuild/euv $^ $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./euv_polarized_optics.x'
+	@echo 'Run:   ./euv_polarized_optics.x NODEFILE OUTFILE [sca|nosca] [XTM_HI]'
+
 # Size-integrated fixed-orientation (aligned) scattering matrix.  The Z-node
 # loop is parallelized with OpenMP, so AMPL is compiled -frecursive (thread-
 # private locals) while the serial T-matrix core keeps the base flags.
@@ -196,6 +212,7 @@ clean:
 cleanall: clean
 	rm -f run_tmatrix.x run_scatmat.x run_q_jori.x compare_rayleigh_jori.x \
 	      compare_tmatrix_jori.x compare_tmatrix_abs.x compare_go_jori.x \
-	      compare_birefringence.x compare_scatmat_aligned.x run_scatmat_aligned.x
+	      compare_birefringence.x compare_scatmat_aligned.x run_scatmat_aligned.x \
+	      euv_polarized_optics.x
 
 .PHONY: all clean cleanall

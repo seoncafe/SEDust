@@ -1752,6 +1752,13 @@ contains
                               a_cm, grain_type, &
                               emission_out, solved)
       use sed_mathlib, only: interp
+      ! The single-photon bound is a property of the radiation field, so it is
+      ! computed by the radiation-field module and shared with the two call
+      ! sites in sed_astrodust_mod rather than re-derived here.  radfield
+      ! depends only on constants, so importing it introduces no cycle; the
+      ! import is local to this routine to keep the module-level surface of
+      ! stoch_qm_mod (constants only) unchanged.
+      use radfield,    only: hardest_photon_energy
       implicit none
       integer,          intent(in)  :: nlam, nt_wide
       real(wp),         intent(in)  :: lam_um(nlam), cabs_cm2(nlam)
@@ -1768,6 +1775,7 @@ contains
       integer :: i, j, fbin, iter, iter_total, jcut, jpmax
       integer :: nc_pah, nh_pah, nset_qm
       real(wp) :: umin, umax, umaxmin, umaxhi, umaxlo, uminhi, uminlo
+      real(wp) :: u_photon_max
       real(wp) :: pmax, term, sum_p, err_bcg, tol_bcg
       logical  :: refine, bicg_ok, sparse_ok
       integer  :: itmax_bcg, n_retry
@@ -1855,9 +1863,20 @@ contains
          cabs_ds    = cabs_full
       end if
 
-      ! Initial UMIN/UMAX guesses (following Draine's method)
+      ! Initial UMIN/UMAX guesses (following Draine's method).  The
+      ! single-photon term must be the hardest photon the radiation FIELD
+      ! carries, i.e. hc/lambda at the shortest wavelength where j_lam_si is
+      ! significantly nonzero -- not the short end of the caller's wavelength
+      ! grid, which is the grid of the model's optics tables.  The two agree
+      ! for astrodust and DL07, whose tables stop at the Lyman limit
+      ! (hc/0.0912 um = 13.595 eV < 13.6 eV, so the max() leaves the constant
+      ! selected); they differ by a factor 91 for Zubko/ZDA, whose DustEM
+      ! tables start at 1.0e-3 um while the field carries nothing below the
+      ! Lyman limit.  The fixed 13.6 eV is right only for a field that stops
+      ! at the Lyman limit; a field carried into the EUV raises the bound.
+      u_photon_max = hardest_photon_energy(lam_um, j_lam_si)
       umaxmin = 13.65_wp * EV2ERG
-      umax = max(13.6_wp * EV2ERG + 2.0_wp * eeq, umaxmin)
+      umax = max(max(13.6_wp * EV2ERG, u_photon_max) + 2.0_wp * eeq, umaxmin)
       if (eeq < 0.1_wp * eeqss) then
          umin = 0.0_wp
       else

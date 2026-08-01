@@ -19,6 +19,12 @@ module q_graphite_d16_sphere_mod
    implicit none
    private
    public :: q_graphite_d16_sphere_abs, load_q_graphite_d16_sphere
+   ! Shortest wavelength tabulated in q_D16graphite.dat (= 1.24 keV).  Below
+   ! it q_graphite_d16_sphere_abs clamps to the boundary value instead of
+   ! letting Q_abs keep falling, so a caller that needs optics there must use
+   ! the dielectric-function path (q_graphite_mod, valid to 6.2e-5 um).
+   public :: D16_LAM_MIN_UM
+   real(wp), parameter :: D16_LAM_MIN_UM = 1.0e-3_wp
 
    character(len=*), parameter :: F_D16S = '../data/dielectric/q_D16graphite.dat'
    integer,  parameter :: NA_S = 41

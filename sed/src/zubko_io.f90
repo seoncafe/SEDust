@@ -8,9 +8,15 @@ module zubko_io
    !   2. Optics -- DustEM/Zubko Q-tables (one block for each radius).
    !   3. Calorimetry -- specific enthalpy/heat-capacity tables.
    !
-   ! This module currently implements the config parser + the ZDA size
-   ! distribution formula (the user's preferred path); the optics and
-   ! calorimetry readers and build_zubko follow.
+   ! All three readers live here: read_zda_config + zda_gofa for the formula
+   ! path, read_dnda_table for the tabulated path, read_zubko_optics for the
+   ! Q-tables and read_zubko_calor for the calorimetry.  sed_astrodust_mod
+   ! assembles them into a model two ways -- build_zubko (size distribution from
+   ! the ZDA formula) and build_from_files (size distribution from the tabulated
+   ! SzDist files named in a descriptor).  The two agree in SHAPE to ~1e-5 but
+   ! the distributed tables carry a normalization 0.4 - 1.1% below A*g(a) of the
+   ! config, component by component, which propagates to ~1% in the
+   ! size-integrated cross sections.
    !
    ! ZDA size distribution (per component):
    !   log10 g(a) = c0 + b0*log10(a)
@@ -149,15 +155,18 @@ contains
    ! one block for each radius: "<a> = radius (micron)", a column-header line, and
    ! NWAVE rows of  x  lambda[um]  Q_abs  Q_sca  Q_ext  g.
    ! Returns a_um(nsize), lam_um(nwave) [um], qabs/qsca(nwave,nsize), rho[g/cm^3].
+   ! The optional gpar(nwave,nsize) is the scattering asymmetry <cos> of the
+   ! last column, which an RT host needs alongside Q_sca.
    ! ------------------------------------------------------------------
-   subroutine read_zubko_optics(path, nsize, nwave, a_um, lam_um, qabs, qsca, rho, ok)
+   subroutine read_zubko_optics(path, nsize, nwave, a_um, lam_um, qabs, qsca, rho, ok, gpar)
       character(len=*),      intent(in)  :: path
       integer,               intent(out) :: nsize, nwave
       real(wp), allocatable, intent(out) :: a_um(:), lam_um(:), qabs(:,:), qsca(:,:)
       real(wp),              intent(out) :: rho
       logical, optional,     intent(out) :: ok
+      real(wp), allocatable, optional, intent(out) :: gpar(:,:)
       integer :: u, ios, ja, jw, idum
-      real(wp) :: x, ldum
+      real(wp) :: x, ldum, qe, gg
       logical  :: found
       character(len=256) :: line
 
@@ -189,19 +198,23 @@ contains
          end if
       end if
       allocate(a_um(nsize), lam_um(nwave), qabs(nwave,nsize), qsca(nwave,nsize))
+      if (present(gpar)) allocate(gpar(nwave,nsize))
 
       ! --- block 1 (line currently holds its "= radius" header) ---
       read(line, *) a_um(1)
       read(u,'(a)') line                              ! column header
       do jw = 1, nwave
-         read(u, *) x, lam_um(jw), qabs(jw,1), qsca(jw,1)
+         read(u, *) x, lam_um(jw), qabs(jw,1), qsca(jw,1), qe, gg
+         if (present(gpar)) gpar(jw,1) = gg
       end do
       ! --- blocks 2..nsize ---
       do ja = 2, nsize
          call skip_to_radius(u, line, found)
          if (.not. found) then
             if (present(ok)) then
-               close(u);  deallocate(a_um, lam_um, qabs, qsca);  ok = .false.;  return
+               close(u);  deallocate(a_um, lam_um, qabs, qsca)
+               if (present(gpar)) deallocate(gpar)
+               ok = .false.;  return
             else
                write(*,'(a)') ' read_zubko_optics: unexpected EOF seeking radius'; stop 1
             end if
@@ -209,7 +222,8 @@ contains
          read(line, *) a_um(ja)
          read(u,'(a)') line                           ! column header
          do jw = 1, nwave
-            read(u, *) x, ldum, qabs(jw,ja), qsca(jw,ja)
+            read(u, *) x, ldum, qabs(jw,ja), qsca(jw,ja), qe, gg
+            if (present(gpar)) gpar(jw,ja) = gg
          end do
       end do
       close(u)

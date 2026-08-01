@@ -18,6 +18,7 @@ module q_silicate_mod
    private
    public :: q_silicate_abs
    public :: q_silicate_full
+   public :: silicate_index_lambda_range
 
    character(len=*), parameter :: F_SIL = '../data/dielectric/index_silD03'
    integer,  parameter :: NSIL = 837
@@ -27,6 +28,19 @@ module q_silicate_mod
    real(wp) :: sil_eV(NSIL), sil_n(NSIL), sil_k(NSIL), sil_wavl(NSIL)
 
 contains
+
+   subroutine silicate_index_lambda_range(lam_lo, lam_hi)
+      ! Shortest and longest wavelength [um] the D03 astrosilicate dielectric
+      ! function covers.  Outside it `interp` returns the boundary value, i.e.
+      ! a CONSTANT (n, k), so a caller whose wavelength grid runs past this
+      ! range must refuse rather than let the frozen index pass as physics.
+      real(wp), intent(out) :: lam_lo, lam_hi
+
+      if (.not. loaded) call load_tables()
+      lam_lo = minval(sil_wavl)
+      lam_hi = maxval(sil_wavl)
+   end subroutine silicate_index_lambda_range
+
 
    subroutine load_tables()
       ! index_silD03 columns: E[eV]  Re(n)-1  Im(n)  Re(eps)-1  Im(eps)

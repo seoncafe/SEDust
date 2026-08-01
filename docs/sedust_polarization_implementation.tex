@@ -243,9 +243,14 @@ of the table carries, without the file (\S\ref{sec:whyaccessor}). \\[2pt]
 Standalone check: computes the polarized extinction directly from
 \code{qpol\_ext} and the release size distribution, and compares against the
 published \code{polarized\_extinction.dat}. Independent of \code{sed\_init}. \\[2pt]
-\code{sed/src/calc\_kext\_astrodust.f90} &
-Writes column 8, \code{C\_polext/H}, of \code{data/kext\_astrodust\_MW.dat} as
-$\sum_a {\rm d}n_{\rm Ad}(a)\,C_{\rm pol,ext}(\lambda,a)\,\falign(a)$. \\
+\code{sed/src/calc\_kext.f90} &
+The extinction-table driver, one executable for every dust model
+(\code{./calc\_kext.x astrodust\,|\,dl07\,|\,zubko\,|\,from\_files}). In its
+\code{astrodust} mode it writes column 8, \code{C\_polext/H}, of
+\code{data/kext\_astrodust\_MW.dat} as
+$\sum_a {\rm d}n_{\rm Ad}(a)\,C_{\rm pol,ext}(\lambda,a)\,\falign(a)$. Only that
+mode writes the column, because only the astrodust builder fills
+\code{Cpol\_ext}. \\
 \bottomrule
 \end{tabular}
 \caption{Responsibility of each file touched by the polarization update.}
@@ -750,6 +755,155 @@ and trend; its size-parameter region carries no astrodust weight.}
 \label{tab:fpcheck}
 \end{table}
 
+\subsection{Computing named wavelengths}\label{sec:namedlam}
+
+Polarized transfer is run at a handful of wavelengths, not on a whole axis. The
+\code{range} mode cannot serve that: its \code{JW1}/\code{JW2} are \emph{indices}
+into a fixed wavelength file, so it reaches only wavelengths that file already
+carries. Three modes take the physical wavelength instead:
+\begin{lstlisting}[style=sh]
+./run_q_jori.x lam L1 [L2 ...] [ja=JA1:JA2] [tag=NAME]   # wavelengths [um]
+./run_q_jori.x lamfile PATH    [ja=JA1:JA2] [tag=NAME]   # one per line, '#' comments
+./run_q_jori.x lammerge STEM FILE [FILE ...]             # reassemble ja= windows
+\end{lstlisting}
+Each writes a pair, \code{q\_astrodust\_jori\_P0.20\_Fe0.00\_1.400.TAG.dat} and
+its wavelength axis \code{...TAG.wave}; the default \code{TAG} is \code{lamL} for
+one wavelength and \code{lamLMIN\_LMAX\_nN} for several. That pair is what
+\code{sed\_init} / \code{build\_astrodust} take through \code{qpol\_euv\_path} and
+\code{qpol\_euv\_wave\_path}. The reader interpolates in $\log\lambda$, so at
+least \emph{two} wavelengths are needed to fill a band; a one-wavelength file is
+a valid product to read directly but cannot be interpolated.
+
+\paragraph{Processes, not threads.} \code{ja=JA1:JA2} restricts one invocation to
+radii \code{JA1..JA2} of the 169-point size axis so that several \emph{processes}
+share one wavelength, and \code{lammerge} puts the column slices back side by
+side. Threads cannot be used: Mishchenko's solver hands the converged T-matrix to
+\code{AMPL} through \code{COMMON /TMAT/} and keeps its working storage in further
+\code{COMMON} blocks (two of them blank), so the core is not re-entrant. Separate
+processes each get their own copy, and a merged file has been checked byte for
+byte against a single-process one. Measured: three wavelengths (0.0124, 0.0602 and
+0.0912\um) over 57 processes of three radii each took 9\,m\,22\,s of wall time for
+34\,m\,48\,s of processor time. The speedup is 3.7 rather than 57 because the cost
+is not spread over the radii --- a T-matrix solve grows like $N_{\max}^4$ with
+$N_{\max}\sim x$, so the few radii just below the $x = 60$ ceiling carry nearly
+all of the work. One radius per invocation (169 processes) lets the operating
+system interleave them and brings the wall time down to the single most expensive
+node.
+
+\paragraph{\code{euv} is an axis switch, not a wavelength.} The leading
+\code{euv} keyword selects a wavelength \emph{axis file}
+(\code{data/dielectric/DH21\_wave\_euv}), so it cannot be combined with
+\code{lam}, \code{lamfile} or \code{lammerge}, which carry their own axis. The
+driver rejects the combination explicitly.
+
+\subsection{The polarized band below the Lyman limit}\label{sec:euvpol}
+
+\Cpol, $C_{\rm pol,ext}$ and $C_{\rm bir,ext}$ are read from an
+orientation-resolved table on the full DH21 wavelength axis, all 1129 nodes from
+$0.0912$ to $39810\um$: by default the release file
+\code{data/dielectric/q\_DH21Ad\_P0.20\_Fe0.00\_1.400.dat.gz}, or, through
+\code{qpol\_path}, the regenerated
+\code{tmatrix/output/q\_astrodust\_jori\_P0.20\_Fe0.00\_1.400.dat.gz}, which adds
+the 4th block and so is the one that makes $C_{\rm bir,ext}$ nonzero. Either way
+the wavelength coverage is the whole axis. Do not confuse this with the five-band
+aligned scattering table of \S\ref{sec:aligned} --- the polarized
+\emph{extinction} optics are on the full grid.
+
+When a model grid is extended shortward of $0.0912\um$ (through \code{lam\_min}),
+\code{build\_Cpol} looks for the companion table
+\code{q\_astrodust\_jori\_euv\_P0.20\_Fe0.00\_1.400.dat.gz}. \textbf{That table is
+not shipped.} The default state is therefore that the extreme-ultraviolet block
+stays at the zero it was initialized with, and the reader says so on stderr:
+\begin{lstlisting}[style=sh]
+build_Cpol: no EUV polarized table (...)
+            dichroic extinction and birefringence are zero below 9.120E-02 um
+            (zero by omission, not by physics).
+\end{lstlisting}
+
+\paragraph{That zero is a documented deficit, not the right value.} It is worth
+being blunt about this, because a zero is easy to mistake for an asymptote.
+First-principles size integrals
+(\code{tmatrix/driver/euv\_polarized\_optics.f90}) put the alignment-weighted
+$|C_{\rm pol,ext}|/C_{\rm ext}$ at $1.26\times10^{-3}$ at the $0.0912\um$ seam,
+\emph{rising} to $3.64\times10^{-3}$ near 20.6\,eV --- a factor 2.9 --- before
+decaying to $1.6\times10^{-4}$ at 100\,eV, with the sign \emph{opposite} to the
+optical band; the reversal falls near $0.106\um$, between $0.1072$ and
+$0.1059\um$. $|C_{\rm bir,ext}|/C_{\rm ext}$ falls monotonically from
+$7.2\times10^{-3}$ at the seam and changes sign near 51\,eV. Zero would be the
+correct limit only for $x\gg1$ \emph{and} $|m-1|\ll1$, and $|m-1|$ is $0.765$ at
+the seam and below $0.1$ only above ${\sim}50$\,eV while the grains carrying the
+signal sit at $x = 5$--$50$. A sphere has \emph{exactly} zero dichroic extinction
+and exactly zero birefringence, so the scalar extreme-ultraviolet optics
+(\code{q\_astrodust\_mod}, Mie on the volume-equivalent sphere) could not have
+supplied these entries either --- the shape has to be kept to get them at all.
+
+\paragraph{When the companion table is present.} \code{build\_Cpol} reads it and
+interpolates in $\log\lambda$ and $\log a$, as \Cabs\ and $C_{\rm sca}$ are
+interpolated. A grid running outside the wavelengths the table covers
+($0.0124$--$0.0912\um$) is rejected with \code{status = 9} rather than filled by
+extrapolation. Generate the table with the \code{euv} mode of
+\code{run\_q\_jori.x}, or a subset of it with the named-wavelength modes of
+\S\ref{sec:namedlam}.
+
+\paragraph{Why the axis stops at $0.0124\um$ (100\,eV).} Above $x = 60$ the only
+description left is the opaque geometric-optics limit, whose absorption is the
+Fresnel surface integral described in \S\ref{sec:firstprinciples} and which needs
+the chord optical depth $4\,\mathrm{Im}(m)\,x$ to be large. For DH21 astrodust
+that quantity is $3.7$ at $x = 50$ and 100\,eV (2.6\% transmission), and it falls
+below $1$ by 200\,eV, where the grain is becoming X-ray transparent and neither
+the extinction paradox nor the opaque Fresnel absorption applies. The floor is
+set where the physics of every branch used is still valid.
+
+\subsection{Certifying the T-matrix above $x = 50$}\label{sec:certify}
+
+The extreme ultraviolet pushes size parameters up, so the $x > 50$ cut of
+\S\ref{sec:firstprinciples} would throw away most of the band. In the \code{euv},
+\code{lam} and \code{lamfile} modes the T-matrix is therefore attempted up to
+$x = 60$ (\code{X\_TM\_MAX}), under a two-setting certification: every node with
+$x\in(50,60]$ is solved twice, at the production
+$(\code{DDELT},\code{NDGS}) = (10^{-3},2)$ and at a coarser-quadrature
+$(3\times10^{-3},3)$, and is \emph{kept only} if the two agree to
+\code{TOL\_CHK} $= 5\%$ on every channel. A node that fails falls to geometric
+optics. Above $x = 60$ geometric optics is used directly. The plain and
+\code{range} sweeps keep the older $x > 50$ rule unchanged, so they still
+reproduce the shipped table byte for byte.
+
+Three details are worth recording.
+
+\begin{itemize}
+\item \textbf{\code{NDGS} $= 4$ is not usable} as the second setting:
+      $\code{NGAUSS} = \code{NDGS}\times N_{\max}$ then exceeds the
+      \code{NPNG1} $= 300$ storage limit, so the check would fail for want of
+      array space rather than for want of convergence. \code{NDGS} $=3$ is the
+      largest that leaves the comparison meaningful.
+\item \textbf{\code{IERR} $= 0$ is not sufficient at $x\gtrsim55$.} Mishchenko's
+      own convergence flag can report success and still return a wrong answer:
+      at $\lambda = 0.0912\um$ and $a = 0.9441\um$ ($x = 65.04$) it returns
+      \code{IERR} $= 0$ with a value 50\% away from its neighbors. Measured at the
+      seam, $x = 51.7$ and $54.7$ pass the two-setting check while $57.9$, $61.4$,
+      $65.0$ and $68.9$ fail it. The certification exists because the engine's own
+      flag does not carry this information.
+\item \textbf{The polarized channels need an absolute floor.} $Q_{\rm pol}$ is a
+      difference of order-unity numbers, so a purely relative comparison becomes
+      meaningless where it passes through zero. \code{Q\_POL\_FLOOR} $= 10^{-3}$
+      sets the absolute scale below which the polarized channels are not required
+      to agree; after the size integral that corresponds to
+      $|C_{\rm pol}|/C_{\rm ext}\sim5\times10^{-4}$, about 1\% of the $V$-band
+      dichroism.
+\end{itemize}
+
+\paragraph{What the certification costs.} Leaving the $x > 60$ nodes at the
+geometric-optics value, which carries $Q_{\rm pol,ext} = Q_{\rm bir,ext} = 0$
+exactly, loses part of the \emph{dichroic extinction}: nothing at the seam,
+${\sim}8\%$ of the band total at $0.031\um$, ${\sim}20\%$ at $0.022\um$ and
+${\sim}46\%$ at $0.0124\um$. The true value lies between the certified figure
+(a lower bound, $1.06\times10^{-4}$) and a $1/x$ continuation (an upper bound,
+$3.14\times10^{-4}$). No extrapolation is put in place of the missing part; the
+absolute level is already small there, about 1\% of the optical-band signal.
+\Cpol\ --- the absorption dichroism, which drives polarized \emph{emission} ---
+has no such gap, because the geometric-optics limit obtains it from the
+opaque-grain Fresnel surface integral.
+
 %====================================================================
 \section{Aligned-grain scattering matrix and the extinction matrix}
 \label{sec:aligned}
@@ -931,8 +1085,14 @@ the table to a polarized RT host with the same lifecycle as the rest of the
 library: initialize once, query along the path.
 
 \paragraph{Initialization (serial, once).} \code{load\_scatmat\_aligned(path,
-status)} parses the table into module storage (about $81.5$\,MB resident for the
-production grid) and \code{free\_scatmat\_aligned} releases it. It is wired into
+status)} parses the table into module storage and \code{free\_scatmat\_aligned}
+releases it. The resident cost is dominated by \code{scm\_Z}, whose size is
+$n_{\theta_i}n_{\theta_s}n_\phi\times16\times n_{\rm band}$ doubles: for the
+production grid ($19\times181\times37$, five bands) that is about 81\,MB, linear
+in the number of bands, with the $F$ and $K$ arrays adding under 0.1\,MB. Queries
+are trilinear interpolations --- a few hundred floating-point operations per
+scattering event, with no wavelength search once \code{scatmat\_band} has mapped
+the wavelength to a band. It is wired into
 \code{sed\_init} / \code{build\_astrodust} through an optional \code{scatmat\_path}
 argument --- exactly the \code{qpol\_path} pattern of \S\ref{sec:firstprinciples},
 except that a \code{scatmat\_path} that fails to load is an error (\code{status =
@@ -1076,6 +1236,114 @@ file is 138\,MB, 38\,MB gzipped. The existing regressions are unchanged:
 \code{calc\_polext} reproduces the release to a median of $0.0296\%$ as before,
 and every \code{sed}, \code{mc} and \code{tmatrix} target builds clean.
 
+\subsection{Which wavelengths the table carries}\label{sec:aligned:bands}
+
+The shipped table holds five bands, $0.36$, $0.44$, $0.55$, $0.64$ and
+$0.79\um$ (\code{BANDS} in \code{run\_scatmat\_aligned.f90}), on the grid
+$\theta_i = 0(5)90^\circ$ (19) $\times$ $\theta_s = 0(1)180^\circ$ (181) $\times$
+$\phi = 0(5)180^\circ$ (37). That is the intended scope: polarized transfer is
+essentially never run on a whole wavelength grid, and five optical bands cover
+the update this work is for. What matters is that a wavelength one later needs
+can be computed, not that everything is precomputed now.
+
+\code{run\_scatmat\_aligned.x} does already take wavelengths on its command line
+(\code{./run\_scatmat\_aligned.x 0.44 0.55 0.79}), so a different set is one run
+away. Three limitations of that path should be stated plainly rather than
+discovered:
+\begin{itemize}
+\item \textbf{The output stem is fixed} (\code{f\_stem//'.dat'}), so a custom run
+      \emph{overwrites} the shipped five-band table. Move or rename the shipped
+      file first.
+\item \textbf{There is no merge mode.} A band cannot be added to an existing
+      table; every requested band is recomputed from scratch into a new file
+      (the five together are the 8-minute run above).
+\item \textbf{There is no size-window split and no large-$x$ certification.} The
+      driver has no \code{ja=} equivalent of \S\ref{sec:namedlam}, and it applies
+      only the plain \code{X\_LARGE} $= 50$ cut, without the two-setting
+      cross-check of \S\ref{sec:certify}.
+\end{itemize}
+None of these is hard to lift; none of them is done, and the wavelengths in hand
+have not required it.
+
+\subsection{Why the library reads tables and does not solve}\label{sec:notmatrix}
+
+The library never runs a T-matrix solve at run time. The reason is not the size of
+the code --- the engine is already in the tree and the drivers link it --- but
+that convergence cannot be certified at $x\gtrsim55$ from inside a transport loop:
+as \S\ref{sec:certify} records, Mishchenko's \code{IERR} can report success on a
+node that is 50\% wrong, and the check that catches it costs a second solve at
+different settings. A silently wrong optic is worse than a missing one, and the
+transport loop has nowhere to report a failure to. The tables are generated
+offline, where a node can be rejected and the rejection counted in the file
+header. This is the current policy rather than a permanent decision: the T-matrix
+core itself is expected to be revised, and a certification cheap enough to run
+inline would change the trade.
+
+%====================================================================
+\section{Status codes, and the relation to v1.00}\label{sec:status}
+
+\subsection{\code{sed\_init} / \code{build\_astrodust} status codes}
+
+Both take an optional \code{status}; $0$ is success, and when the argument is
+absent the readers keep their message-and-stop behavior instead. The v1.20 codes
+are those of Table~\ref{tab:status}.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}cp{0.78\textwidth}@{}}
+\toprule
+\code{status} & Meaning \\
+\midrule
+1 & $Q$-table load failed \\
+2 & size-distribution load failed \\
+3 & aligned scattering table load failed (only when \code{scatmat\_path} was
+    supplied --- a host that asked for it depends on it) \\
+4 & a polarized $Q$ table requested explicitly through \code{qpol\_path} could
+    not be read (an implicit default degrades gracefully instead) \\
+5 & \code{load\_polarized\_optics = .false.} combined with an explicit
+    polarized-optics path --- a contradictory request \\
+6 & astrodust dielectric function load failed (extreme-ultraviolet band only) \\
+7 & \code{lam\_min} below the astrodust dielectric function's own shortest
+    wavelength (extreme-ultraviolet band only) \\
+8 & the extreme-ultraviolet polarized table could not be read while the grid
+    reaches into that band and polarized optics were asked for \\
+9 & the extreme-ultraviolet band of the grid runs outside the wavelengths the
+    companion polarized table covers ($0.0124$--$0.0912\um$) \\
+\bottomrule
+\end{tabular}
+\caption{Status codes of \code{sed\_init} and \code{build\_astrodust} in v1.20.}
+\label{tab:status}
+\end{table}
+
+Code~8 is declared for an unreadable extreme-ultraviolet polarized table. Note
+what the current code actually does with an \emph{absent} companion table: that is
+not an error --- \code{build\_Cpol} reports it on stderr and leaves the band zero
+(\S\ref{sec:euvpol}) --- so the status a caller sees in practice is $9$, raised
+when a table that \emph{was} read does not cover the requested grid.
+
+\code{dust\_set\_alignment} and \code{dust\_set\_alignment\_profile} have their own
+independent numbering: $1$, $2$, $3$ for an out-of-range \code{a\_align},
+\code{alpha\_align} or \code{f\_max}, and $4$ for the non-fatal alignment guard of
+\S\ref{sec:aligned:lib}. Do not read a $4$ from a setter as the \code{qpol\_path}
+failure above.
+
+\subsection{v1.20 is v1.00 plus polarization}
+
+The two maintained branches are a superset relation, not a fork. Everything scalar
+is identical: the same builders (\code{build\_astrodust}, \code{build\_dl07},
+\code{build\_zubko}, \code{build\_from\_files}), the same \code{dust\_emission} and
+\code{dust\_extinction}, the same \code{lam\_min} extreme-ultraviolet extension,
+and the same \code{calc\_kext.x} products. What v1.20 adds is the polarized
+material: \code{Cpol}, \code{Cpol\_ext}, \code{Cbir\_ext}, \falign, the aligned
+scattering table and its library layer. The only incidental difference is the
+status numbering --- what v1.00 calls $3$ and $4$ (the dielectric function load
+and the \code{lam\_min} floor) are $6$ and $7$ here, because $3$, $4$ and $5$ were
+taken by the polarized paths. A scalar-only v1.20 run
+(\code{load\_polarized\_optics = .false.}) returns the scalar \code{Cext},
+\code{Cabs}, \code{Csca}, \code{gbar} and the total SED bit-identical to the
+polarized build at zero alignment.
+
 %====================================================================
 \section{Limits and extension paths}
 
@@ -1113,7 +1381,8 @@ astrodust distribution with the alignment weight, and paired with the
 $4\times4$ extinction matrix $K(\theta_i)$ from the forward amplitudes. It is
 written for five optical bands by \code{run\_scatmat\_aligned.x} and served to a
 polarized RT host through a two-layer library API. \S\ref{sec:aligned} is the
-full account.
+full account, and \S\ref{sec:aligned:bands} covers the wavelength coverage and
+what computing a different band involves.
 
 \paragraph{The random-orientation scattering matrix does exist, in five optical
 bands.} This is a different object from the previous paragraph and should not be
@@ -1128,13 +1397,15 @@ $F_{11}, F_{22}, F_{33}, F_{44}, F_{12}, F_{34}$. It answers what an unaligned
 grain population scatters; it does not answer the aligned question above.
 
 The stored wavelengths are $0.36$, $0.44$, $0.55$, $0.64$ and $0.79\um$, roughly
-\textit{UBVRI}. That set was chosen, and the full sweep deliberately not run, because
-the planned use is the $V$ band first with one or two further optical bands
-possible, and neither the far infrared nor the ultraviolet is in scope. The
-whole 1129-point grid costs about 1.7 hours and would be spent almost entirely
-on wavelengths nothing is waiting for. Extending is cheap and needs no code
-change: \code{./run\_scatmat.x all} does the full grid, or a list of
-wavelengths does a subset, at about $5.5\,$s per wavelength.
+\textit{UBVRI} --- the same five bands the aligned table carries, and for the same
+reason (\S\ref{sec:aligned:bands}). Five bands are the deliverable, not a sweep
+left half-finished: polarized transfer is run at a few wavelengths, the $V$ band
+first with one or two further optical bands possible, and the whole 1129-point
+grid would cost about 1.7 hours spent almost entirely on wavelengths nothing is
+waiting for. What the design owes is a way to compute a wavelength when one is
+wanted, and that costs a run rather than a code change:
+\code{./run\_scatmat.x all} does the full grid, or a list of wavelengths does a
+subset, at about $5.5\,$s per wavelength.
 
 \paragraph{Far infrared needs neither.} In that regime the albedo is
 essentially zero, so the transfer requires only the extinction matrix and the
@@ -1196,8 +1467,11 @@ make calc_polext.x           # standalone polarized-extinction check
 ./calc_polext.x              # -> output/polarized_extinction_ours.dat
                              #    lambda, ours, reference, ratio
 
-make calc_kext_astrodust.x   # full-pipeline extinction table
-./calc_kext_astrodust.x      # -> ../data/kext_astrodust_MW.dat, 8 columns
+make calc_kext.x             # full-pipeline extinction table, all dust models
+./calc_kext.x astrodust      # -> ../data/kext_astrodust_MW.dat, 8 columns
+                             #    ./calc_kext.x astrodust euv       (EUV grid)
+                             #    ./calc_kext.x astrodust 0.03      (lam_min [um])
+                             #    ./calc_kext.x dl07 | zubko | from_files ...
 
 make libsedust.a             # library, for the emission path
 \end{lstlisting}

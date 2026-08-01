@@ -18,6 +18,12 @@ dust scattering plus dichroic extinction by aligned grains — with properly der
 grain optics. The scattering side, the fixed-orientation Mueller matrix of aligned
 grains, is the subject of `tmatrix_aligned_scattering_plan.md`.
 
+**Added after this plan (see §9).** Three things the plan does not describe were built
+later and are recorded at the end of this document so it does not read as the whole
+story: named-wavelength generation (`lam` / `lamfile` / `lammerge`), the
+extreme-ultraviolet axis below the Lyman limit, and a convergence certification for
+size parameters above x = 50.
+
 ---
 
 ## 1. Motivation
@@ -218,3 +224,105 @@ Ordered to bring the radiative-transfer host's need forward.
 - `tmatrix/driver/asymptotic_optics.f90` — emit the pre-average Rayleigh components per jori.
 - `sed/src/calc_polext.f90` — comparison run against the new table (path change only).
 - New comparison utility for layers 1-3 (table difference and the three-point-average error).
+
+---
+
+## 9. Built after this plan
+
+The plan above ends at the full DH21-grid sweep. Three additions came later; the
+implementation account is in `sedust_polarization_implementation.tex` (§7.6-§7.8).
+
+### 9.1 Named wavelengths
+
+`range JW1 JW2` takes *indices* into a fixed wavelength file, so it can only reach
+wavelengths that file already carries. Polarized transfer needs named wavelengths
+instead, so `run_q_jori.x` gained three modes:
+
+```
+./run_q_jori.x lam L1 [L2 ...] [ja=JA1:JA2] [tag=NAME]   # wavelengths [um]
+./run_q_jori.x lamfile PATH    [ja=JA1:JA2] [tag=NAME]   # one per line, '#' comments
+./run_q_jori.x lammerge STEM FILE [FILE ...]             # reassemble ja= windows
+```
+
+Each writes `q_astrodust_jori_P0.20_Fe0.00_1.400.TAG.dat` and its companion
+`.TAG.wave` axis; the default TAG is `lamL` for one wavelength, `lamLMIN_LMAX_nN`
+for several. The pair is handed to `sed_init` / `build_astrodust` through
+`qpol_euv_path` and `qpol_euv_wave_path`. The reader interpolates in log(lambda),
+so at least two wavelengths are needed to fill a band.
+
+`ja=JA1:JA2` splits the 169 radii over separate **processes**, not threads:
+Mishchenko's solver passes the converged T-matrix to `AMPL` through `COMMON /TMAT/`
+and keeps further working storage in COMMON (two blocks blank), so the core is not
+re-entrant. Measured: three wavelengths (0.0124, 0.0602, 0.0912 um) over 57
+processes took 9m22s wall for 34m48s of processor time — a speedup of 3.7, not 57,
+because the few radii just below the x = 60 ceiling carry nearly all the cost.
+
+`euv` selects a wavelength *axis file* and therefore cannot be combined with
+`lam` / `lamfile` / `lammerge`, which carry their own axis; the driver rejects the
+combination.
+
+### 9.2 The extreme-ultraviolet band, and what is currently zero
+
+`Cpol`, `Cpol_ext` and `Cbir_ext` cover the whole DH21 axis (1129 nodes,
+0.0912-39810 um) — from the release table
+`data/dielectric/q_DH21Ad_P0.20_Fe0.00_1.400.dat.gz` by default, or from the
+regenerated `tmatrix/output/q_astrodust_jori_P0.20_Fe0.00_1.400.dat.gz` through
+`qpol_path`, which carries the 4th block and so is what makes `Cbir_ext` nonzero.
+Below the Lyman limit `build_Cpol` looks for the companion table
+`q_astrodust_jori_euv_P0.20_Fe0.00_1.400.dat.gz`, **which is not shipped**. When it
+is absent the extreme-ultraviolet dichroism and birefringence stay zero and the
+reader says so on stderr ("zero by omission, not by physics").
+
+That zero is a documented deficit, not the physics. First-principles size integrals
+(`tmatrix/driver/euv_polarized_optics.f90`) give the alignment-weighted
+`|C_pol,ext| / C_ext` as 1.26e-3 at the 0.0912 um seam, *rising* to 3.64e-3 near
+20.6 eV (a factor 2.9) before decaying to 1.6e-4 at 100 eV, with the sign opposite
+to the optical band; the reversal is near 0.106 um. `|C_bir,ext| / C_ext` falls
+monotonically from 7.2e-3 at the seam and changes sign near 51 eV. A sphere has
+exactly zero dichroic extinction and exactly zero birefringence, so scalar EUV
+optics on the volume-equivalent sphere could not have supplied these entries at
+all — the shape has to be retained.
+
+With the companion table present, `build_Cpol` interpolates it in log(lambda) and
+log(a); a grid outside the table's 0.0124-0.0912 um coverage is rejected with
+`status = 9` rather than extrapolated. The axis stops at 0.0124 um (100 eV) because
+above x = 60 only the opaque geometric-optics limit remains, and it needs the chord
+optical depth 4 Im(m) x to be large: that quantity is 3.7 at x = 50 there and falls
+below 1 by 200 eV.
+
+### 9.3 Certification above x = 50
+
+Section 3.3 left the x > 50 branch as a documented approximation. The
+extreme ultraviolet pushes size parameters up, so `euv`, `lam` and `lamfile` now
+attempt the T-matrix up to x = 60 (`X_TM_MAX`) under a two-setting certification:
+each node in (50, 60] is solved at the production `(DDELT, NDGS) = (1e-3, 2)` and
+again at `(3e-3, 3)`, and is kept only if the two agree to `TOL_CHK = 5%` on every
+channel; a node that fails falls to geometric optics. The plain and `range` sweeps
+keep the older x > 50 rule, so they still reproduce the shipped table byte for byte.
+
+- `NDGS = 4` is unusable as the check setting: `NGAUSS = NDGS*NMAX` then exceeds
+  `NPNG1 = 300`, so it would fail for want of storage, not of convergence.
+- **`IERR = 0` is not sufficient at x >~ 55.** At lambda = 0.0912 um and
+  a = 0.9441 um (x = 65.04) the solver reports `IERR = 0` and returns a value 50%
+  away from its neighbors. At the seam, x = 51.7 and 54.7 pass the two-setting
+  check while 57.9, 61.4, 65.0 and 68.9 fail.
+- The polarized channels are differences of order-unity numbers, so a relative
+  comparison alone is meaningless near their zeros; `Q_POL_FLOOR = 1e-3` sets the
+  absolute scale below which they need not agree (about `|C_pol|/C_ext ~ 5e-4`
+  after the size integral, ~1% of the V-band dichroism).
+
+**What it costs.** Leaving x > 60 at the geometric-optics value (which carries
+`Q_pol,ext = Q_bir,ext = 0` exactly) loses part of the dichroic extinction: nothing
+at the seam, ~8% of the band total at 0.031 um, ~20% at 0.022 um, ~46% at
+0.0124 um. The true value lies between the certified figure (lower bound 1.06e-4)
+and a 1/x continuation (upper bound 3.14e-4). `C_pol` — the absorption dichroism
+that drives polarized emission — has no such gap, because the geometric-optics
+limit obtains it from the opaque-grain Fresnel surface integral.
+
+### 9.4 Why the library still reads tables
+
+No T-matrix is solved at run time. The reason is not code size but that convergence
+cannot be certified at x >~ 55 from inside a transport loop (§9.3), and a silently
+wrong optic is worse than a missing one. Tables are generated offline, where a node
+can be rejected and the rejection counted in the file header. This is the current
+policy, not a permanent decision: the T-matrix core is expected to be revised.

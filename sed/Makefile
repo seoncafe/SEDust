@@ -1,13 +1,13 @@
 # SEDust -- SED solver build.
 #
 # Targets:
-#   make                     main_astrodust.x main_dl07.x make_enthalpy.x
+#   make                     main_astrodust.x main_dl07.x make_enthalpy.x calc_kext.x
 #   make libsedust.a         the model-agnostic dust-emission library
-#   make calc_kext_astrodust.x   astrodust+PAH extinction/albedo/<cos>/K_abs
-#   make calc_kext_dl07.x        DL07 (WD01 MW) extinction/albedo/<cos>
+#   make calc_kext.x             size-integrated transport optics for any model
 #   make calc_polext.x           HD23 polarized extinction per H, vs release
 #   make test_scatmat_aligned.x  aligned-scattering reader/interface checks
 #   make test_scalar_mode.x      scalar-only build mode checks
+#   make test_euv_extension.x    EUV grid-extension (lam_min) checks
 #   make use_dustlib_scatmat.x   rt_example aligned-scattering consumer (vs libsedust.a)
 #   make clean / cleanall
 #
@@ -17,6 +17,11 @@
 #   ./main_astrodust.x qm              # energy-space, thermal-discrete
 #   ./main_astrodust.x qm_dbcon        # energy-space, thermal-continuous
 #   ./main_dl07.x
+#   ./calc_kext.x astrodust            # -> ../data/kext_astrodust_MW.dat
+#   ./calc_kext.x astrodust euv        # carried into the ionizing band
+#   ./calc_kext.x dl07 euv
+#   ./calc_kext.x zubko
+#   ./calc_kext.x from_files <descriptor> [data_dir]
 
 FC      = gfortran
 # Portable baseline by default so libsedust.a runs on any node it is copied
@@ -46,7 +51,8 @@ SRC_DL07MOD = src/pah_ioniz.f90 src/grain_dist.f90 src/q_silicate.f90 \
 SRC_PIPE    = $(SRC_BASE) src/enthalpy_v2.f90 \
               src/size_dist.f90 src/q_table.f90 src/q_table_jori.f90 \
               src/enthalpy_astrodust.f90 \
-              src/mie.f90 src/q_graphite.f90 src/q_graphite_d16.f90 \
+              src/mie.f90 src/q_astrodust.f90 \
+              src/q_graphite.f90 src/q_graphite_d16.f90 \
               src/q_graphite_d16_sphere.f90 src/qpah.f90 \
               src/radfield.f90 src/p_sub.f90 \
               src/stoch_qm.f90 $(SRC_DL07MOD) \
@@ -56,15 +62,7 @@ SRC_PIPE    = $(SRC_BASE) src/enthalpy_v2.f90 \
 SRC_ENTH    = $(SRC_BASE) src/enthalpy_v2.f90 \
               src/enthalpy_astrodust.f90 src/make_enthalpy.f90
 
-# Cross section / albedo / <cos> for the DL07 (WD01 MW) model.  Reuses the
-# same optics the SED model uses (silicate + graphite Mie, qpah xi-blend).
-SRC_KEXT    = $(SRC_BASE) src/mie.f90 \
-              src/q_graphite.f90 src/q_graphite_d16.f90 \
-              src/q_graphite_d16_sphere.f90 \
-              src/qpah.f90 src/pah_ioniz.f90 src/grain_dist.f90 \
-              src/q_silicate.f90 src/calc_kext_dl07.f90
-
-all: make_enthalpy.x main_astrodust.x main_dl07.x
+all: make_enthalpy.x main_astrodust.x main_dl07.x main_zubko.x calc_kext.x
 
 make_enthalpy.x: $(SRC_ENTH)
 	$(FC) $(FFLAGS) $^ -o $@
@@ -78,16 +76,22 @@ main_dl07.x: $(SRC_PIPE) src/main_dl07.f90
 	$(FC) $(FFLAGS) $^ -o $@
 	@echo 'Built: ./main_dl07.x'
 
-calc_kext_dl07.x: $(SRC_KEXT)
+# Zubko/ZDA emission.  Its optics grid (1.0e-3 um, from the DustEM tables)
+# reaches far past the illuminated band, so it is the one that exercises the
+# difference between "hardest photon the field carries" and "short end of the
+# grid".
+main_zubko.x: $(SRC_PIPE) src/main_zubko.f90
 	$(FC) $(FFLAGS) $^ -o $@
-	@echo 'Built: ./calc_kext_dl07.x'
+	@echo 'Built: ./main_zubko.x'
 
-# astrodust+PAH extinction/albedo/<cos>/K_abs -> ../data/kext_astrodust_MW.dat.
-# Reuses the full SED pipeline (sed_init) so the optics are identical to
-# main_astrodust.x; just swaps the driver.
-calc_kext_astrodust.x: $(SRC_PIPE) src/calc_kext_astrodust.f90
+# Size-integrated transport optics (lambda, albedo, <cos>, C_ext/C_abs/C_sca
+# per H) for astrodust, DL07, Zubko or any file-defined model -> ../data/.
+# Reuses the full SED pipeline, so every table it writes is the same optics
+# the RT hosts get from dust_extinction; only the driver differs.  The
+# astrodust product also carries the dichroic C_polext/H column.
+calc_kext.x: $(SRC_PIPE) src/calc_kext.f90
 	$(FC) $(FFLAGS) $^ -o $@
-	@echo 'Built: ./calc_kext_astrodust.x'
+	@echo 'Built: ./calc_kext.x'
 
 # Polarized extinction per H from the orientation-resolved DH21 spheroid
 # table, compared against ../data/release/polarized_extinction.dat.
@@ -117,6 +121,16 @@ test_scalar_mode.x: $(SRC_TSCALAR)
 	$(FC) $(FFLAGS) $^ -o $@
 	@echo 'Built: ./test_scalar_mode.x'
 
+# EUV grid-extension checks (build_astrodust's optional lam_min): the extended
+# grid, the table block left untouched, the join at the Q table's 0.0912 um end,
+# and a polarized build whose EUV block reproduces the dichroism and
+# birefringence a direct T-matrix calculation of the same spheroid gives.
+SRC_TEUV = $(SRC_PIPE) src/dust_lib.f90 src/test_euv_extension.f90
+
+test_euv_extension.x: $(SRC_TEUV)
+	$(FC) $(FFLAGS) $^ -o $@
+	@echo 'Built: ./test_euv_extension.x'
+
 # ---- libsedust.a: the model-agnostic dust-emission library, for a Fortran
 # 3D RT code to link.  Usage from the RT:  use dust_lib ;  link
 #   -L<sed> -lsedust  with the .mod search path  -I<sed>
@@ -140,9 +154,10 @@ clean:
 	rm -f *.o *.mod
 
 cleanall: clean
-	rm -f *.a make_enthalpy.x main_astrodust.x main_dl07.x \
-	      calc_kext_dl07.x calc_kext_astrodust.x calc_polext.x \
-	      test_scatmat_aligned.x test_scalar_mode.x use_dustlib_scatmat.x
+	rm -f *.a make_enthalpy.x main_astrodust.x main_dl07.x main_zubko.x \
+	      calc_kext.x calc_polext.x \
+	      test_scatmat_aligned.x test_scalar_mode.x test_euv_extension.x \
+	      use_dustlib_scatmat.x
 	rm -f output/astrodust_irem_ours_*.dat output/enthalpy_*.dat
 
 .PHONY: all clean cleanall

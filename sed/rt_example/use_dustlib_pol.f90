@@ -23,6 +23,15 @@ program use_dustlib_pol
    ! sky-plane angle), phi the position angle of the projected field, F_turb a
    ! turbulent depolarization factor. The same sin^2(gamma)*F_turb multiplies
    ! Cpol_ext when the extinction matrix is assembled.
+   !
+   ! WHICH WAVELENGTHS ARE POLARIZED. Cpol_ext, Cbir_ext and lamI_pol come from
+   ! the orientation-resolved table, which covers 0.0912 - 39810 um -- the whole
+   ! grid this example builds. A host that widens the grid with build_astrodust's
+   ! lam_min gets an EUV block whose polarized optics need the separate EUV
+   ! companion table (tmatrix/driver/run_q_jori.f90, `euv` mode); without it
+   ! build_Cpol reports on stderr that the band is zero BY OMISSION and leaves it
+   ! there, so a host must read that report rather than take the zero for
+   ! physics. The scalar Cext / Cabs / Csca are unaffected either way.
    use constants, only: wp
    use radfield,  only: J_Mathis
    use dust_lib,  only: dust_model_t, build_astrodust, dust_emission, &

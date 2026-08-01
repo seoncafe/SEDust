@@ -14,7 +14,11 @@ module qpah
    ! Implements the QPAH_DL07 + drude_DL07 + cutoff
    ! trio); graphite branch reads Draine's precomputed *sphere* Q_abs
    ! table for D16 turbostratic graphite (MG EMT) via
-   ! q_graphite_d16_sphere_mod. Empirically (sed_total_d16_threeway.pdf)
+   ! q_graphite_d16_sphere_mod, EXCEPT above the PAH cutoff, where the
+   ! table's smallest radius (1e-3 um) is larger than the grains that
+   ! matter and graphite is taken from the D03 dielectric functions
+   ! instead (see the branch in qpah_dl07).
+   ! Empirically (sed_total_d16_threeway.pdf)
    ! the sphere variant agrees with HD23 PAH_irem.dat better than the
    ! b/a=1.4 oblate spheroid variant in the 30-3000 um sub-mm band
    ! (PAH-only median ratio +0.1% vs +25%), consistent with HD23 inheriting
@@ -136,7 +140,24 @@ contains
       Qabs_pah = CPAH * Nc / (pi * (radius*1d-4)**2)
 
       ! DL07 eq. 5-7 / HD23 eq. 15-16: blend with random-orient graphite Q.
-      if (qpah_use_d03_graphite) then
+      if (x >= 17.25d0 .or. qpah_use_d03_graphite) then
+         ! Above the PAH cutoff (21.4 eV) C^PAH = 0, so graphite IS the whole
+         ! carbonaceous absorption -- and there it is needed down to
+         ! a ~ 4e-4 um, below the D16 sphere table's smallest radius
+         ! (D16_LAM_MIN_UM's companion floor a = 1e-3 um).  That table clamps
+         ! to its boundary radius, and since Q_abs is in the Rayleigh limit
+         ! (x = 2 pi a / lambda ~ 0.04) where Q_abs ~ a, the clamp
+         ! overestimates the absorption by a/1e-3 um, up to 2.4x.  So take
+         ! graphite from the D03 dielectric functions instead: Mie on the
+         ! random-orientation average (1/3 E||c + 2/3 E_|_c) with no radius
+         ! clamp, valid to 6.2e-5 um.  Longward of the cutoff the D16 table
+         ! stays in use: there xi_gra weights graphite by only 0.01 for the
+         ! small grains, and the table is what matches HD23 PAH_irem.dat in
+         ! the 30-3000 um band (see the module header).
+         ! This branch is unreachable unless the caller's wavelength grid is
+         ! carried below 1/17.25 um = 0.05797 um.  The T-matrix Q table stops
+         ! at 0.0912 um (1/0.0912 = 10.96 < 17.25), so a run on the plain
+         ! table grid never enters it and is unaffected.
          call q_graphite_d03_abs(radius, lambda, Qabs_gra)   ! DL07 D03 graphite
       else
          call q_graphite_d16_abs(radius, lambda, Qabs_gra)   ! HD23 D16 (default)
@@ -279,7 +300,9 @@ contains
 
       Qabs_pah = CPAH * Nc / (pi * (radius*1d-4)**2)
 
-      if (qpah_use_d03_graphite) then
+      ! Above the PAH cutoff graphite is the whole carbonaceous absorption and
+      ! is needed below the D16 table's smallest radius; see qpah_dl07.
+      if (x >= 17.25d0 .or. qpah_use_d03_graphite) then
          call q_graphite_d03_abs(radius, lambda, Qabs_gra)
       else
          call q_graphite_d16_abs(radius, lambda, Qabs_gra)
