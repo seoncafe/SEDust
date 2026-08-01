@@ -23,7 +23,7 @@ module sed_astrodust_mod
    use, intrinsic :: iso_fortran_env, only: real64
    use constants,             only: wp
    use sed_mathlib,               only: interp, first_location, last_location
-   use radfield,              only: bbody, calc_bbody
+   use radfield,              only: bbody, calc_bbody, hardest_photon_energy
    use p_sub,                 only: p_sub_setup, calc_Teq, calc_P
    use q_table_mod,           only: load_q_table, &
                                     qt_n_lam=>n_lam, qt_n_aeff=>n_aeff, &
@@ -972,14 +972,21 @@ contains
                ! --- window for THIS grain ---
                call interp(T_first, H_pop(:, ir), Teq, EEQ)
                ! The bound needs the hardest single photon the FIELD can
-               ! deliver, which is hc/lam(1) on whatever grid the model was
-               ! built with.  U_UV1_ERG (13.6 eV) is that photon only when the
-               ! grid stops at the Lyman limit; an EUV-extended grid carries
-               ! photons up to hc/lam(1), and a top set from 13.6 eV would clip
-               ! the excursions they drive.  On the unextended grid
-               ! hc/0.0912 um = 13.595 eV < 13.6 eV, so the max() returns
-               ! U_UV1_ERG unchanged there.
-               call U_to_T(max(U_UV1_ERG, HC_ERG_UM/lam(1)) + 2.0_wp*EEQ, &
+               ! deliver, hardest_photon_energy(lam, J_lam) -- NOT hc/lam(1),
+               ! which is only the short end of the model's optics grid.  The
+               ! two coincide for astrodust and DL07, whose Q tables stop at
+               ! the Lyman limit, and there hc/0.0912 um = 13.595 eV < 13.6 eV
+               ! so the max() returns U_UV1_ERG unchanged.  They diverge for
+               ! Zubko/ZDA, whose DustEM tables start at 1.0e-3 um (1.24 keV)
+               ! while the illuminating field still stops at the Lyman limit:
+               ! reading the grid there would raise the top of the enthalpy bin
+               ! set by a factor 91 with no photon behind it.  U_UV1_ERG
+               ! (13.6 eV) is the correct bound only when the field itself
+               ! stops at the Lyman limit; a field carried into the EUV raises
+               ! it, and a top set from 13.6 eV would clip the excursions its
+               ! hardest photons drive.
+               call U_to_T(max(U_UV1_ERG, hardest_photon_energy(lam, J_lam)) &
+                           + 2.0_wp*EEQ, &
                            H_pop(:, ir), log_H_pop(:, ir), Tmax_n)
                ! Pad the analytic top by one guard step (e^0.5 in T): the
                ! multi-photon tail at U ~ a few extends slightly past the
@@ -1402,12 +1409,20 @@ contains
       allocate(H(NT), kappB(NT), lnP(NT), U(NT))
 
       ! Initial guesses (Draine v7 lines 637-651).  The single-photon term is
-      ! the hardest photon the grid carries, hc/lam(1), which is 13.595 eV on
-      ! the unextended grid and so leaves U_UV1_ERG (13.6 eV) selected there;
-      ! an EUV-extended grid raises it.  This is only the starting window --
-      ! the loop below expands UMAX until the tail is resolved -- but starting
-      ! it below the true single-photon bound wastes iterations.
-      UMAX = max(max(U_UV1_ERG, HC_ERG_UM/lam(1)) + 2.0_wp*EEQ, UMAXMIN_ERG)
+      ! the hardest photon the FIELD carries, hardest_photon_energy(lam,J_lam),
+      ! not hc/lam(1): the latter is the short end of the model's optics grid,
+      ! which coincides with the field only when the grid stops where the
+      ! illumination does.  It does for astrodust and DL07 (Lyman limit,
+      ! 13.595 eV, so U_UV1_ERG stays selected); it does not for Zubko/ZDA,
+      ! whose DustEM tables reach 1.0e-3 um and would hand back 1.24 keV for a
+      ! field that carries nothing below 0.0912 um.  A field genuinely carried
+      ! into the EUV does raise the bound, which is the point.  This is only
+      ! the starting window -- the loop below expands UMAX until the tail is
+      ! resolved -- but starting it away from the true single-photon bound
+      ! wastes iterations, and starting it too high leaves the bins coarse
+      ! because the contraction is guarded and iteration-capped.
+      UMAX = max(max(U_UV1_ERG, hardest_photon_energy(lam, J_lam)) &
+                 + 2.0_wp*EEQ, UMAXMIN_ERG)
       if (EEQ < 0.1_wp * EEQSS_ERG) then
          UMIN = 0.0_wp
       else

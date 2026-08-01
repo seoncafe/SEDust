@@ -60,9 +60,12 @@ top-level configure; each subdirectory has its own `Makefile`.
 ```sh
 # the SED solver
 cd sed
-make                        # make_enthalpy.x main_astrodust.x main_dl07.x calc_kext.x
-./main_astrodust.x             # astrodust+PAH SED at log U = 0.20 -> output/
+make                        # make_enthalpy.x main_astrodust.x main_dl07.x
+                            # main_zubko.x calc_kext.x
+./main_astrodust.x          # astrodust+PAH SED at log U = 0.20 -> output/
 ./main_dl07.x               # Draine & Li (2007) SED at U = 1   -> output/
+./main_zubko.x              # Zubko/ZDA SED at U = 1            -> output/
+./main_zubko.x euv          # ... with the field carried into the EUV
 
 # the library, for embedding in an RT code
 make libsedust.a            # link with:  -L. -lsedust -I.
@@ -112,6 +115,29 @@ band**: the HD23 release stops at 12.4 eV, exactly where the extension begins.
 The DL07 model *can* be checked, and agrees with Draine's published table for
 the same model to 0.056-0.86% in C_ext per decade. See
 `docs/SEDust_user_manual.pdf` for the full accounting.
+
+### The single-photon ceiling comes from the field
+
+The stochastic solvers cap the enthalpy window at the energy of the hardest
+single photon a grain can absorb, `max(13.6 eV, hc/lambda_hard)`, where
+`lambda_hard` is the shortest wavelength at which the incident `J_lambda`
+exceeds 1e-12 of its own peak (`hardest_photon_energy` in
+`sed/src/radfield.f90`). **That ceiling is a property of the radiation field,
+not of the wavelength grid.** The two coincide for astrodust and DL07, whose Q
+table floor is the Lyman limit itself (13.595 eV < 13.6 eV, so the constant
+stays selected); they differ by a factor of 91 for Zubko, whose DustEM tables
+start at 1e-3 um (1239.8 eV) while a Mathis field carries nothing below
+0.0912 um. Reading the grid there would coarsen the fixed-count enthalpy bins —
+and the refinement loops, guarded and capped at ten iterations on the way down,
+would not walk it back — shifting the emergent SED by 1-2% with no photon behind
+it. `docs/EUV_EXTENSION_HOST_REGRESSION.md` records the measurement.
+
+`./main_zubko.x [euv]` is the driver that keeps this path covered: Zubko is the
+one shipped model whose optics grid reaches far past the band a transported field
+occupies, so anything that reads the grid where it should read the field shows up
+there and nowhere else. It prints both candidates side by side. **Nothing changes
+for a model built without `lam_min`** — astrodust and DL07 keep the 13.6 eV
+constant either way.
 
 ## Stochastic heating
 
@@ -165,4 +191,4 @@ Kwang-il Seon (KASI/UST)
 
 ---
 
-Last updated: 2026-08-01 23:03 KST
+Last updated: 2026-08-02 00:30 KST

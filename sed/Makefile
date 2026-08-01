@@ -1,7 +1,8 @@
 # SEDust -- SED solver build.
 #
 # Targets:
-#   make                     main_astrodust.x main_dl07.x make_enthalpy.x calc_kext.x
+#   make                     main_astrodust.x main_dl07.x main_zubko.x
+#                            make_enthalpy.x calc_kext.x
 #   make libsedust.a         the model-agnostic dust-emission library
 #   make calc_kext.x         size-integrated transport optics for any model
 #   make clean / cleanall
@@ -12,6 +13,8 @@
 #   ./main_astrodust.x qm              # energy-space, thermal-discrete
 #   ./main_astrodust.x qm_dbcon        # energy-space, thermal-continuous
 #   ./main_dl07.x
+#   ./main_zubko.x                     # Zubko/ZDA emission
+#   ./main_zubko.x euv                 # ... with the field carried into the EUV
 #   ./calc_kext.x astrodust            # -> ../data/kext_astrodust_MW.dat
 #   ./calc_kext.x astrodust euv        # carried into the ionizing band
 #   ./calc_kext.x dl07 euv
@@ -57,7 +60,7 @@ SRC_PIPE    = $(SRC_BASE) src/enthalpy_v2.f90 \
 SRC_ENTH    = $(SRC_BASE) src/enthalpy_v2.f90 \
               src/enthalpy_astrodust.f90 src/make_enthalpy.f90
 
-all: make_enthalpy.x main_astrodust.x main_dl07.x calc_kext.x
+all: make_enthalpy.x main_astrodust.x main_dl07.x main_zubko.x calc_kext.x
 
 make_enthalpy.x: $(SRC_ENTH)
 	$(FC) $(FFLAGS) $^ -o $@
@@ -70,6 +73,13 @@ main_astrodust.x: $(SRC_PIPE) src/main_astrodust.f90
 main_dl07.x: $(SRC_PIPE) src/main_dl07.f90
 	$(FC) $(FFLAGS) $^ -o $@
 	@echo 'Built: ./main_dl07.x'
+
+# Zubko/ZDA emission. The only shipped model whose optics grid reaches far
+# past the illuminated band, so it is the one that exercises the difference
+# between "hardest photon the field carries" and "short end of the grid".
+main_zubko.x: $(SRC_PIPE) src/main_zubko.f90
+	$(FC) $(FFLAGS) $^ -o $@
+	@echo 'Built: ./main_zubko.x'
 
 # Size-integrated transport optics (lambda, albedo, <cos>, C_ext/C_abs/C_sca
 # per H) for astrodust, DL07, Zubko or any file-defined model -> ../data/.
@@ -95,7 +105,7 @@ clean:
 	rm -f *.o *.mod
 
 cleanall: clean
-	rm -f *.a make_enthalpy.x main_astrodust.x main_dl07.x calc_kext.x
+	rm -f *.a make_enthalpy.x main_astrodust.x main_dl07.x main_zubko.x calc_kext.x
 	rm -f output/astrodust_irem_ours_*.dat output/enthalpy_*.dat
 
 .PHONY: all clean cleanall

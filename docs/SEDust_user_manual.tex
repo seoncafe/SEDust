@@ -477,14 +477,111 @@ and $-0.36\%$, and the albedo by $+2.31\%$ where its neighbors give $+1.59\%$
 and $+1.39\%$ --- a seam of roughly one percentage point, consistent with the
 2\% shape error being carried mostly by $Q_{\rm sca}$.
 
+\subsection{The single-photon ceiling comes from the field}\label{sec:euv-ceiling}
+
+The stochastic solvers set the top of a grain's enthalpy window from the energy
+of the hardest single photon it can absorb. That ceiling used to be the
+hard-coded Lyman limit, $13.6\,$eV, which an ionizing band makes wrong: a photon
+harder than the ceiling drives an excursion the window cannot hold. It is now
+\begin{center}
+$\max\!\left(13.6\,\mathrm{eV},\ hc/\lambda_{\rm hard}\right)$, \qquad
+$\lambda_{\rm hard} = \min\left\{\lambda_i\ :\ J_\lambda(\lambda_i) >
+10^{-12}\,\max_j J_\lambda(\lambda_j)\right\}$,
+\end{center}
+computed by \code{hardest\_photon\_energy} in \code{sed/src/radfield.f90} and
+called from all three places that need it --- \code{sed\_grain\_loop} and
+\code{narrow\_iterative} in \code{sed\_astrodust.f90}, and
+\code{qm\_solve\_grain} in \code{stoch\_qm.f90}. Any units may be passed for
+$J_\lambda$, since only ratios within the array are used.
+
+\paragraph{The ceiling is a property of the field, not of the grid.} That
+distinction is the whole point, and a coincidence hides it. A model's wavelength
+grid is the grid of its optics tables, which can reach far past the band a
+transported field occupies:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+model & grid floor & implied photon energy \\
+\midrule
+astrodust & $0.0912$\um\ (T-matrix $Q$ table)        & $13.595\,$eV \\
+DL07      & $0.0912$\um\ (the same table)            & $13.595\,$eV \\
+Zubko     & $1.000\times10^{-3}$\um\ (DustEM tables) & $1239.8\,$eV \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent For astrodust and DL07 the grid floor \emph{is} the Lyman limit, so
+$13.595\,\mathrm{eV} < 13.6\,\mathrm{eV}$: the maximum returns the constant, and
+grid and field give the same answer whichever one is measured. For Zubko they
+differ by a factor of 91, and the field is the one that is right --- a Mathis
+field carries no photon at all below $0.0912$\um, however far the optics table
+extends.
+
+\paragraph{Taking it from the grid costs resolution, not physics.}
+\code{umax} sets the upper edge of a \emph{fixed} number of enthalpy bins, so a
+ceiling 91 times too high starts the solve with bins 91 times too coarse. The
+refinement loops do contract the window once the top bin is unpopulated, but the
+contraction is guarded (\code{umax > 1.02*umaxlo} and
+\code{umax > 1.01*ub(jcut)}) and capped at \code{MAX\_ITER = 10}, so it does not
+return to where it began; expansion carries no such guard. Measured in a host
+code on the Zubko model, with no \code{lam\_min} requested at all: dust
+temperature $+0.0705\,$K median and positive in every cell, the ten brightest
+SED bins $-0.9$ to $-1.9\%$, the emission image $1.9\%$ median and $5.4\%$
+maximum, total emitted energy $-0.08\%$. A systematic redistribution at nearly
+conserved energy is what a coarser bin grid produces, and
+\code{docs/EUV\_EXTENSION\_HOST\_REGRESSION.md} records the measurement.
+
+\paragraph{Why $10^{-12}$ of the peak, and not simply $J_\lambda>0$.} Exact
+zeros must be excluded --- \code{J\_Mathis} returns exactly zero below
+$0.0912$\um\ --- but an exact positivity test is too fragile: a host that hands
+over denormal or roundoff-level residue in its unilluminated bins would push the
+ceiling back up by orders of magnitude. A component a fraction $10^{-12}$ below
+the peak of $J_\lambda$ contributes at most that fraction of the photon
+absorption rate; allowing two decades for the run of $C_{\rm abs}$ across the
+illuminated band, the enthalpy states it could populate carry probability
+$\lesssim10^{-10}$ of the peak, at or below the $10^{-13}$ tail level
+(\code{PMIN\_UP}, \code{PMIN\_UP\_QM}) at which both solvers already truncate
+the window. Such a component cannot change a resolved excursion, and $10^{-12}$
+still sits eighteen decades above the residue it is meant to reject.
+
+\medskip
+\noindent The error is one-sided on purpose. Both refinement loops \emph{expand} the
+window while the top bin is still populated, so an underestimated ceiling is
+corrected as the loop runs; the guarded contraction can stop short of where it
+began, so an overestimate is not corrected at all. \code{MAX\_ITER = 10} bounds
+the correction in either direction. Overestimating is therefore the dangerous
+direction, which is why the threshold is set high enough to reject junk rather
+than as low as floating point allows.
+
+\paragraph{\code{main\_zubko.x} exists to keep this path covered.} The defect
+escaped \code{main\_astrodust.x} and \code{main\_dl07.x} because for those two
+models the grid floor and the field's short end are the same number: no driver
+in the tree ran the emission solvers on a model whose optics grid reaches past
+the illuminated band. \code{main\_zubko.x} (\S\ref{sec:standalone:zubko}) closes
+that gap and is built by the default \code{make}. It prints the two candidates
+side by side, so the difference shows in the first lines of output:
+\begin{lstlisting}[style=sh]
+$ ./main_zubko.x            # Mathis field, stops at the Lyman limit
+ optics grid short end :  1.0000E-03 um  ->   1.23984E+03 eV
+ hardest photon in the field:    1.35946E+01 eV
+ single-photon bound in use :    1.36000E+01 eV
+$ ./main_zubko.x euv        # a hard component added below the Lyman limit
+ optics grid short end :  1.0000E-03 um  ->   1.23984E+03 eV
+ hardest photon in the field:    3.70141E+02 eV
+ single-photon bound in use :    3.70141E+02 eV
+\end{lstlisting}
+Without \code{euv} the ceiling must stay at $13.6\,$eV however far the optics
+grid extends, and the Zubko SED is then identical to what the hard-coded
+constant produced; with \code{euv} it must follow the field up, and it does.
+
+\paragraph{A model built without \code{lam\_min} is unaffected.} For astrodust
+and DL07 the maximum selects the $13.6\,$eV constant on the unextended grid
+either way, so those results are unchanged to the last bit.
+
 \subsection{What else the extension does, and does not, change}
 
 \begin{itemize}
-\item \textbf{The hardest photon the solver assumes} is no longer the fixed
-      \SI{13.6}{\electronvolt} Lyman limit but $\max(13.6\ \mathrm{eV},\
-      hc/\lambda_1)$, taken from the grid itself. On the unextended grid
-      $hc/0.0912\,\mu\mathrm{m} = \SI{13.595}{\electronvolt} <
-      \SI{13.6}{\electronvolt}$, so the value there is unchanged.
 \item \textbf{The Planck integrals are anchored to the table range.} The
       internal log-$\lambda$ integration grid for $\kappa_B(T,a)$ keeps its step
       and its sample points over the optics-table range and merely
@@ -563,7 +660,7 @@ the PAH cross sections.
 %====================================================================
 \section{Standalone programs}\label{sec:standalone}
 
-\code{make} in \code{SEDust/sed/} builds four executables. All of them are run
+\code{make} in \code{SEDust/sed/} builds five executables. All of them are run
 \emph{from} \code{SEDust/sed/}, because every data path is relative to
 \code{../}.
 
@@ -636,6 +733,33 @@ WD01 size distribution. \code{./main\_dl07.x [model] [qm|draine]}, where
 \code{smc}; an unknown name is rejected with the valid list. Writes
 \code{output/dl07\_sed\_ours\_<model>[\_qm|\_draine].dat} with columns
 $\lambda$, total, silicate and carbonaceous \lamIlam/\Nh.
+
+\subsection{\code{main\_zubko.x} --- the Zubko/ZDA SED, and the wide-grid
+regression}\label{sec:standalone:zubko}
+
+Solves the Zubko, Dwek \& Arendt (2004) BARE-GR-S SED --- PAH + graphite +
+silicate, the ZDA size-distribution formula, the DustEM optics and calorimetry
+tables --- for a Mathis ISRF at $U = 1$, and writes
+\code{output/zubko\_sed\_ours[\_<solver>][\_euv].dat} with columns $\lambda$,
+total, PAH, graphite and silicate \lamIlam/\Nh.
+\begin{lstlisting}[style=sh]
+./main_zubko.x [heuristic | draine | qm | equil] [euv]
+\end{lstlisting}
+\noindent The solver defaults to \code{heuristic}, the model default.
+\code{euv} replaces the Mathis field below the Lyman limit by a diluted
+$10^5\,$K blackbody, so that the field really does carry photons above
+$13.6\,$eV; the dilution is chosen so that band deposits roughly as much power
+as the whole Mathis field --- enough for the hard photons to matter, little
+enough that the small grains still heat stochastically.
+
+\medskip
+\noindent This is the emission counterpart of \code{./calc\_kext.x zubko}, which exercises
+only the extinction size integral. It exists because Zubko is the one shipped
+model whose optics grid ($10^{-3}$\um) reaches far past the band a transported
+field occupies ($0.0912$\um\ for the Mathis ISRF), so anything in the
+stochastic-heating path that reads the grid where it should read the field shows
+up here and nowhere else. Running it with and without \code{euv} is the
+regression of \S\ref{sec:euv-ceiling}.
 
 \subsection{\code{make\_enthalpy.x} --- enthalpy tables (diagnostic)}
 

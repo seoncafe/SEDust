@@ -145,7 +145,7 @@ verbatim:
 \end{itemize}
 
 The two-track structure is propagated through the rest of the
-pipeline: astrodust uses the T-matrix Q tables and full MPFA machinery,
+pipeline: astrodust uses the T-matrix Q tables and the full MPFA,
 PAH uses the DL07 cross sections (Sect.~\ref{sec:pah}). The
 present section is the astrodust track. The PAH track lives in
 Sect.~\ref{sec:pah}.
@@ -239,7 +239,7 @@ To evaluate eq.~\ref{eq:tau} our pipeline (\texttt{sed/tau\_check.x})
 loads the full Q table, interpolates \Qabs\ and \Qext\ in
 $\log a$ from the 169-point DH21 grid onto the 167-point size-distribution
 grid, sums, and interpolates onto the HD23 release wavelength grid
-(\texttt{wav.dat}, 1000 points). The same machinery is run for the
+(\texttt{wav.dat}, 1000 points). The same calculation is run for the
 scattering channel against \texttt{scattering.dat}.
 
 The maximum $|$relative residual$|$ across the entire grid is
@@ -510,7 +510,7 @@ and a single static $T$ grid spanning the full $[2.7, 5000]$~K range
 cannot resolve it. DL07 Fig.~4 illustrates this directly: $P(T)$ for a
 \SI{100}{\angstrom} grain at $U = 1$ drops by more than twelve orders
 of magnitude over less than a factor of two in $T$. A coarse or
-mis-centred grid simply returns numerical zeros across the entire
+mis-centered grid simply returns numerical zeros across the entire
 range, mimicking ``no stochastic contribution'' when in reality the
 grain is sharply peaked at $\Teq$.
 
@@ -974,7 +974,7 @@ Intergalactic Medium}, 2011, Table~12.1). The CMB component was
 also updated from $2.9$\,K to the Mather-et-al.\ value $2.725$\,K.
 Both corrections were added behind a toggle
 (\texttt{use\_mathis\_corrected}, default \texttt{.true.} in
-\texttt{radfield.f90}) so the historical original-Mathis behaviour
+\texttt{radfield.f90}) so the historical original-Mathis behavior
 can be reproduced as \texttt{./main\_astrodust.x mathis\_orig} which
 prefixes outputs with \texttt{morig\_}.
 
@@ -1174,7 +1174,7 @@ correction for $N_{\rm atom} < 10^4$, as recommended by HD23 since PAH
 is carbonaceous.
 
 A new function \texttt{sed\_solve\_pah(J\_lam, lamI\_lam\_out)} solves
-the single-cell PAH SED with the same dynamic-T machinery. The combined
+the single-cell PAH SED with the same dynamic-T solver. The combined
 total (Ad + PAH) is compared against HD23
 \texttt{model\_irem.dat} in \autoref{fig:sed_total}.
 
@@ -1713,11 +1713,11 @@ other side.
 
 In the size-integrated curve the step across
 \SI{0.0912}{\micro\meter} is $-1.54\%$ in $C_{\rm ext}$ and $-1.90\%$
-in $C_{\rm abs}$, \emph{smaller} than the neighbouring steps of the
+in $C_{\rm abs}$, \emph{smaller} than the neighboring steps of the
 table's own grid ($-1.95\%$ / $-1.72\%$ and $-2.20\%$ / $-1.94\%$), so
 absorption and extinction join without a visible discontinuity.
 Scattering does show one: $C_{\rm sca}$ steps $+0.74\%$ where its
-neighbours step $-0.39\%$ and $-0.36\%$, and the albedo $+2.31\%$
+neighbors step $-0.39\%$ and $-0.36\%$, and the albedo $+2.31\%$
 against $+1.59\%$ and $+1.39\%$ --- a seam of roughly one percentage
 point, consistent with the $2\%$ shape error being carried mostly by
 $Q_{\rm sca}$.
@@ -1728,12 +1728,71 @@ Extending the grid must not move quantities that live in the infrared.
 Two places needed explicit care.
 
 \paragraph{The hardest photon.} The stochastic solver sets the top of
-its enthalpy window from the most energetic photon the grid carries.
-That was a hard-coded \SI{13.6}{\electronvolt}; it is now
-$\max(13.6\,\mathrm{eV},\ hc/\lambda_1)$ taken from the grid itself. On
-the unextended grid $hc/\SI{0.0912}{\micro\meter} =
-\SI{13.595}{\electronvolt} < \SI{13.6}{\electronvolt}$, so the maximum
-returns the old constant and nothing changes there.
+its enthalpy window from the energy of the hardest single photon a
+grain can absorb. That bound was a hard-coded
+\SI{13.6}{\electronvolt}, which an ionizing band makes wrong. It is now
+$\max(\SI{13.6}{\electronvolt},\ hc/\lambda_{\rm hard})$, where
+$\lambda_{\rm hard}$ is the shortest wavelength at which the incident
+$J_\lambda$ exceeds $10^{-12}$ of its own peak
+(\texttt{hardest\_photon\_energy} in \texttt{sed/src/radfield.f90},
+called from \texttt{sed\_grain\_loop} and \texttt{narrow\_iterative} in
+\texttt{sed\_astrodust.f90} and from \texttt{qm\_solve\_grain} in
+\texttt{stoch\_qm.f90}).
+
+\medskip
+\noindent\emph{The bound is a property of the radiation field, not of the
+wavelength grid.} That distinction is invisible for astrodust and DL07,
+whose $Q$ table stops at the Lyman limit itself:
+$hc/\SI{0.0912}{\micro\meter} = \SI{13.595}{\electronvolt} <
+\SI{13.6}{\electronvolt}$, so the maximum returns the old constant and
+nothing in this report moves. It is not invisible for Zubko, whose
+DustEM tables start at \SI{1e-3}{\micro\meter}: measuring the grid
+there gives \SI{1239.8}{\electronvolt}, ninety-one times the Lyman
+limit, for a Mathis field that carries no photon below
+\SI{0.0912}{\micro\meter}.
+
+\medskip
+\noindent Ninety-one times too high is not a change of physics but a
+change of resolution. \texttt{umax} sets the upper edge of a
+\emph{fixed} number of enthalpy bins, and the refinement loops do not
+walk it back: contraction stops once \texttt{umax} reaches
+\texttt{1.02*umaxlo} or \texttt{1.01*ub(jcut)}, and the loop is capped
+at ten iterations, while expansion carries no such guard. Measured
+through a host code with no
+\texttt{lam\_min} requested at all, the residual coarseness moved the
+Zubko dust temperature by \SI{+0.07}{\kelvin} in every cell, the ten
+brightest SED bins by $-0.9$ to $-1.9\%$ and the emission image by up
+to $5.4\%$, at $-0.08\%$ in total emitted energy
+(\texttt{docs/EUV\_EXTENSION\_HOST\_REGRESSION.md}).
+
+\medskip
+\noindent The $10^{-12}$ floor is there to reject denormal and roundoff residue
+in the unilluminated bins of a field handed over by a host, which an
+exact $J_\lambda>0$ test would accept. It is a safe place to cut: a
+component that far below the peak contributes at most that fraction of
+the photon absorption rate, and allowing two decades for the run of
+$C_{\rm abs}$ across the illuminated band, the enthalpy states it could
+populate hold probability $\lesssim10^{-10}$ of the peak --- below the
+$10^{-13}$ level at which both solvers already truncate the window. The
+one-sidedness is deliberate: the loops widen a window that is too
+narrow but are guarded against narrowing one that is too wide, so an
+overestimated bound leaves the bins coarse where an underestimated one
+is corrected as the loop runs. The ten-iteration cap bounds the
+correction either way.
+
+\medskip
+\noindent Nothing in the tree ran the emission solvers on a model whose optics
+grid reaches past the illuminated band, which is why the grid-based
+form survived review. \texttt{sed/src/main\_zubko.f90} closes that gap
+and is built by the default \texttt{make}: \texttt{./main\_zubko.x}
+heats the ZDA model with a Mathis field that stops at the Lyman limit,
+\texttt{./main\_zubko.x euv} adds a hard component below it, and each
+prints the grid candidate against the field candidate ---
+\SI{1239.8}{\electronvolt} against \SI{13.59}{\electronvolt} and
+against \SI{370.1}{\electronvolt} respectively. The first run leaves
+the bound at exactly \SI{13.6}{\electronvolt} and so reproduces what
+the hard-coded constant produced; the second shows the bound following
+the field up.
 
 \paragraph{The Planck integrals.} $\kappa_B(T,a) = \int
 C_{\rm abs}B_\lambda\,{\rm d}\lambda$ is evaluated on an internal
@@ -1978,7 +2037,7 @@ than temperature space, using mode-aware enthalpy bins and a
 thermal-discrete (\texttt{dbdis}) transition matrix solved with a BiCG
 sparse linear solver.  A second cooling treatment,
 thermal-continuous (\texttt{dbcon}), collapses the downward rates into
-the nearest-neighbour transition and so reproduces the
+the nearest-neighbor transition and so reproduces the
 continuous-cooling approximation of the temperature-space GD recursion;
 comparing the two isolates the cost of that approximation.  The
 energy-space solver agrees with the production GD solver to within a
