@@ -54,7 +54,7 @@ SRC_PIPE    = $(SRC_BASE) src/enthalpy_v2.f90 \
               src/q_graphite_d16_sphere.f90 src/qpah.f90 \
               src/radfield.f90 src/p_sub.f90 \
               src/stoch_qm.f90 $(SRC_DL07MOD) \
-              src/dust_model_mod.f90 src/zubko_io.f90 \
+              src/dust_model_mod.f90 src/kext_table.f90 src/zubko_io.f90 \
               src/sed_astrodust.f90
 
 SRC_ENTH    = $(SRC_BASE) src/enthalpy_v2.f90 \

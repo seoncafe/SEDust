@@ -14,7 +14,10 @@ as a static library, `libsedust.a`, with a two-step API: initialize once, then
 solve one cell at a time. Alongside the emission call, `dust_extinction` returns
 the model's size-integrated extinction, scattering, and asymmetry cross sections
 per H on the same wavelength grid, so a transfer code takes its opacity and its
-emission from one model object. Every model builder and solver call takes an
+emission from one model object. Those cross sections come from the precomputed
+`data/kext_*.dat` table the builder loaded, which is the same product
+`calc_kext.x` writes; the size integral behind it is `size_integrated_extinction`.
+Every model builder and solver call takes an
 optional `status` argument, so a missing input file or an invalid model is
 reported back to the host instead of stopping the process.
 
@@ -191,4 +194,4 @@ Kwang-il Seon (KASI/UST)
 
 ---
 
-Last updated: 2026-08-02 00:30 KST
+Last updated: 2026-08-02 08:47 KST

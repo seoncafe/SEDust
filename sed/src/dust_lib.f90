@@ -64,17 +64,48 @@ module dust_lib
    !
    ! EXTINCTION. dust_extinction is the extinction counterpart of
    ! dust_emission, so an RT host takes its opacity from the same model object
-   ! and on the same wavelength grid (m%lam) as its emission, rather than
-   ! parsing data/kext_astrodust_MW.dat and interpolating off that file's grid:
+   ! and on the same wavelength grid (m%lam) as its emission:
    !   call dust_extinction(m, Cext, Cabs, Csca [, gbar] [, albedo] [, status])
    ! All three required outputs are (m%NLAM) cross sections per H atom
-   ! [cm^2/H], integrated over the size distribution of every population:
-   ! Cext = Cabs + Csca. Optional gbar is the scattering-weighted asymmetry
-   ! <cos>, sum dn*Csca*g / sum dn*Csca, and is 0 at wavelengths where nothing
-   ! scatters; optional albedo is Csca/Cext, 0 where Cext underflows.
+   ! [cm^2/H], with Cext = Cabs + Csca. Optional gbar is the
+   ! scattering-weighted asymmetry <cos>; optional albedo is Csca/Cext, 0 where
+   ! Cext underflows.
    !
-   ! Every model carries its scattering optics, so the four builders all return
-   ! a physical albedo:
+   ! What it returns is the PRECOMPUTED size-integrated curve of a
+   ! data/kext_*.dat table, interpolated onto m%lam -- log(lambda)-log(C) for
+   ! the cross sections, linear in log(lambda) for <cos>, and the table value
+   ! itself wherever a model wavelength coincides with a table wavelength.
+   ! Nothing is integrated over grain size at call time. The size integral is
+   ! size_integrated_extinction, which is what wrote those tables and is what
+   ! the standalone calc_kext.x calls; it is re-exported here for a host that
+   ! wants to redo the integral rather than read the product.
+   !
+   ! The BUILDER loads the table, not dust_extinction, because the table paths
+   ! are relative to the sed/ directory and a host is free to change directory
+   ! once the model is built. Each builder takes an optional kext_path:
+   !   call build_astrodust(m, qtab, sizedist, NT, T_lo, T_hi, &
+   !                        kext_path='../data/kext_astrodust_MW.dat')
+   ! A file named that way is a contract: if it cannot be read the build FAILS.
+   ! Omitting it falls to the model's default table --
+   !   astrodust   ../data/kext_astrodust_MW_euv.dat
+   !   dl07        ../data/kext_dl07_MW_euv.dat
+   !   zubko       ../data/kext_zubko_BARE_GR_S.dat
+   !   from_files  none
+   ! -- and a default that cannot be read leaves the model with no extinction
+   ! to serve (dust_extinction then reports status 2) but does NOT fail the
+   ! build, so a driver that only wants emission still runs.
+   !
+   ! The defaults are the EUV products because their wavelength range CONTAINS
+   ! the plain grid's: the two are the same size integral on the same optics,
+   ! the extended one merely carried below the T-matrix Q table's 0.0912 um
+   ! end, and their nodes coincide over the overlap. One default therefore
+   ! covers a host that transports ionizing radiation and one that does not.
+   ! It is the NARROWER non-EUV table that has to be named explicitly. A model
+   ! grid reaching outside the table it was given is refused (status 3), never
+   ! extrapolated.
+   !
+   ! Every model carries its scattering optics, so all four write a physical
+   ! albedo into their tables:
    !   astrodust  Csca and <cos> from the random-orientation T-matrix Q table
    !   dl07       Mie on the D03 astrosilicate and graphite dielectric
    !              functions (q_silicate_full / q_graphite_full); the PAH
@@ -82,9 +113,26 @@ module dust_lib
    !   zubko      Q_sca and <cos> columns of the model's own DustEM tables
    !   from_files same, for whatever tables the descriptor names
    ! A population that genuinely does not scatter leaves its optics unallocated
-   ! and contributes zero to those terms. status is 0 on success and 1 if an
-   ! output array is not of size m%NLAM; when it is omitted such a call stops
-   ! the run.
+   ! and contributes zero to the size integral. dust_extinction's status is 0
+   ! on success, 1 if an output array is not of size m%NLAM, 2 if no table was
+   ! loaded, and 3 if m%lam reaches outside the table; when status is omitted
+   ! such a call stops the run.
+   !
+   ! DUST MASS. The cross sections above are per H nucleon. A host that carries
+   ! a dust mass density instead converts with the model's own dust mass per H:
+   !   Mdust_H = dust_mass_per_H(m)                ! [g/H]
+   !   K_abs   = Cabs / Mdust_H                    ! [cm^2/g]
+   ! It is one wavelength-independent constant, summed from the model's size
+   ! distribution and the solid density of each population's material,
+   ! M_dust/N_H = sum_pop rho_bulk * sum_a (4/3) pi a^3 dn(a). Every builder
+   ! states those densities, so it is defined for every model in the tree:
+   !   astrodust  rho_Ad = 2.74, rho_PAH = 2.0 g/cm^3 (HD23)
+   !   dl07       astrosilicate 3.5, graphite 2.24 g/cm^3 (Draine & Lee 1984,
+   !              Weingartner & Draine 2001)
+   !   zubko      each component's density as its own DustEM optics file states it
+   !   from_files the descriptor's rho, or the optics file's when that is 0
+   ! It is the same number calc_kext.x normalizes the trailing K_abs column of
+   ! every data/kext_*.dat by.
    !
    ! dust_build_table and dust_emission_interp take the same optional final
    ! status argument (0 = success); when present a bad argument is reported
@@ -105,6 +153,8 @@ module dust_lib
    ! is simply "0 = built, non-zero = build failed". Codes per builder:
    !   build_astrodust / build_dl07:  1 Q-table load failed
    !                                  2 size-distribution load failed
+   !                                  5 an explicitly named kext_path failed to
+   !                                    load
    !   build_astrodust only, and only when lam_min asks for the EUV band:
    !                                  3 astrodust dielectric function load failed
    !                                  4 lam_min below that dielectric function's
@@ -112,10 +162,12 @@ module dust_lib
    !   build_zubko:   1 config read failed        2 fewer than 3 components
    !                  3 a component's optics read  4 grid inconsistent
    !                  5 a component's calorimetry read failed
+   !                  6 an explicitly named kext_path failed to load
    !   build_from_files: 1 descriptor open   2 too many pop: lines
    !                     3 invalid channel   4 no pop: lines
    !                     5 optics read       6 grid inconsistent
    !                     7 size-dist read    8 calorimetry read failed
+   !                     9 an explicitly named kext_path failed to load
    !
    ! The validated solver core (sed_grain_loop & helpers in sed_astrodust_mod)
    ! is untouched; this module only re-exports the model API and adds the
@@ -125,13 +177,15 @@ module dust_lib
    use sed_astrodust_mod, only: dust_model_t, &
                                 build_astrodust, build_dl07, build_zubko, build_from_files, &
                                 dust_emission, dust_emission_single_teq, &
-                                dust_extinction
+                                dust_extinction, size_integrated_extinction, &
+                                dust_mass_per_H
    implicit none
    private
 
    ! Re-exported model API
    public :: dust_model_t, build_astrodust, build_dl07, build_zubko, build_from_files
    public :: dust_emission, dust_emission_single_teq, dust_extinction
+   public :: size_integrated_extinction, dust_mass_per_H
    ! Table API
    public :: dust_emis_table_t, dust_build_table, dust_emission_interp, dust_free_table
    ! Convenience accessors

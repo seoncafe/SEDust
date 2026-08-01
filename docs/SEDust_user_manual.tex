@@ -112,7 +112,7 @@ sources into the same directory and \code{make -j} would race on the
 \code{.mod} files.
 
 %====================================================================
-\section{Models and builders}
+\section{Models and builders}\label{sec:models}
 
 Each builder fills a \code{dust\_model\_t} and defines the model's output
 channels (Table~\ref{tab:models}).
@@ -138,11 +138,11 @@ parameters internally.}
 keyword argument in the order shown):
 \begin{lstlisting}
 call build_astrodust(m, qtable_path, sizedist_path, NT, T_lo, T_hi &
-                     [, status] [, lam_min] [, astrodust_index_path])
+                     [, status] [, lam_min] [, astrodust_index_path] [, kext_path])
 call build_dl07     (m, qtable_path, sizedist_path, sd_index, U, NT, T_lo, T_hi &
-                     [, status] [, lam_min])
-call build_zubko    (m, config_path, data_dir, NT, T_lo, T_hi [, status])
-call build_from_files(m, descriptor_path, data_dir, NT, T_lo, T_hi [, status])
+                     [, status] [, lam_min] [, kext_path])
+call build_zubko    (m, config_path, data_dir, NT, T_lo, T_hi [, status] [, kext_path])
+call build_from_files(m, descriptor_path, data_dir, NT, T_lo, T_hi [, status] [, kext_path])
 \end{lstlisting}
 
 \begin{itemize}
@@ -170,7 +170,39 @@ call build_from_files(m, descriptor_path, data_dir, NT, T_lo, T_hi [, status])
 data/dielectric/index_DH21Ad_P0.20_0.00_1.400   <->
 tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat
 \end{lstlisting}
+\item \code{kext\_path} (optional, all builders): the precomputed
+      size-integrated extinction table this model will serve through
+      \code{dust\_extinction} (\S\ref{sec:ext}). The builder loads it, because
+      the path is relative to \code{sed/} and a host is free to change
+      directory once the model is built. Naming a file is a contract: if it
+      cannot be read the \emph{build fails}. Omitted, the model's default table
+      (Table~\ref{tab:models:kext}) is tried, and a default that is not there
+      leaves the model with no extinction to serve --- but the build succeeds,
+      so a driver that only computes emission still runs.
 \end{itemize}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+builder & default \code{kext\_path} \\
+\midrule
+\code{build\_astrodust}   & \code{../data/kext\_astrodust\_MW\_euv.dat} \\
+\code{build\_dl07}        & \code{../data/kext\_dl07\_MW\_euv.dat} \\
+\code{build\_zubko}       & \code{../data/kext\_zubko\_BARE\_GR\_S.dat} \\
+\code{build\_from\_files} & none \\
+\bottomrule
+\end{tabular}
+\caption{Default extinction table of each builder. The EUV product is the
+default wherever the model has one, because its wavelength range \emph{contains}
+the plain grid's: the two are the same size integral on the same optics, the
+extended one merely carried below $0.0912$\um, and their nodes coincide over the
+overlap. One default therefore serves a host that transports ionizing radiation
+and one that does not; it is the \emph{narrower} non-EUV table that has to be
+named explicitly. The Zubko model has no EUV extension and needs none --- its
+own optics table already reaches \SI{1.24}{\kilo\electronvolt}.}
+\label{tab:models:kext}
+\end{table}
 
 \paragraph{Two routes to the Zubko model.} \code{build\_zubko} evaluates the ZDA
 log-polynomial size-distribution \emph{formula} (coefficients read from
@@ -289,6 +321,10 @@ nonzero value only names the failing stage: the contract is simply
 \begin{itemize}
 \item \code{dust\_emission}: \code{1} unknown \code{stoch\_method};
       \code{2} \code{'qm'} selected but a population's radii are unset.
+\item \code{dust\_extinction}: \code{1} an output array is not of size
+      \code{m\%NLAM}; \code{2} no extinction table was loaded for this model;
+      \code{3} \code{m\%lam} reaches outside the loaded table's wavelength
+      range.
 \item \code{dust\_build\_table}: \code{1} \code{size(J\_ref)}$\,\ne$\code{m\%NLAM};
       \code{2} \code{size(U\_grid)}$\,<2$;
       \code{3} \code{U\_grid} not positive and strictly increasing.
@@ -302,23 +338,31 @@ nonzero value only names the failing stage: the contract is simply
       when \code{lam\_min} asks for the EUV band);
       \code{4} \code{lam\_min} is shorter than that dielectric function's own
       shortest wavelength ($1.00003\times10^{-4}$\,\um), which is refused rather
-      than served with a refractive index frozen at the table boundary.
+      than served with a refractive index frozen at the table boundary;
+      \code{5} an explicitly named \code{kext\_path} failed to load.
 \item \code{build\_dl07}: \code{1} $Q$-table load failed;
       \code{2} size-distribution load failed;
       \code{4} \code{lam\_min} is shorter than the D03 dielectric functions
       ($6.1992\times10^{-5}$\,\um\ --- the longer-reaching of astrosilicate and
-      graphite), refused for the same reason. (There is no code \code{3} on this
+      graphite), refused for the same reason (there is no code \code{3} on this
       path: this model needs no separate EUV dielectric function, because its
-      optics are D03 Mie at every wavelength.)
+      optics are D03 Mie at every wavelength);
+      \code{5} an explicitly named \code{kext\_path} failed to load.
 \item \code{build\_zubko}: \code{1} config read; \code{2} fewer than 3 components;
       \code{3} a component's optics read; \code{4} grid inconsistent;
-      \code{5} a component's calorimetry read failed.
+      \code{5} a component's calorimetry read failed;
+      \code{6} an explicitly named \code{kext\_path} failed to load.
 \item \code{build\_from\_files}: \code{1} descriptor open;
       \code{2} too many \code{pop:} lines; \code{3} invalid channel;
       \code{4} no \code{pop:} lines; \code{5} optics read;
       \code{6} grid inconsistent; \code{7} size-distribution read;
-      \code{8} calorimetry read failed.
+      \code{8} calorimetry read failed;
+      \code{9} an explicitly named \code{kext\_path} failed to load.
 \end{itemize}
+
+\noindent A \emph{default} extinction table that cannot be read is not an error
+on any of these paths: the model is built without one, and the failure surfaces
+later as \code{dust\_extinction} status \code{2}.
 
 %====================================================================
 \section{Computing extinction}\label{sec:ext}
@@ -335,34 +379,68 @@ call dust_extinction(m, Cext, Cabs, Csca [, gbar] [, albedo] [, status])
       absorption and scattering cross sections per H atom [\,cm$^2$/H\,], with
       $C_{\rm ext} = C_{\rm abs} + C_{\rm sca}$.
 \item \code{gbar(m\%NLAM)} (optional): the scattering-weighted asymmetry
-      $\langle\cos\theta\rangle$, and $0$ where nothing scatters.
+      $\langle\cos\theta\rangle$ as the table carries it, which is $0$ where
+      nothing scatters and may be slightly negative in the far infrared.
 \item \code{albedo(m\%NLAM)} (optional): $C_{\rm sca}/C_{\rm ext}$, and $0$
       where $C_{\rm ext}$ underflows to zero. It is derived here rather than by
       the caller so that every host gets the same convention at those
       wavelengths.
 \item \code{status} (optional): error report; see \S\ref{sec:status}.
-      It is $0$ on success and $1$ if an output array is not of size
-      \code{m\%NLAM}.
+      It is $0$ on success, $1$ if an output array is not of size
+      \code{m\%NLAM}, $2$ if no extinction table was loaded for this model, and
+      $3$ if \code{m\%lam} reaches outside the table.
 \end{itemize}
 
-\noindent Each output is the plain binned sum over every population of the
-model, since ${\rm d}n(a)$ already carries the bin width:
+\subsection{What the call returns, and where it comes from}
+
+\code{dust\_extinction} \emph{reads} the size-integrated curve from the
+precomputed table its builder loaded (\code{m\%kext\_path}; see the
+\code{kext\_path} argument in \S\ref{sec:models} and
+Table~\ref{tab:models:kext}).
+Nothing is integrated over grain size at call time. The size integral itself is
+the separate routine \code{size\_integrated\_extinction}, which has the same
+argument list, is what \code{calc\_kext.x} calls, and is what wrote those
+tables:
 \begin{align*}
 C_{\rm abs}(\lambda) &= \sum_{\rm pop}\sum_a {\rm d}n(a)\,C_{\rm abs}(\lambda,a), \\
 C_{\rm sca}(\lambda) &= \sum_{\rm pop}\sum_a {\rm d}n(a)\,C_{\rm sca}(\lambda,a), \\
-\langle\cos\theta\rangle &= \frac{\sum {\rm d}n\,C_{\rm sca}\,g}{\sum {\rm d}n\,C_{\rm sca}}.
+\langle\cos\theta\rangle &= \frac{\sum {\rm d}n\,C_{\rm sca}\,g}{\sum {\rm d}n\,C_{\rm sca}},
 \end{align*}
-The values reproduce \code{data/kext\_astrodust\_MW.dat} to the precision with
-which that file is written, because the file is written by this very call
-(\S\ref{sec:standalone}): \code{calc\_kext.x} builds the model and calls
-\code{dust\_extinction}, so the tables under \code{data/} \emph{are} the optics
-an RT host gets in memory. The difference is only that the library returns the
-result on \code{m\%lam} directly, so a host using its own wavelength grid need
-not interpolate off the grid the driver happened to write.
+a plain binned sum over every population, since ${\rm d}n(a)$ already carries
+the bin width. It is exported too, for a host that would rather redo the
+integral than read the product; \code{dust\_extinction} is the route that gives
+an RT host exactly the numbers that were checked against the HD23 release and
+Draine's own \code{kext\_albedo} tables (\S\ref{sec:euv-refs}).
 
-\paragraph{Every model scatters.} All four builders now populate the
-extinction-side scattering optics, so \code{albedo} and \code{gbar} are physical
-for every model:
+\paragraph{Why the builder holds the table.} The table paths are relative to
+\code{sed/}, and a host typically changes directory back as soon as the model is
+built --- so the file has to be opened while the builder still runs, not when
+\code{dust\_extinction} is called. That is the whole reason \code{kext\_path} is
+a builder argument.
+
+\paragraph{Interpolation onto \code{m\%lam}.} Needed only where the table grid
+and the model grid differ. $C_{\rm ext}$, $C_{\rm abs}$ and $C_{\rm sca}$ are
+positive and locally power-law in $\lambda$, so they are interpolated linearly
+in $(\ln\lambda,\ln C)$; $\langle\cos\theta\rangle$ changes sign and has no
+logarithm, so it is linear in $\ln\lambda$. Where a model wavelength
+\emph{coincides} with a table wavelength the table value is returned unchanged,
+which is the normal case for the shipped defaults --- the EUV table's nodes are
+the plain grid's nodes over the overlap. Outside the tabulated range there is no
+optics to serve, so the call is refused (\code{status = 3}) rather than
+extrapolated.
+
+\paragraph{Two quantities are not read straight from the file.}
+\code{albedo} is re-derived as $C_{\rm sca}/C_{\rm ext}$ from the interpolated
+cross sections instead of from the file's own albedo column, because the cross
+sections are written with more digits (the oldest product rounds its albedo
+column to six decimals, which floors to $0$ in the far infrared).
+\code{gbar} \emph{is} taken from the table as it stands: it is already the
+scattering-weighted average, and re-weighting it would need the size-resolved
+optics the table does not carry.
+
+\paragraph{Every model scatters.} All four builders populate the
+extinction-side scattering optics, so the \code{albedo} and \code{gbar} in every
+table are physical:
 
 \begin{itemize}
 \item \textbf{astrodust}: $C_{\rm sca}$ and $\langle\cos\theta\rangle$ from the
@@ -384,6 +462,89 @@ optics unallocated and contributes zero. In the astrodust model the PAHs are
 exactly that case --- PAH scattering is Rayleigh-negligible --- so they enter
 extinction through absorption only, and the astrodust grains carry all the
 scattering and the asymmetry.
+
+\subsection{Dust mass per H, and mass opacity}\label{sec:mass}
+
+Everything above is \emph{per H nucleon}. A host that carries a dust mass
+density instead needs the model's own dust mass per H to convert:
+
+\begin{lstlisting}
+Mdust_H = dust_mass_per_H(m)     ! [g/H], one wavelength-independent constant
+Kabs    = Cabs / Mdust_H         ! [cm^2/g], Draine's mass opacity
+\end{lstlisting}
+
+\noindent It is the model's own size distribution weighted by the solid density
+of each population's material,
+\[
+  \frac{M_{\rm dust}}{N_{\rm H}}
+   = \sum_{\rm pop}\rho_{\rm bulk}\sum_a \tfrac43\pi a^3\,{\rm d}n(a),
+\]
+with $a$ the effective radius in cm and ${\rm d}n(a)$ the same binned number per
+H the size integral above uses, so no ${\rm d}a$ enters the sum. The density
+lives on the population (\code{m\%pops(ip)\%rho\_bulk}, \S\ref{sec:model});
+a population whose model states none leaves it at $0$ and contributes no mass.
+The function reads \code{m} only --- it needs no radiation field and no built
+optics beyond the model itself.
+
+Every builder states its densities, so the quantity is defined for every model
+in the tree:
+
+\begin{center}
+\small
+\begin{tabular}{@{}llr@{}}
+\toprule
+model & grain densities [g/cm$^3$] & $M_{\rm dust}/N_{\rm H}$ [g/H] \\
+\midrule
+astrodust & astrodust $2.74$, PAH $2.0$ (HD23)            & $1.185\times10^{-26}$ \\
+DL07      & astrosilicate $3.5$, graphite $2.2$           & $1.750\times10^{-26}$ \\
+Zubko     & each component's own DustEM header ($3.5$, $2.24$, $2.24$) & $1.444\times10^{-26}$ \\
+file-defined & the \code{pop:} line's \code{rho}, else the optics file's & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The astrodust numbers are Hensley \& Draine (2023): $\rho_{\rm Ad} =
+2.74$ is the porosity-corrected solid density of the astrodust material, and
+$\rho_{\rm PAH} = 2.0$ is the density behind that model's $N_{\rm C} = 417\,
+(a/{\rm nm})^3$. The DL07 numbers are stated by that model's own paper, Draine
+\& Li (2007) \S2, in the paragraph defining the effective radius $a = (3M/4\pi
+\rho)^{1/3}$: amorphous silicate $3.5$ (also the density the DL01
+astrosilicate enthalpy is built on), and carbonaceous grains ``a mass density
+due to graphitic carbon alone of $\rho = 2.2$ g cm$^{-3}$''. That is
+deliberately \emph{not} the $2.24$ of WD01 and LD01, which is the density
+implied by the carbon-atom count $N_{\rm C} = 470\,(a/{\rm nm})^3$ the DL07
+builder selects; DL07 kept that count and quoted the rounder density, and the
+model being built here is DL07's. The DL07 carbonaceous grains are one material
+sequence, PAH-like at small $a$ and graphite-like at large $a$ with no size at
+which the solid changes, so the one density is used across the whole sequence.
+That the astrodust PAHs take $2.0$ and the DL07 carbonaceous grains $2.2$ is a
+difference between the two \emph{models}, not a correction of one by the other.
+The Zubko densities are read out of the \code{Density} entry in the header of
+each component's own DustEM optics table.
+
+\paragraph{Check against DL07, and a caution about his data files.} Table 3 of
+Draine \& Li (2007) lists $M_{\rm dust}/M_{\rm H}$ for each of its physical dust
+models. Model $j_M = 7$, \code{MW3.1\_60}, is the size distribution this builder
+selects, and the paper gives $0.0104$. Ours is $1.750\times10^{-26}$ g/H, i.e.\
+$0.01046$ --- agreement to $0.55\%$.
+
+Draine's \code{kext\_albedo\_WD\_MW\_3.1\_60\_D03.all} header, for the same
+model, instead states $M_{\rm dust}/N_{\rm H} = 1.870\times10^{-26}$ g/H, which
+is $M_{\rm dust}/M_{\rm H} = 0.0112$ and therefore $7.4\%$ away from his own
+Table 3. The same file disagrees with the paper on the silicate normalization as
+well: the header says the WD01 abundances were reduced by $0.93$, while the
+caption of the paper's Fig.~11 says $0.92$.
+
+The position taken here is to follow the \emph{file} for the optics and the
+\emph{paper} for the mass. The optics are not in question --- our $C_{\rm
+abs}/{\rm H}$ agrees with the 2003 table to better than $0.5\%$ from $100$ to
+$10^4$\um, where absorption is in the Rayleigh limit and therefore proportional
+to the grain volume, so the material volumes agree with his. What is left is the
+$\sim1\%$ that the two normalizations differ by, and it is Draine's own internal
+inconsistency, not ours. It is worth knowing that $K_{\rm abs}$ from any of these
+tables inherits whichever convention was used: $C_{\rm abs}/{\rm H}$ is the
+better-determined quantity, and $K_{\rm abs}$ is that number divided by a
+convention.
 
 %====================================================================
 \section{The extreme-ultraviolet extension}\label{sec:euv}
@@ -666,9 +827,10 @@ the PAH cross sections.
 
 \subsection{\code{calc\_kext.x} --- size-integrated transport optics}
 
-Builds a model and calls \code{dust\_extinction} on it, then writes the result
-under \code{../data/}. Every model goes through the same two calls, so the files
-it writes \emph{are} the optics an RT host gets in memory.
+Builds a model and calls \code{size\_integrated\_extinction} on it, then writes
+the result under \code{../data/}. Every model goes through the same two calls,
+and \code{dust\_extinction} later serves these very files back to an RT host, so
+the files written here \emph{are} the optics that host gets in memory.
 
 \begin{lstlisting}[style=sh]
 ./calc_kext.x astrodust [euv | <lam_min in um>]
@@ -685,16 +847,20 @@ directory defaults to the descriptor's own directory.
 
 Columns are
 \begin{center}
-\code{lambda[um] \ albedo \ <cos> \ C\_ext/H \ C\_abs/H \ C\_sca/H}
+\code{lambda[um] \ albedo \ <cos> \ C\_ext/H \ C\_abs/H \ C\_sca/H \ K\_abs}
 \end{center}
-in \um\ and cm$^2$ per H nucleon, with a trailing $K_{\rm abs}$ [cm$^2$/g]
-column when the model supplies its dust mass per H. The first four columns are
-in the order of Draine's \code{kext\_albedo} tables, so a reader written for
-those files (for instance the \code{par\%ion\_dust\_kext} reader of the MoCHII
-host, which takes four reals from each row and uses $\lambda$, albedo and
-$C_{\rm ext}$) parses these unchanged. Note the fifth column differs from
+in \um\ and cm$^2$ per H nucleon, with $K_{\rm abs}$ in cm$^2$/g. The first four
+columns are in the order of Draine's \code{kext\_albedo} tables, so a reader
+written for those files (for instance the \code{par\%ion\_dust\_kext} reader of
+the MoCHII host, which takes four reals from each row and uses $\lambda$, albedo
+and $C_{\rm ext}$) parses these unchanged. Note the fifth column differs from
 Draine's: his is $K_{\rm abs}$ [cm$^2$/g], ours is $C_{\rm abs}$/H
-[cm$^2$/H], so no dust-mass normalization is folded into our numbers.
+[cm$^2$/H], so no dust-mass normalization is folded into the first six columns.
+$K_{\rm abs} = (C_{\rm abs}/{\rm H})\,/\,(M_{\rm dust}/N_{\rm H})$ is written as
+a separate trailing column instead, on every product, because every model states
+its grain densities (\S\ref{sec:mass}). The header of each file records the
+$M_{\rm dust}/N_{\rm H}$ its $K_{\rm abs}$ column is normalized by and where
+that model's densities come from.
 
 After writing, the program checks $C_{\rm ext} = C_{\rm abs}+C_{\rm sca}$ and
 the ranges of albedo and $\langle\cos\theta\rangle$, and --- for astrodust and
@@ -704,9 +870,10 @@ Table~\ref{tab:refcoverage}.
 \paragraph{These files are transport optics, not a dust model.} They carry no
 size-resolved $C_{\rm abs}(\lambda,a)$, no grain enthalpy and no Planck
 integral, so stochastic heating and thermal emission cannot be computed from
-them. A host that needs emission must build the model and take the same curves
-from \code{dust\_extinction}, which is what keeps the absorbed power and the
-re-emitted spectrum referring to one and the same grain.
+them. A host that needs emission must build the model; the builder reads this
+curve back in, \code{dust\_extinction} serves it on the model wavelength grid
+and \code{dust\_emission} supplies the re-emitted spectrum, which is what keeps
+the absorbed power and the emission referring to one and the same grain.
 
 \subsection{\code{main\_astrodust.x} --- the astrodust production SED}
 
@@ -772,7 +939,7 @@ closed-form Debye sums directly in its inner loop. Use it to compare the two
 stages, to plot $U(T)$, or to spot-check against published DL01 values.
 
 %====================================================================
-\section{The model object and accessors}
+\section{The model object and accessors}\label{sec:model}
 
 \begin{lstlisting}
 type :: dust_model_t
@@ -793,10 +960,21 @@ end type
 
 \noindent Each \code{grain\_pop\_t} in \code{m\%pops} carries its own
 \code{aeff}, \code{dn}, \code{Cabs}, \code{Csca}, \code{gsca}, \code{kappB},
-\code{H} and \code{kappCMB} (plus cached logs). A model whose components have
+\code{H} and \code{kappCMB} (plus cached logs), and the scalar
+\code{rho\_bulk} [\,g/cm$^3$\,], the solid density of the material that
+population is made of. A model whose components have
 different size grids --- Zubko is the case in the tree --- is represented by
 populations of different lengths, which is why the solver takes the size count
 from \code{size(pops(ip)\%dn)} rather than from \code{m\%NA}.
+
+\paragraph{\code{rho\_bulk}.} It is what turns \code{dn} into a mass, and the
+only thing \code{dust\_mass\_per\_H} (\S\ref{sec:mass}) reads besides the size
+distribution. For a porous grain it is the density already reduced by the
+porosity, i.e.\ mass over the \emph{grain} volume $\tfrac43\pi a_{\rm eff}^3$,
+not over the solid volume inside it --- which is why the astrodust value is
+$\rho_{\rm Ad} = 2.74$ rather than the $3.425$ of the solid it is made of.
+Leaving it at its default $0$ declares that the model states no density, and
+that population then contributes no mass.
 
 \paragraph{Diagnostics.} \code{m\%verbose} (default \code{.false.}) keeps the
 library solve path silent; set it \code{.true.} to print the same solver
@@ -912,18 +1090,23 @@ file & rows & $\lambda$ range [\um] & what sets the short-wavelength floor \\
 \midrule
 \code{kext\_astrodust\_MW.dat}     & 1129 & $0.0912$--$39810$ &
 the T-matrix $Q$-table grid (no extension requested) \\
-\code{kext\_astrodust\_MW\_euv.dat} & 1719 & $1.001\times10^{-4}$--$39810$ &
+\code{kext\_astrodust\_MW\_euv.dat}$^\dagger$ & 1719 & $1.001\times10^{-4}$--$39810$ &
 the DH21 astrodust dielectric function, whose own table stops at
 $1.00003\times10^{-4}$ \\
-\code{kext\_dl07\_MW\_euv.dat}     & 1761 & $6.205\times10^{-5}$--$39810$ &
+\code{kext\_dl07\_MW.dat}          & 1129 & $0.0912$--$39810$ &
+the T-matrix $Q$-table grid (no extension requested) \\
+\code{kext\_dl07\_MW\_euv.dat}$^\dagger$ & 1761 & $6.205\times10^{-5}$--$39810$ &
 the D03 dielectric functions; the shorter-reaching of astrosilicate and
 graphite stops at $6.1992\times10^{-5}$ \\
-\code{kext\_zubko\_BARE\_GR\_S.dat} & 1201 & $10^{-3}$--$10^{4}$ &
+\code{kext\_zubko\_BARE\_GR\_S.dat}$^\dagger$ & 1201 & $10^{-3}$--$10^{4}$ &
 the ZDA optics table itself; this model has no extension and needs none \\
 \bottomrule
 \end{tabular}
 \caption{Size-integrated transport optics written by \code{calc\_kext.x}. All
-carry the columns of \S\ref{sec:standalone}.
+carry the columns of \S\ref{sec:standalone}. $^\dagger$~marks the file its
+builder loads by default (Table~\ref{tab:models:kext}); the others are there for
+a host that asks for them through \code{kext\_path}. A non-EUV product is a row
+subset of its EUV counterpart --- same grid, same numbers, over the overlap.
 \code{kext\_astrodust\_MW.dat} is a tracked regression reference and keeps its
 original narrower field widths; it is reproduced byte for byte by
 \code{./calc\_kext.x astrodust}.}

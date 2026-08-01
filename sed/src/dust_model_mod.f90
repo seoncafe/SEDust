@@ -14,9 +14,11 @@ module dust_model_mod
    !   aeff     [um]      effective-radius grid (NA)
    !   T_first  [K]       temperature grid (NT)
    !   dn       [1/H]     number of grains per H atom in each size bin (NA)
+   !   rho_bulk [g/cm^3]  solid mass density of the grain material, which turns
+   !                      dn into the population's mass per H
    !   Cabs/Csca[cm^2]    absorption/scattering cross section (NLAM, NA)
    !   gsca               scattering asymmetry <cos> (NLAM, NA), read only by
-   !                      dust_extinction
+   !                      size_integrated_extinction
    !   kappB    [..]      Planck-integral table used by calc_P/calc_Teq (NT, NA)
    !   H        [erg]     grain enthalpy (NT, NA)
    !   kappCMB  [..]      CMB-pumped term for calc_P (NA)
@@ -34,10 +36,18 @@ module dust_model_mod
       real(wp), allocatable :: aeff(:)              ! (NA) [um] effective-radius grid
       real(wp), allocatable :: dn(:)                ! (NA)
       real(wp), allocatable :: Cabs(:,:), Csca(:,:) ! (NLAM, NA)
-      ! Scattering asymmetry <cos>, read only by dust_extinction. Left
-      ! unallocated for a population that does not scatter (the PAHs), which is
-      ! how the extinction size integral recognizes a zero contribution.
+      ! Scattering asymmetry <cos>, read only by size_integrated_extinction.
+      ! Left unallocated for a population that does not scatter (the PAHs),
+      ! which is how the extinction size integral recognizes a zero contribution.
       real(wp), allocatable :: gsca(:,:)            ! (NLAM, NA) scattering asymmetry <cos>
+      ! Solid mass density of the grain material [g/cm^3], as the model defines
+      ! it -- for a porous grain the density already reduced by the porosity.
+      ! It converts the binned number per H into a mass per H,
+      !   M/H = rho_bulk * sum_a (4/3) pi a_cm^3 dn(a),
+      ! which is what dust_mass_per_H sums over the populations.  A model that
+      ! states no density leaves it at 0, and that population then contributes
+      ! nothing to the model's dust mass.
+      real(wp)              :: rho_bulk = 0.0_wp    ! [g/cm^3]
       real(wp), allocatable :: kappB(:,:), log_kappB(:,:)   ! (NT, NA)
       real(wp), allocatable :: H(:,:),     log_H(:,:)       ! (NT, NA)
       real(wp), allocatable :: kappCMB(:)           ! (NA)
@@ -60,6 +70,18 @@ module dust_model_mod
       ! When .false. (default), the library solve path stays silent; when
       ! .true. it emits the same solver diagnostics as the CLI drivers.
       logical               :: verbose = .false.
+      ! Size-integrated extinction curve this model serves to an RT host
+      ! (dust_extinction), read from a precomputed data/kext_*.dat table.
+      ! It is loaded by the builder, not by dust_extinction, because the table
+      ! path is relative to the sed/ directory and a host is free to change
+      ! directory once the model is built.  kext_n = 0 means no table was
+      ! loaded and dust_extinction has nothing to return.
+      character(len=512)    :: kext_path = ''
+      integer               :: kext_n    = 0
+      real(wp), allocatable :: kext_lam(:)                ! (kext_n) [um] ascending
+      real(wp), allocatable :: kext_Cext(:), kext_Cabs(:) ! (kext_n) [cm^2/H]
+      real(wp), allocatable :: kext_Csca(:)               ! (kext_n) [cm^2/H]
+      real(wp), allocatable :: kext_gbar(:)               ! (kext_n) <cos>
    end type dust_model_t
 
 contains
@@ -79,7 +101,13 @@ contains
       if (allocated(m%T_first))      deallocate(m%T_first)
       if (allocated(m%log_T_first))  deallocate(m%log_T_first)
       if (allocated(m%channel_name)) deallocate(m%channel_name)
+      if (allocated(m%kext_lam))     deallocate(m%kext_lam)
+      if (allocated(m%kext_Cext))    deallocate(m%kext_Cext)
+      if (allocated(m%kext_Cabs))    deallocate(m%kext_Cabs)
+      if (allocated(m%kext_Csca))    deallocate(m%kext_Csca)
+      if (allocated(m%kext_gbar))    deallocate(m%kext_gbar)
       m%NA = 0; m%NLAM = 0; m%NT = 0; m%n_channel = 0
+      m%kext_n = 0; m%kext_path = ''
    end subroutine free_dust_model
 
    subroutine free_pop(p)

@@ -15,14 +15,16 @@ program use_dustlib
    ! that the light the host removes from a ray and the light it puts back
    ! refer to the same grains.
    !
-   ! READING THE OPTICS FROM A FILE INSTEAD.  sed/calc_kext.x writes the very
-   ! same dust_extinction curves to ../data/kext_*.dat in the column order of
-   ! Draine's kext_albedo tables.  Read those when the host only transports
-   ! (no dust emission), or when it is not Fortran and cannot link this
-   ! library; link the library when the host also needs emission, because a
-   ! file cannot supply the size-resolved absorption the heating solver wants.
-   ! There is no library call that reads those files -- it would only hide
-   ! which of the two the host is really using.
+   ! WHERE THE TRANSPORT OPTICS COME FROM.  sed/calc_kext.x writes the
+   ! size-integrated curves to ../data/kext_*.dat in the column order of
+   ! Draine's kext_albedo tables, and dust_extinction serves one of those files
+   ! back on the model's own wavelength grid: the builder loads it (see
+   ! kext_path), because the paths are relative to sed/ and this program --
+   ! like a real host -- may change directory once the model is built.  A host
+   ! that is not Fortran, or that only transports and never emits, can read the
+   ! file directly instead; link the library when the host also needs emission,
+   ! because a file cannot supply the size-resolved absorption the heating
+   ! solver wants.
    use constants, only: wp
    use radfield,  only: J_Mathis
    use dust_lib,  only: dust_model_t, build_astrodust, &
@@ -57,6 +59,8 @@ program use_dustlib
    ! Cross sections per H nucleon [cm^2/H]; gbar is the scattering-weighted
    ! <cos> for the phase function and albedo = Csca/Cext.  Both are optional
    ! and are named here, so they stay correct however the argument list grows.
+   ! The curve comes from the table build_astrodust loaded above; status 2 would
+   ! mean no table was found, and status 3 that m%lam runs outside it.
    call dust_extinction(m, Cext, Cabs, Csca, gbar=gbar, albedo=albedo, status=st)
    if (st /= 0) then
       print '(a,i0)', ' dust_extinction failed, status = ', st
