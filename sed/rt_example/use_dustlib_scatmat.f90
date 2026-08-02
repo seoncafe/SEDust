@@ -21,6 +21,69 @@ program use_dustlib_scatmat
    ! Division of labor (plan Section 4): SEDust returns the matrices in the grain
    ! frame (z = B-hat); the RT does the meridional-basis rotations, azimuth
    ! sampling, peel-off, and the exp(-K tau) transfer.
+   !
+   ! WHERE THE NUMBERS COME FROM. This example draws on THREE routes, and they
+   ! do NOT respond alike to a change of alignment:
+   !
+   !   Cext, Cabs, Csca, gbar   READ FROM A TABLE -- one of the
+   !     [cm^2/H]               ../data/kext_*.dat products of calc_kext.x,
+   !                            attached to the model at build time and
+   !                            interpolated onto m%lam. Alignment does not
+   !                            enter them at all.
+   !   Cpol_ext, Cbir_ext       COMPUTED ON EVERY CALL from the model's own
+   !     [cm^2/H]               orientation-resolved optics, because their
+   !                            f_align(a) weight is runtime state a host
+   !                            resets cell by cell through
+   !                            dust_set_alignment; a table fixed at build
+   !                            time could not follow it.
+   !   scm_*, K, Z              READ FROM THE ALIGNED SCATTERING TABLE, whose
+   !     [um^2/H, um^2/sr/H]    size integral was done once under the f_align
+   !                            profile recorded in its own header. The
+   !                            sanctioned runtime knob here is the scalar eta
+   !                            below, NOT a change of profile:
+   !                            dust_set_alignment with a different profile
+   !                            raises scm_profile_mismatch, and a genuinely
+   !                            different profile needs the table regenerated
+   !                            (run_scatmat_aligned.x profile=FILE).
+   !
+   ! So after dust_set_alignment a second dust_extinction call comes back with
+   ! CHANGED Cpol_ext and Cbir_ext and UNCHANGED Cext, Cabs, Csca, gbar. That is
+   ! the physics, not a stale cache -- alignment does not change how much light
+   ! the grains remove, only how much of it they remove preferentially in one
+   ! polarization -- but it will surprise a host that expects one call to move as
+   ! a block. use_dustlib_pol.f90 demonstrates it on a running model.
+   !
+   ! UNITS. dust_extinction returns cm^2/H, while the aligned scattering API
+   ! (scatmat_*, extinction_matrix_aligned, mueller_matrix_*) returns um^2/H and
+   ! um^2/sr/H; CM2_TO_UM2 below is the one place the two systems meet. A host
+   ! that wants a mass opacity divides by dust_mass_per_H(m) [g/H] -- a
+   ! wavelength- and temperature-independent model constant, evaluated once (see
+   ! use_dustlib.f90 for a worked call) -- on the cm^2/H side, i.e. BEFORE
+   ! multiplying by CM2_TO_UM2, not after.
+   !
+   ! DO NOT REPLACE dust_extinction WITH size_integrated_extinction. The size
+   ! integral is public under its own name, with the identical argument list, and
+   ! computes ALL SIX outputs from the model's optics -- which makes it look like
+   ! the way for a polarized host to get the scalars and the polarized pair "from
+   ! one computation". It is not the recommended path, and should not be called
+   ! unless you are absolutely required to:
+   !   * it is SLOW -- a population x size x wavelength triple sum on every call,
+   !     and a host that resets alignment cell by cell is exactly the one tempted
+   !     to put it inside the cell loop;
+   !   * there is NOTHING TO RECOMPUTE on the scalar side -- the table is that
+   !     same integral, already done and recorded, and a dust model's transport
+   !     optics do not depend on the transport;
+   !   * MIXING THE TWO ROUTES DRIFTS -- the table route comes back through the
+   !     precision written to the file, and interpolates wherever the model grid
+   !     and the table do not share a node, so scalars taken from the integral in
+   !     one place and from the table in another leave a host inconsistent with
+   !     itself. The eta-cancellation below, which subtracts a tabulated Cext_ref
+   !     from an isotropic Cext, is precisely the kind of arithmetic that such a
+   !     drift would spoil.
+   ! dust_extinction already does the intended thing -- table for the scalars,
+   ! fresh computation for Cpol_ext and Cbir_ext. size_integrated_extinction is
+   ! for WRITING a table (what calc_kext.x does), or for a host generating a
+   ! product on a lam_min grid of its own.
    use constants, only: wp, deg2rad, rad2deg, fourpi
    use dust_lib,  only: dust_model_t, build_astrodust, dust_extinction, &
                         scatmat_band, extinction_matrix_aligned, &
@@ -47,7 +110,7 @@ program use_dustlib_scatmat
    real(wp) :: cext_iso_um2                       ! isotropic total extinction, um^2/H
    integer  :: n, st, iband, icell
    logical  :: exact
-   ! Per-cell inputs the RT already has in hand.
+   ! Inputs the RT already has in hand for each cell.
    real(wp) :: eta(2), khat(3), Bhat(3,2)
    real(wp) :: costi, theta_i, kmat(4,4), z(4,4), f_tot(6), f_ref(6)
    real(wp) :: theta_s, phi, big_theta
@@ -75,6 +138,10 @@ program use_dustlib_scatmat
 
    n = size(m%lam)
    allocate(Cext(n), Cabs(n), Csca(n), Cpol_ext(n), Cbir_ext(n))
+   ! One call, two routes: Cext/Cabs/Csca are served from the extinction table
+   ! the builder attached (kext_path was omitted above, so it is this model's
+   ! default, ../data/kext_astrodust_MW_euv.dat), while Cpol_ext and Cbir_ext are
+   ! computed here and now under the alignment the model currently holds.
    call dust_extinction(m, Cext, Cabs, Csca, Cpol_ext=Cpol_ext, Cbir_ext=Cbir_ext)
 
    ! Pick the band once; the hot path then takes iband.

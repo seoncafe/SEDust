@@ -1465,6 +1465,14 @@ non-default run cannot clobber the production one:
 \code{induced} (turn the stimulated-emission factor on); \code{photcut};
 \code{c2} (Stage-1 density-corrected prefactor); \code{mathis\_orig}.
 
+The tag is assembled after all the arguments have been read, in one fixed
+order --- solver, enthalpy stage, radiation field, emission term, numerical
+settings --- so the order they are typed in does not matter:
+\code{induced qm} and \code{qm induced} both write
+\code{\ldots\_qm\_induced\_S1.dat}. The three solver options select the same
+thing, so naming two of them is refused rather than resolved by taking the
+last. The driver prints the filename it will write before it starts solving.
+
 \subsection{\code{main\_dl07.x} --- the DL07 reference SED}
 
 Solves the Draine \& Li (2007) silicate + carbonaceous SED at $U = 1$ with the

@@ -24,14 +24,68 @@ program use_dustlib_pol
    ! turbulent depolarization factor. The same sin^2(gamma)*F_turb multiplies
    ! Cpol_ext when the extinction matrix is assembled.
    !
-   ! WHICH WAVELENGTHS ARE POLARIZED. Cpol_ext, Cbir_ext and lamI_pol come from
-   ! the orientation-resolved table, which covers 0.0912 - 39810 um -- the whole
-   ! grid this example builds. A host that widens the grid with build_astrodust's
-   ! lam_min gets an EUV block whose polarized optics need the separate EUV
-   ! companion table (tmatrix/driver/run_q_jori.f90, `euv` mode); without it
-   ! build_Cpol reports on stderr that the band is zero BY OMISSION and leaves it
-   ! there, so a host must read that report rather than take the zero for
-   ! physics. The scalar Cext / Cabs / Csca are unaffected either way.
+   ! WHERE THE NUMBERS COME FROM, AND WHY THE TWO HALVES DIFFER. One
+   ! dust_extinction call fills its arguments from two different places:
+   !
+   !   Cext, Cabs, Csca, gbar  READ FROM A TABLE -- one of the
+   !                           ../data/kext_*.dat products of calc_kext.x,
+   !                           attached to the model at build time and
+   !                           interpolated onto m%lam.
+   !   Cpol_ext, Cbir_ext      COMPUTED FROM THE MODEL'S OWN ORIENTATION-
+   !                           RESOLVED OPTICS ON EVERY CALL.
+   !
+   ! The polarized pair cannot be tabulated, because its alignment weight
+   ! f_align(a) is RUNTIME state: a host resets it cell by cell through
+   ! dust_set_alignment, and a table fixed at build time could not follow. The
+   ! scalars have no such freedom -- alignment is a size weight that never
+   ! enters the energy balance -- so their size integral is done once, by
+   ! calc_kext.x, and recorded.
+   !
+   ! THE CONSEQUENCE THAT CAN SURPRISE A HOST: after dust_set_alignment, a
+   ! second dust_extinction call returns CHANGED Cpol_ext and Cbir_ext and
+   ! UNCHANGED Cext, Cabs, Csca, gbar. That is the physics, not a stale cache:
+   ! alignment does not change how much light the grains remove, only how much
+   ! of it they remove preferentially in one polarization. The run below
+   ! demonstrates both halves of that statement.
+   !
+   ! DO NOT REPLACE dust_extinction WITH size_integrated_extinction. The size
+   ! integral is public under its own name, with the identical argument list,
+   ! and computes ALL SIX outputs from the model's optics -- which makes it
+   ! look like the way to get the scalars and the polarized pair "from one
+   ! computation". It is not the recommended path, and a polarized host should
+   ! not call it unless it is absolutely required to:
+   !   * it is SLOW -- a population x size x wavelength triple sum on every
+   !     call, and a host that resets alignment cell by cell is precisely the
+   !     one tempted to put it inside the cell loop;
+   !   * there is NOTHING TO RECOMPUTE on the scalar side -- the table is that
+   !     same integral, already done and recorded, and a dust model's transport
+   !     optics do not depend on the transport;
+   !   * MIXING THE TWO ROUTES DRIFTS -- the table route comes back through the
+   !     precision written to the file, and interpolates wherever the model
+   !     grid and the table do not share a node, so scalars taken from the
+   !     integral in one place and from the table in another leave a host
+   !     inconsistent with itself.
+   ! dust_extinction already does the intended thing -- table for the scalars,
+   ! fresh computation for Cpol_ext and Cbir_ext. size_integrated_extinction is
+   ! for WRITING a table (what calc_kext.x does), or for a host that wants to
+   ! generate a product on a lam_min grid of its own.
+   !
+   ! PER H, NOT PER GRAM. Cext and Cpol_ext are cross sections per H nucleon,
+   ! and lamI_total / lamI_pol are emission per H. A host carrying a dust mass
+   ! density instead divides by dust_mass_per_H(m) [g/H], a wavelength- and
+   ! temperature-independent model constant to be evaluated once (see
+   ! use_dustlib.f90 for a worked call). The polarization fractions printed
+   ! below are ratios, so that choice cancels out of them.
+   !
+   ! WHICH WAVELENGTHS ARE POLARIZED. Cpol_ext, Cbir_ext and lamI_pol are built
+   ! from the orientation-resolved OPTICS table, which covers 0.0912 - 39810 um
+   ! -- the whole grid this example builds. A host that widens the grid with
+   ! build_astrodust's lam_min gets an EUV block whose polarized optics need the
+   ! separate EUV companion table (tmatrix/driver/run_q_jori.f90, `euv` mode);
+   ! without it build_Cpol reports on stderr that the band is zero BY OMISSION
+   ! and leaves it there, so a host must read that report rather than take the
+   ! zero for physics. The scalar Cext / Cabs / Csca are unaffected either way:
+   ! they come from an extinction table that already covers the EUV.
    use constants, only: wp
    use radfield,  only: J_Mathis
    use dust_lib,  only: dust_model_t, build_astrodust, dust_emission, &
@@ -48,20 +102,26 @@ program use_dustlib_pol
    type(dust_model_t)    :: m
    real(wp), allocatable :: J(:), total(:), pol(:), total2(:), pol2(:)
    real(wp), allocatable :: Cext(:), Cabs(:), Csca(:), Cpol_ext(:)
-   real(wp) :: geo, jQ, jU, jI, dtot
+   real(wp), allocatable :: Cext2(:), Cabs2(:), Csca2(:), Cpol2(:)
+   real(wp) :: geo, jQ, jU, jI, dtot, dext
    integer  :: n, i, k, iw(3)
 
    ! --- load a model once ---
+   ! kext_path is omitted, so the scalar outputs of dust_extinction come from
+   ! this model's default table, ../data/kext_astrodust_MW_euv.dat.
    call build_astrodust(m, QTAB, SIZED, 200, 2.7_wp, 5.0e3_wp)
    n = dust_nlam(m)
    allocate(J(n), total(n), pol(n), total2(n), pol2(n))
    allocate(Cext(n), Cabs(n), Csca(n), Cpol_ext(n))
+   allocate(Cext2(n), Cabs2(n), Csca2(n), Cpol2(n))
 
    ! --- one cell: local field -> emission, polarized part included ---
    call J_Mathis(1.585_wp, m%lam, J)
    call dust_emission(m, J, total, lamI_pol=pol)
 
    ! --- same model object -> opacity on the same grid, dichroic part included ---
+   ! Cext/Cabs/Csca are served from the table; Cpol_ext is computed here and now
+   ! with the alignment the model currently holds.
    call dust_extinction(m, Cext, Cabs, Csca, Cpol_ext=Cpol_ext)
 
    iw = [ilam_near(0.55_wp), ilam_near(154.0_wp), ilam_near(850.0_wp)]
@@ -74,6 +134,9 @@ program use_dustlib_pol
          ' deg  phi=', PHI/DEG, ' deg  F_turb=', FTURB
 
    ! --- the host's job: project onto the sky ---
+   ! p_ext below divides a freshly computed Cpol_ext by a tabulated Cext. Both
+   ! describe the same grains and the same size distribution, so the ratio is
+   ! the model's dichroic fraction; only the route differs.
    geo = sin(GAMMA)**2 * FTURB
    print '(a)', '   lam[um]     lamI_total      j_Q          j_U        p_emis    p_ext'
    do k = 1, 3
@@ -91,17 +154,28 @@ program use_dustlib_pol
    call dust_emission(m, J, total2, lamI_pol=pol2)
    dtot = maxval(abs(total2 - total))
 
+   ! The extinction side of the same statement, and the asymmetry a host has to
+   ! expect: this second call recomputes Cpol_ext with the new f_align, while
+   ! Cext/Cabs/Csca are re-read from the same table rows and come back unchanged.
+   call dust_extinction(m, Cext2, Cabs2, Csca2, Cpol_ext=Cpol2)
+   dext = maxval(abs(Cext2 - Cext))
+
    print '(a)', ' --- f_max halved, no re-solve ---'
    print '(a,es10.3,a,es10.3)', '   max|lamI_total change|=', dtot, &
          '   max lamI_total=', maxval(total)
+   print '(a,es10.3,a,es10.3)', '   max|C_ext change|     =', dext, &
+         '   max C_ext      =', maxval(Cext)
    do k = 1, 3
       i = iw(k)
-      print '(a,f9.2,a,f10.6)', '   lam=', m%lam(i), ' um   pol ratio=', pol2(i)/pol(i)
+      print '(a,f9.2,a,f10.6,a,f10.6)', '   lam=', m%lam(i), &
+            ' um   lamI_pol ratio=', pol2(i)/pol(i), &
+            '   Cpol_ext ratio=', Cpol2(i)/Cpol_ext(i)
    end do
 
    print '(a)', ' --- division of labor ---'
    print '(a)', '   SEDust: size integral, f_align(a) weight, lamI_pol, Cpol_ext'
    print '(a)', '   RT code: sin^2(gamma), F_turb, position angle, Stokes transport'
+   print '(a)', '   scalars from ../data/kext_*.dat; Cpol_ext, Cbir_ext computed per call'
 
 contains
 

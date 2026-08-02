@@ -1,4 +1,4 @@
-\documentclass{kiseon_memo}
+\documentclass{my_memo}
 
 \usepackage{booktabs}
 \usepackage{tabularx}
@@ -18,17 +18,26 @@
 \newcommand{\Teq}{\ensuremath{T_{\rm eq}}}
 \newcommand{\Nh}{\ensuremath{N_{\rm H}}}
 \newcommand{\lamIlam}{\ensuremath{\lambda I_\lambda}}
-\newcommand{\fc}{\ensuremath{f_{C}^{\rm vol}}}
+\newcommand{\fc}{\ensuremath{f_{C}^{\text{vol}}}}
 \newcommand{\umass}{\ensuremath{\,\mu{\rm m}}}
 \newcommand{\HD}[1]{HD23~#1}
 
-% The kiseon_memo class (mathrsfs + amssymb + kotex + explicit
+% The my_memo class (mathrsfs + amssymb + kotex + explicit
 % \DeclareMathAlphabet for \mathbf/\mathit/\mathbit) sits at the 16
 % math-family limit; using \mathbf here overflows it ("Too many math
 % alphabets"). Route \mathbf through \boldsymbol, which reuses the bold
 % math version instead of allocating a new family. Vectors and bold
 % emphasis render the same to the eye (bold italic for letters).
 \let\mathbf\boldsymbol
+
+% Some upright multi-letter sub/superscripts containing a "v" are written
+% \text{...} rather than {\rm ...}.  That was a workaround for the OLD
+% kiseon_memo class, whose \DeclareMathSymbol{v}{\mathalpha}{ntxlettersA}{51}
+% kept slot 51 while a math alphabet swapped the family, so inside \rm the
+% slot was read from Times roman, where it is the digit 3 ($B_{\rm env}$ came
+% out as "B_en3").  my_memo assembles the mathchar from the current family at
+% run time and declares the glyph-to-Unicode mapping, so {\rm ...} is safe
+% again and both spellings now typeset -- and extract from the PDF -- correctly.
 
 \begin{document}
 \maketitle
@@ -386,7 +395,7 @@ so that $f_n \to 1$ for $x\to 0$ (high $T$) and $f_n \to 0$ for
 $x\to\infty$ (low $T$). For a grain containing $N_{\rm atom}$ atoms,
 the vibrational internal energy is
 \begin{equation}\label{eq:U_DL01}
-U_{\rm vib}(T, N_{\rm atom}) = (N_{\rm atom} - 2)\,k_B\,T\,
+U_{\text{vib}}(T, N_{\rm atom}) = (N_{\rm atom} - 2)\,k_B\,T\,
    \sum_{m} g_m\,f_2(\Theta_m / T),
 \end{equation}
 with the $(N_{\rm atom}-2)$ Debye-modes factor (DL01 eq.\ 5) and the
@@ -858,8 +867,8 @@ stochastic-heating method (which produces Draine's
 emission line in that code -- both the large-grain delta-function
 branch (line~1521) and the stochastic intra- and inter-bin branches
 (lines~1479, 1491, 1501) -- carries an explicit
-$\bigl(1 + J_\lambda/B_{\rm env}\bigr)$ multiplicative factor, where
-$B_{\rm env}(\lambda) \equiv 2hc^2/\lambda^5$ is the Planck envelope
+$\bigl(1 + J_\lambda/B_{\text{env}}\bigr)$ multiplicative factor, where
+$B_{\text{env}}(\lambda) \equiv 2hc^2/\lambda^5$ is the Planck envelope
 without the $1/(\mathrm{e}^{hc/\lambda k T} - 1)$ Bose factor. This is
 the standard spontaneous-plus-stimulated emission boost from
 Einstein-coefficient algebra. Our production \texttt{sed\_solve} and
@@ -885,31 +894,54 @@ in Table~\ref{tab:induced_ratio}.
 
 \begin{table}[h]
 \centering
-\begin{tabular}{c r r r}
+\begin{tabular}{l r r l}
 \toprule
 $\lambda$ & analytic prediction & measured & dominant source \\
 \midrule
-\SI{100}{\micro\meter} (FIR peak)   & $\sim 10^{-8}$ & $+0.000\%$ & Wien for both Mathis \& CMB \\
-\SI{300}{\micro\meter}              & $\sim 10^{-6}$ & $+0.000\%$ & CMB still on Wien \\
-\SI{1}{\milli\meter}                & $\sim 0.7\%$   & $+0.705\%$ & CMB transition \\
-\SI{3}{\milli\meter}                & $\sim 24\%$    & $+23.66\%$ & CMB approaching RJ \\
-\SI{5}{\milli\meter}                & $\sim 59\%$    & $+58.92\%$ & CMB RJ \\
+\SI{100}{\micro\meter} (FIR peak)   & $+2.1\times10^{-9}\%$ & $<10^{-6}\%$          & diluted-BB RJ tail; CMB on Wien \\
+\SI{300}{\micro\meter}              & $+2.3\times10^{-6}\%$ & $+2.3\times10^{-6}\%$ & CMB still on Wien \\
+\SI{1}{\milli\meter}                & $+0.5119\%$           & $+0.5119\%$           & CMB transition \\
+\SI{3}{\milli\meter}                & $+20.78\%$            & $+20.78\%$            & CMB approaching RJ \\
+\SI{5}{\milli\meter}                & $+53.34\%$            & $+53.34\%$            & CMB RJ \\
 \bottomrule
 \end{tabular}
-\caption{Effect of the $\bigl(1 + J_\lambda/B_{\rm env}\bigr)$
+\caption{Effect of the $\bigl(1 + J_\lambda/B_{\text{env}}\bigr)$
 induced-emission factor on the Stage S1\_C1 SED. The factor depends
-only on $\lambda$ (not on $T$ or grain size) so all three astrodust
-stages and PAH show identical ratios. The full growth at $\lambda
-\gtrsim$~\SI{1}{\milli\meter} is driven by the \SI{2.9}{K} CMB
-component of $J_\lambda$ via $J_{\rm CMB}/B_{\rm env}(\lambda) =
-1/(\mathrm{e}^{hc/\lambda k T_{\rm CMB}} - 1)$.}
+only on $\lambda$ (not on $T$ or grain size), so all three astrodust
+stages (S1\_C1, S1\_C2, S2) and PAH show the same ratio: over the whole
+wavelength grid they agree with one another to $9\times10^{-9}$, the
+round-off of the nine-significant-digit output files, even though the
+S1\_C2 SED itself differs from S1\_C1 by orders of magnitude. The
+growth at $\lambda \gtrsim$~\SI{1}{\milli\meter} is driven by the CMB
+component of $J_\lambda$ via $J_{\rm CMB}/B_{\text{env}}(\lambda) =
+1/(\mathrm{e}^{hc/\lambda k T_{\rm CMB}} - 1)$ with
+$T_{\rm CMB} = \SI{2.725}{K}$, which supplies $\ge 99.7\%$ of the
+factor beyond \SI{300}{\micro\meter}; at \SI{100}{\micro\meter} the CMB
+term is $1.2\times10^{-23}$ and the whole (utterly negligible) factor
+comes from the Rayleigh-Jeans tails of the Mathis diluted blackbodies.
+$T_{\rm CMB}$ is written down in exactly one place,
+\texttt{radfield.f90 :: cmb\_temperature()} --- \SI{2.725}{K} by
+default, reverting to Mathis~(1983)'s \SI{2.9}{K} when
+\texttt{use\_mathis\_corrected} is switched off. The numbers above were
+measured with the default; the literal Mathis field gives $+0.705\%$,
+$+23.66\%$ and $+58.92\%$ at 1, 3 and \SI{5}{\milli\meter} instead.
+\SI{100}{\micro\meter} and \SI{1}{\milli\meter} are grid points of the
+model; the other three rows are interpolated between adjacent grid
+points, which are spaced 1.2\% apart, so the interpolation itself
+contributes at most $2\times10^{-5}$ in relative terms.}
 \label{tab:induced_ratio}
 \end{table}
 
-Numerically the measured boost matches the analytic prediction to
-better than $10^{-3}$ at every tabulated wavelength. The
+Numerically, taken on the model's own wavelength grid so that no
+interpolation enters, the measured boost reproduces the analytic factor
+to a median of $1.0\times10^{-9}$ and a worst case of
+$5.9\times10^{-9}$ in relative terms across the 404 wavelengths where
+the factor exceeds $10^{-6}$ --- the round-off of the
+nine-significant-digit output files rather than anything in the
+calculation. The
 \SI{30}{}--\SI{300}{\micro\meter} FIR-peak band, where the
-deficit lives, is left \emph{exactly} unchanged ($<10^{-7}$). The
+deficit lives, is left \emph{exactly} unchanged
+($<3\times10^{-8}$). The
 factor therefore cannot be the source of the 15\% deficit, on
 quantitative grounds.
 
@@ -935,13 +967,13 @@ with and without the induced-emission factor, Stage S1\_C1.}
 \medskip
 The $>\SI{3000}{\micro\meter}$ swing from $-4\%$ to $+136\%$ leaves
 no ambiguity: HD23's \texttt{astrodust\_irem.dat} does not carry the
-$\bigl(1 + J_\lambda/B_{\rm env}\bigr)$ factor. The physical reason
+$\bigl(1 + J_\lambda/B_{\text{env}}\bigr)$ factor. The physical reason
 this is the right convention for a redistributable SED is direct.
 Pinning the gross emission against the dust energy budget in
 equilibrium gives
 \[
 \int C_{\rm abs}(\lambda)\,B_\lambda(T)
-   \bigl(1 + J_\lambda/B_{\rm env}\bigr)\,d\lambda
+   \bigl(1 + J_\lambda/B_{\text{env}}\bigr)\,d\lambda
    \;=\; \int C_{\rm abs}\,B_\lambda(T)\,d\lambda
    \;+\; \int C_{\rm abs}\,J_\lambda\,d\lambda
    \;=\; 2\!\int C_{\rm abs}\,J_\lambda\,d\lambda
@@ -950,7 +982,7 @@ which is the standard two-level-system gross-emission doubling
 (spontaneous plus stimulated, equal to twice the heating rate in
 equilibrium). The \emph{net} emission an external observer sees from
 an optically-thin column is gross minus absorbed,
-$\int C_{\rm abs}\,B_\lambda(T)\bigl(1 + J/B_{\rm env}\bigr)\,d\lambda
+$\int C_{\rm abs}\,B_\lambda(T)\bigl(1 + J/B_{\text{env}}\bigr)\,d\lambda
 - \int C_{\rm abs}\,J_\lambda\,d\lambda
 = \int C_{\rm abs}\,B_\lambda(T)\,d\lambda$, recovering the Kirchhoff
 result $j_\lambda = C_{\rm abs}(\lambda)\,B_\lambda(T)$ that our
@@ -2032,14 +2064,14 @@ candidate:
         bands. The orientation-convention hypothesis is rejected
         because \Teq\ self-consistency dampens the naive linear
         prediction.
-  \item \textbf{Induced-emission factor $(1+J_\lambda/B_{\rm env})$:}
+  \item \textbf{Induced-emission factor $(1+J_\lambda/B_{\text{env}})$:}
         Draine's stimulated-emission boost was added behind a toggle
         (\texttt{use\_induced\_emission} in \texttt{sed\_astrodust\_mod})
         and tested via \texttt{./main\_astrodust.x induced}. Measured
         induced$/$baseline ratio matches the analytic prediction
         (Tables~\ref{tab:induced_ratio},~\ref{tab:induced_vs_hd23}):
         $+0.000\%$ at $\lambda \le$~\SI{300}{\micro\meter},
-        $+0.7\%$ at \SI{1}{\milli\meter}, $+24\%$ at
+        $+0.51\%$ at \SI{1}{\milli\meter}, $+21\%$ at
         \SI{3}{\milli\meter}, with the FIR-peak band left exactly
         unchanged. HD23 publishes \emph{net} emission, so this
         factor degrades agreement at long wavelengths and is left

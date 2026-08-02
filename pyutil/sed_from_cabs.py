@@ -157,7 +157,9 @@ def calc_P(lam_um: np.ndarray,
     T_grid   : (NT,) temperature grid [K], log-spaced and ideally already
                narrowed around the expected Teq for this grain
     U_grain  : (NT,) enthalpy U(T_grid) [erg]
-    kappCMB  : scalar, 2.9 K Planck integral (subtracted from kappB to
+    kappCMB  : scalar, CMB Planck integral at `radfield :: cmb_temperature()`
+               -- 2.725 K unless `use_mathis_corrected` is off, which
+               restores Mathis (1983)'s 2.9 K (subtracted from kappB to
                null out the heat-bath term in the absence of true CMB
                photons in the lam grid). Usually small; pass 0 to skip.
 
