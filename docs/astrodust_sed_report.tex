@@ -1,4 +1,4 @@
-\documentclass{kiseon_memo}
+\documentclass{my_memo}
 
 \usepackage{booktabs}
 \usepackage{tabularx}
@@ -22,7 +22,7 @@
 \newcommand{\umass}{\ensuremath{\,\mu{\rm m}}}
 \newcommand{\HD}[1]{HD23~#1}
 
-% The kiseon_memo class (mathrsfs + amssymb + kotex + explicit
+% The my_memo class (mathrsfs + amssymb + kotex + explicit
 % \DeclareMathAlphabet for \mathbf/\mathit/\mathbit) sits at the 16
 % math-family limit; using \mathbf here overflows it ("Too many math
 % alphabets"). Route \mathbf through \boldsymbol, which reuses the bold
@@ -889,25 +889,42 @@ in Table~\ref{tab:induced_ratio}.
 \toprule
 $\lambda$ & analytic prediction & measured & dominant source \\
 \midrule
-\SI{100}{\micro\meter} (FIR peak)   & $\sim 10^{-8}$ & $+0.000\%$ & Wien for both Mathis \& CMB \\
-\SI{300}{\micro\meter}              & $\sim 10^{-6}$ & $+0.000\%$ & CMB still on Wien \\
-\SI{1}{\milli\meter}                & $\sim 0.7\%$   & $+0.705\%$ & CMB transition \\
-\SI{3}{\milli\meter}                & $\sim 24\%$    & $+23.66\%$ & CMB approaching RJ \\
-\SI{5}{\milli\meter}                & $\sim 59\%$    & $+58.92\%$ & CMB RJ \\
+\SI{100}{\micro\meter} (FIR peak)   & $+2.1\times10^{-9}\%$ & $<10^{-6}\%$          & diluted-BB RJ tail; CMB on Wien \\
+\SI{300}{\micro\meter}              & $2.3\times10^{-6}\%$  & $+2.3\times10^{-6}\%$ & CMB still on Wien \\
+\SI{1}{\milli\meter}                & $+0.5119\%$           & $+0.5119\%$           & CMB transition \\
+\SI{3}{\milli\meter}                & $+20.78\%$            & $+20.78\%$            & CMB approaching RJ \\
+\SI{5}{\milli\meter}                & $+53.34\%$            & $+53.34\%$            & CMB RJ \\
 \bottomrule
 \end{tabular}
 \caption{Effect of the $\bigl(1 + J_\lambda/B_{\rm env}\bigr)$
 induced-emission factor on the Stage S1\_C1 SED. The factor depends
-only on $\lambda$ (not on $T$ or grain size) so all three astrodust
-stages and PAH show identical ratios. The full growth at $\lambda
-\gtrsim$~\SI{1}{\milli\meter} is driven by the \SI{2.9}{K} CMB
-component of $J_\lambda$ via $J_{\rm CMB}/B_{\rm env}(\lambda) =
-1/(\mathrm{e}^{hc/\lambda k T_{\rm CMB}} - 1)$.}
+only on $\lambda$ (not on $T$ or grain size); the measured ratios of
+all three astrodust stages (S1\_C1, S1\_C2, S2) and PAH agree with one
+another to better than $10^{-7}$, i.e.\ to the precision the
+nine-significant-digit output files carry, even though the S1\_C2 SED
+itself differs from S1\_C1 by orders of magnitude. The growth at
+$\lambda \gtrsim$~\SI{1}{\milli\meter} is driven
+by the CMB component of $J_\lambda$ via
+$J_{\rm CMB}/B_{\rm env}(\lambda) =
+1/(\mathrm{e}^{hc/\lambda k T_{\rm CMB}} - 1)$ with
+$T_{\rm CMB} = \SI{2.725}{K}$; the diluted-blackbody part of the
+Mathis field supplies the whole (utterly negligible) factor at
+\SI{100}{\micro\meter} and nothing measurable at longer wavelengths.
+$T_{\rm CMB}$ is written down in exactly one place,
+\texttt{radfield.f90 :: cmb\_temperature()} --- \SI{2.725}{K} by
+default, reverting to Mathis~(1983)'s \SI{2.9}{K} when
+\texttt{use\_mathis\_corrected} is switched off. The numbers above were
+measured with the default; the literal Mathis field gives $+0.705\%$,
+$+23.66\%$ and $+58.92\%$ at 1, 3 and \SI{5}{\milli\meter} instead.}
 \label{tab:induced_ratio}
 \end{table}
 
-Numerically the measured boost matches the analytic prediction to
-better than $10^{-3}$ at every tabulated wavelength. The
+Numerically the measured boost reproduces the analytic prediction to
+$2\times10^{-9}$ in relative terms at 3 and \SI{5}{\milli\meter} and
+$2\times10^{-7}$ at \SI{1}{\milli\meter}; across the 404 wavelengths
+where the factor exceeds $10^{-6}$ the median relative deviation is
+$4\times10^{-9}$, which is the round-off of the nine-significant-digit
+output files rather than anything in the calculation. The
 \SI{30}{}--\SI{300}{\micro\meter} FIR-peak band, where the
 deficit lives, is left \emph{exactly} unchanged ($<10^{-7}$). The
 factor therefore cannot be the source of the 15\% deficit, on
@@ -917,7 +934,12 @@ More interestingly, applying the factor and re-comparing against
 HD23's release \texttt{astrodust\_irem.dat} at $\log U = 0.20$
 shows that the millimetre-band agreement is \emph{degraded} rather
 than improved (Table~\ref{tab:induced_vs_hd23}, S1\_C1; the other
-two stages are essentially identical).
+two stages are essentially identical). That comparison was made in the
+literal-Mathis configuration of the next subsection (\SI{2.9}{K} CMB,
+$10^{-13}$ dilution at \SI{4000}{K}), which is where its $-15.83\%$
+baseline FIR-peak deficit comes from; it has not been re-measured with
+the production field, so read its columns against each other rather
+than against the table above.
 
 \begin{tabular}{l r r}
 \toprule
@@ -1979,8 +2001,8 @@ candidate:
         and tested via \texttt{./main\_astrodust.x induced}. Measured
         induced$/$baseline ratio matches the analytic prediction
         (Tables~\ref{tab:induced_ratio},~\ref{tab:induced_vs_hd23}):
-        $+0.000\%$ at $\lambda \le$~\SI{300}{\micro\meter},
-        $+0.7\%$ at \SI{1}{\milli\meter}, $+24\%$ at
+        below $10^{-7}$ at $\lambda \le$~\SI{300}{\micro\meter},
+        $+0.51\%$ at \SI{1}{\milli\meter}, $+21\%$ at
         \SI{3}{\milli\meter}, with the FIR-peak band left exactly
         unchanged. HD23 publishes \emph{net} emission, so this
         factor degrades agreement at long wavelengths and is left

@@ -17,6 +17,9 @@ program main_astrodust
    !             solver; tags filenames (qm_).
    !   qm_dbcon  energy-space solver in thermal-continuous cooling mode;
    !             tags filenames (qm_dbcon_).
+   !   induced   multiply the emergent SED by the stimulated-emission factor
+   !             (1 + J_lam/B_env); diagnostic only, must stay off for
+   !             production. Tags filenames (induced_).
 
    use constants,         only: wp
    use radfield,          only: J_Mathis, use_mathis_corrected
@@ -39,55 +42,81 @@ program main_astrodust
    real(wp)              :: U_MATHIS = 1.585_wp   ! log U = 0.20
    real(wp)              :: logU_val
    real(wp), allocatable :: J_lam(:), lamI_lam(:)
-   integer               :: is, narg, iarg
-   character(len=64)     :: arg, suffix, logutag
+   integer               :: is, narg, iarg, n_solver
+   character(len=64)     :: arg, suffix, solver_tag
+   character(len=24)     :: nstag, nitag, logutag
+   logical               :: set_logu, set_nstate, set_nisrf
 
-   ! Parse optional CLI arguments (any position). The solver toggle (qm /
-   ! qm_dbcon) and the logU= override each contribute a filename tag so a
-   ! non-default run does not clobber the production output.
-   suffix  = ''
-   logutag = ''
+   ! Parse the optional CLI arguments, then build the filename tag.
+   !
+   ! The two steps are kept apart on purpose. Parsing only records WHAT was
+   ! asked for; the tag is assembled afterwards in ONE fixed order, so that
+   ! options given in any order produce the same filename -- which is what
+   ! lets a non-default run coexist with the production one instead of
+   ! overwriting it. (Tagging as the arguments are read cannot do that: it
+   ! either lets a later option erase an earlier one's tag, or gives the same
+   ! combination two different names depending on how it was typed.)
+   !
+   ! The order runs from the coarsest distinction to the finest -- solver,
+   ! then enthalpy stage, then radiation field, then the emission term, then
+   ! numerical settings -- so that a directory listing groups runs by solver.
+   solver_tag = '';  logutag = '';  nstag = '';  nitag = ''
+   n_solver   = 0
+   set_logu   = .false.;  set_nstate = .false.;  set_nisrf = .false.
+
    narg = command_argument_count()
    do iarg = 1, narg
       call get_command_argument(iarg, arg)
       if (trim(arg) == 'qm') then
          stoch_method = 'qm'
-         suffix = 'qm_'
+         solver_tag = 'qm_';        n_solver = n_solver + 1
       else if (trim(arg) == 'qm_dbcon') then
          stoch_method = 'qm'
          qm_method    = 'dbcon'       ! thermal-continuous (GD-collapse) QM matrix
-         suffix = 'qm_dbcon_'
+         solver_tag = 'qm_dbcon_';   n_solver = n_solver + 1
       else if (trim(arg) == 'draine') then
          stoch_method = 'draine'      ! Draine's original GD (default is 'heuristic')
-         suffix = 'draine_'
+         solver_tag = 'draine_';     n_solver = n_solver + 1
       else if (index(arg, 'logU=') > 0) then
          read(arg(index(arg,'=')+1:), *) logU_val
          U_MATHIS = 10.0_wp ** logU_val
-         write(logutag, '(a,f0.2,a)') 'logU', logU_val, '_'
+         set_logu = .true.
       else if (index(arg, 'nstate=') > 0) then
          read(arg(index(arg,'=')+1:), *) qm_nstate_default
-         block
-            character(len=12) :: nstag
-            write(nstag, '(a,i0,a)') 'ns', qm_nstate_default, '_'
-            suffix = trim(suffix)//trim(nstag)
-         end block
+         set_nstate = .true.
       else if (index(arg, 'nisrf=') > 0) then
          read(arg(index(arg,'=')+1:), *) qm_nisrf_max
+         set_nisrf = .true.
       else if (trim(arg) == 'induced') then
          use_induced_emission = .true.
-         suffix = trim(suffix)//'ind_'
       else if (trim(arg) == 'photcut') then
          gd_photon_cutoff = .true.    ! enable dbdis photon cutoff in GD emission
-         suffix = trim(suffix)//'photcut_'
       else if (trim(arg) == 'c2') then
          s1_density_corrected = .true.   ! Stage-1 density-corrected prefactor
-         suffix = trim(suffix)//'c2_'
       else if (trim(arg) == 'mathis_orig') then
          use_mathis_corrected = .false.
-         suffix = trim(suffix)//'morig_'
       end if
    end do
+
+   ! qm, qm_dbcon and draine each select the solver, so naming two of them
+   ! is a contradiction. Silently keeping the last one would write a file
+   ! whose name claims a solver the run did not use.
+   if (n_solver > 1) then
+      write(*,'(a)') ' main_astrodust: give at most one of qm / qm_dbcon / draine'
+      stop 1
+   end if
+
+   if (set_logu)   write(logutag, '(a,f0.2,a)') 'logU', logU_val, '_'
+   if (set_nstate) write(nstag,   '(a,i0,a)')   'ns',   qm_nstate_default, '_'
+   if (set_nisrf)  write(nitag,   '(a,i0,a)')   'nisrf', qm_nisrf_max, '_'
+
+   suffix = trim(solver_tag)
+   if (s1_density_corrected)    suffix = trim(suffix)//'c2_'
+   if (.not. use_mathis_corrected) suffix = trim(suffix)//'morig_'
    suffix = trim(suffix)//trim(logutag)
+   if (use_induced_emission)    suffix = trim(suffix)//'induced_'
+   suffix = trim(suffix)//trim(nstag)//trim(nitag)
+   if (gd_photon_cutoff)        suffix = trim(suffix)//'photcut_'
 
    write(*,'(a)') '=========================================================='
    write(*,'(a)') ' main_astrodust: production driver'
@@ -99,6 +128,9 @@ program main_astrodust
    write(*,'(a,a)')    ' stoch_method: ', trim(stoch_method)
    if (trim(stoch_method) == 'qm') &
       write(*,'(a,a)') ' qm_method   : ', trim(qm_method)
+   ! Say where the run will land before it starts, so a mistyped option is
+   ! caught now rather than after the solve.
+   write(*,'(a,a,a)')  ' output files: ', OUTDIR, trim(suffix)//'<stage>.dat'
 
    call sed_init(F_QTAB, F_SIZE, NT_IN, T_LO, T_HI)
    write(*,'(a,i0,a)') ' sed_init done. NLAM=', NLAM, ' wavelengths cached.'

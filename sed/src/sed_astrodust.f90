@@ -208,7 +208,9 @@ module sed_astrodust_mod
    real(wp), allocatable :: gsca_ad(:,:)        ! (NLAM, NA)
    real(wp), allocatable :: kappB_first(:,:)    ! integral C_abs * B_lam dlam (NT, NA), wide grid
    real(wp), allocatable :: H_first(:,:,:)      ! enthalpy U(T, a, stage) (NT, NA, 2), wide grid
-   real(wp), allocatable :: kappCMB(:)          ! 2.9 K CMB integral (NA)
+   ! CMB Planck integral (NA), at radfield's cmb_temperature() -- 2.725 K
+   ! unless use_mathis_corrected is off, which restores Mathis (1983)'s 2.9 K.
+   real(wp), allocatable :: kappCMB(:)
 
    ! Cached log copies for log-interpolation when narrowing T per grain
    real(wp), allocatable :: log_T_first(:)
@@ -451,7 +453,7 @@ contains
       call build_kappB()
       log_kappB_first = log(max(kappB_first, tiny(0.0_wp)))
 
-      ! ---- kappCMB(NA) = 2.9 K Planck integral (used in calc_P) ----
+      ! ---- kappCMB(NA) = CMB Planck integral (used in calc_P) ----
       call build_kappCMB()
 
       ! ---- H_first(NT, NA, 2) for the two astrodust enthalpy stages ----
