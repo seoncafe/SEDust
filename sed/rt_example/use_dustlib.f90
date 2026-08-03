@@ -1,14 +1,18 @@
 program use_dustlib
    ! Minimal example of an EXTERNAL Fortran code (a 3D RT driver) linking the
    ! dust-emission library. It is NOT part of the sed build -- it is compiled
-   ! separately against libsedust.a + the .mod search path, exactly as an RT
-   ! code would.  Build and run it from sed/, because the data paths below are
-   ! relative to that directory:
+   ! separately against libsedust.a + libtmatrix.a and their .mod search paths,
+   ! exactly as an RT code would.  Build and run it from sed/, because the data
+   ! paths below are relative to that directory:
    !
-   !   cd sed
-   !   make libsedust.a
-   !   gfortran -I. rt_example/use_dustlib.f90 libsedust.a -fopenmp -o use_dustlib.x
+   !   cd tmatrix && make libtmatrix.a
+   !   cd ../sed  && make libsedust.a
+   !   gfortran -I. -I../tmatrix rt_example/use_dustlib.f90 \
+   !            -L. -lsedust -L../tmatrix -ltmatrix -fopenmp -o use_dustlib.x
    !   ./use_dustlib.x
+   !
+   ! Both archives are needed: the astrodust extreme-ultraviolet band computes
+   ! its optics with the T-matrix.
    !
    ! It shows the whole host flow: build a model once, take the transport
    ! optics from it, and take one cell's emission from the same model -- so

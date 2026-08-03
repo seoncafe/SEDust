@@ -61,8 +61,11 @@ Requires `gfortran` (OpenMP for the parallel drivers). No autoconf, no
 top-level configure; each subdirectory has its own `Makefile`.
 
 ```sh
+# the T-matrix library, which the astrodust EUV band calls -- build it first
+cd tmatrix && make libtmatrix.a
+
 # the SED solver
-cd sed
+cd ../sed
 make                        # make_enthalpy.x main_astrodust.x main_dl07.x
                             # main_zubko.x calc_kext.x
 ./main_astrodust.x          # astrodust+PAH SED at log U = 0.20 -> output/
@@ -71,7 +74,8 @@ make                        # make_enthalpy.x main_astrodust.x main_dl07.x
 ./main_zubko.x euv          # ... with the field carried into the EUV
 
 # the library, for embedding in an RT code
-make libsedust.a            # link with:  -L. -lsedust -I.
+make libsedust.a            # link with:  -I. -I../tmatrix -L. -lsedust \
+                            #             -L../tmatrix -ltmatrix
 
 # size-integrated transport optics: lambda, albedo, <cos>, C_ext/C_abs/C_sca per H
 ./calc_kext.x astrodust     # -> ../data/kext_astrodust_MW.dat
@@ -194,4 +198,4 @@ Kwang-il Seon (KASI/UST)
 
 ---
 
-Last updated: 2026-08-02 10:09 KST
+Last updated: 2026-08-03 20:25 KST

@@ -36,6 +36,22 @@ FFLAGS  = -O3 -ffree-line-length-none $(WARN)
 # FFLAGS  = -O3 -march=native -ffree-line-length-none $(WARN)
 FFLAGS += -fopenmp
 
+# ---- T-matrix library ------------------------------------------------
+# The astrodust model's extreme-ultraviolet band (a lam_min shorter than the Q
+# table's 0.0912 um) is solved with the T-matrix, on the same b/a = 1.4 oblate
+# spheroid the table itself is, so everything that links sed_astrodust.f90 now
+# also links libtmatrix.a.  Build it first:
+#     cd ../tmatrix && make libtmatrix.a
+TMDIR   = ../tmatrix
+TMARCH  = $(TMDIR)/libtmatrix.a
+TMLIB   = -L$(TMDIR) -ltmatrix
+FFLAGS += -I$(TMDIR)
+
+# The two driver modules that own the size-parameter regime selection
+# (Rayleigh dipole / T-matrix / geometric optics).  They live outside the
+# archive, are compiled here, and must precede src/sed_astrodust.f90.
+SRC_TMDRV = $(TMDIR)/driver/asymptotic_optics.f90 $(TMDIR)/driver/spheroid_optics.f90
+
 # ---- source groups, in dependency order ------------------------------
 SRC_BASE    = src/constants.f90 src/sed_mathlib.f90
 
@@ -55,51 +71,61 @@ SRC_PIPE    = $(SRC_BASE) src/enthalpy_v2.f90 \
               src/radfield.f90 src/p_sub.f90 \
               src/stoch_qm.f90 $(SRC_DL07MOD) \
               src/dust_model_mod.f90 src/kext_table.f90 src/zubko_io.f90 \
-              src/sed_astrodust.f90
+              $(SRC_TMDRV) src/sed_astrodust.f90
 
 SRC_ENTH    = $(SRC_BASE) src/enthalpy_v2.f90 \
               src/enthalpy_astrodust.f90 src/make_enthalpy.f90
 
 all: make_enthalpy.x main_astrodust.x main_dl07.x main_zubko.x calc_kext.x
 
+# Fail with an instruction rather than a link error when the T-matrix archive is
+# absent.  No prerequisites, so this recipe runs only if the file does not
+# exist.  It sits after `all` so that `all` stays the default goal.
+$(TMARCH):
+	@echo '*** $(TMARCH) not found.'
+	@echo '*** Build it first:   cd $(TMDIR) && make libtmatrix.a'
+	@false
+
 make_enthalpy.x: $(SRC_ENTH)
 	$(FC) $(FFLAGS) $^ -o $@
 	@echo 'Built: ./make_enthalpy.x'
 
-main_astrodust.x: $(SRC_PIPE) src/main_astrodust.f90
-	$(FC) $(FFLAGS) $^ -o $@
+main_astrodust.x: $(SRC_PIPE) src/main_astrodust.f90 | $(TMARCH)
+	$(FC) $(FFLAGS) $^ $(TMLIB) -o $@
 	@echo 'Built: ./main_astrodust.x'
 
-main_dl07.x: $(SRC_PIPE) src/main_dl07.f90
-	$(FC) $(FFLAGS) $^ -o $@
+main_dl07.x: $(SRC_PIPE) src/main_dl07.f90 | $(TMARCH)
+	$(FC) $(FFLAGS) $^ $(TMLIB) -o $@
 	@echo 'Built: ./main_dl07.x'
 
 # Zubko/ZDA emission. The only shipped model whose optics grid reaches far
 # past the illuminated band, so it is the one that exercises the difference
 # between "hardest photon the field carries" and "short end of the grid".
-main_zubko.x: $(SRC_PIPE) src/main_zubko.f90
-	$(FC) $(FFLAGS) $^ -o $@
+main_zubko.x: $(SRC_PIPE) src/main_zubko.f90 | $(TMARCH)
+	$(FC) $(FFLAGS) $^ $(TMLIB) -o $@
 	@echo 'Built: ./main_zubko.x'
 
 # Size-integrated transport optics (lambda, albedo, <cos>, C_ext/C_abs/C_sca
 # per H) for astrodust, DL07, Zubko or any file-defined model -> ../data/.
 # Reuses the full SED pipeline, so every table it writes is the same optics
 # the RT hosts get from dust_extinction; only the driver differs.
-calc_kext.x: $(SRC_PIPE) src/calc_kext.f90
-	$(FC) $(FFLAGS) $^ -o $@
+calc_kext.x: $(SRC_PIPE) src/calc_kext.f90 | $(TMARCH)
+	$(FC) $(FFLAGS) $^ $(TMLIB) -o $@
 	@echo 'Built: ./calc_kext.x'
 
 # ---- libsedust.a: the model-agnostic dust-emission library, for a Fortran
 # 3D RT code to link.  Usage from the RT:  use dust_lib ;  link
-#   -L<sed> -lsedust  with the .mod search path  -I<sed>
+#   -L<sed> -lsedust -L<tmatrix> -ltmatrix
+# with the .mod search paths  -I<sed> -I<tmatrix>.  BOTH archives are needed:
+# the astrodust EUV band calls the T-matrix.
 LIB_SRC = $(SRC_PIPE) src/dust_lib.f90
 LIB_OBJ = $(notdir $(LIB_SRC:.f90=.o))
 
-libsedust.a: $(LIB_SRC)
+libsedust.a: $(LIB_SRC) | $(TMARCH)
 	$(FC) $(FFLAGS) -c $(LIB_SRC)
 	rm -f $@
 	ar rcs $@ $(LIB_OBJ)
-	@echo 'Built: libsedust.a  (link with -L. -lsedust -I.)'
+	@echo 'Built: libsedust.a  (link with -L. -lsedust -L$(TMDIR) -ltmatrix -I. -I$(TMDIR))'
 
 clean:
 	rm -f *.o *.mod

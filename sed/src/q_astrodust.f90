@@ -1,7 +1,7 @@
 module q_astrodust_mod
-   ! Q(a, lambda) for DH21 astrodust computed directly from its dielectric
-   ! function, for the extreme-ultraviolet band the T-matrix Q table does
-   ! not cover.
+   ! The DH21 astrodust refractive index, and Q(a, lambda) for the
+   ! volume-equivalent sphere computed from it, for the extreme-ultraviolet
+   ! band the T-matrix Q table does not cover.
    !
    ! MATERIAL.  index_DH21Ad_P0.20_0.00_1.400 is the Draine & Hensley (2021)
    ! astrodust effective dielectric function for porosity P = 0.20, iron
@@ -17,13 +17,32 @@ module q_astrodust_mod
    ! sed_init therefore takes the path as an argument and prints the file it
    ! is using whenever the EUV band is active.
    !
-   ! SHAPE, AND THE DOMAIN OF VALIDITY OF THE APPROXIMATION.  The Q table is a
-   ! random-orientation T-matrix calculation for an OBLATE SPHEROID of axial
-   ! ratio b/a = 1.400, indexed by the volume-equivalent radius a_eff.  Here
-   ! the same a_eff is fed to Bohren-Huffman Mie for the volume-equivalent
-   ! SPHERE.  This is a deliberate approximation, valid only where it is used:
-   ! at wavelengths SHORTER than the Q table's short-wavelength end
-   ! (0.0912 um = 13.6 eV), which is where this module is called.
+   ! WHAT THIS MODULE OFFERS.  Two separate things, and the EUV band chooses
+   ! between them:
+   !
+   !   astrodust_index_at        the interpolated (n, k) at one wavelength and
+   !                             nothing else.  This is the DEFAULT route: it
+   !                             hands the index to the T-matrix
+   !                             (spheroid_q of spheroid_optics), so the EUV band
+   !                             is the same b/a = 1.400 oblate spheroid, on
+   !                             the same random-orientation average, as the
+   !                             Q table it continues.  Nothing about the
+   !                             grain's shape changes at the seam.
+   !
+   !   q_astrodust_abs,          Bohren-Huffman Mie for the volume-equivalent
+   !   q_astrodust_full          SPHERE of the same a_eff.  A deliberate shape
+   !                             APPROXIMATION, kept because it costs
+   !                             milliseconds where the T-matrix costs
+   !                             minutes; sed_init selects it with
+   !                             euv_tmatrix = .false.  Its domain of validity
+   !                             is measured below.
+   !
+   ! SHAPE, AND THE DOMAIN OF VALIDITY OF THE MIE APPROXIMATION.  The Q table
+   ! is a random-orientation T-matrix calculation for an OBLATE SPHEROID of
+   ! axial ratio b/a = 1.400, indexed by the volume-equivalent radius a_eff.
+   ! The Mie route feeds the same a_eff to the volume-equivalent SPHERE.  That
+   ! substitution is valid only where it is used: at wavelengths SHORTER than
+   ! the Q table's short-wavelength end (0.0912 um = 13.6 eV).
    !
    ! Measured against the T-matrix at the same (a, lambda), with
    ! dQabs = (Mie - T-matrix) / T-matrix:
@@ -70,10 +89,12 @@ module q_astrodust_mod
    !
    ! So: bounded by ~2%, smallest for the small grains that carry most of the
    ! EUV absorption, and asymptotically a fixed ~2% underestimate for the
-   ! largest ones.  The approximation must NOT be used at longer wavelengths,
-   ! where the resonances and the b/a = 1.4 depolarization factors make the
-   ! spheroid and the sphere genuinely different; there the T-matrix table is
-   ! the model's optics.
+   ! largest ones -- an error that does not vanish however far into the EUV
+   ! the band is carried, which is why the T-matrix and not this is the
+   ! default.  The approximation must NOT be used at longer wavelengths, where
+   ! the resonances and the b/a = 1.4 depolarization factors make the spheroid
+   ! and the sphere genuinely different; there the T-matrix table is the
+   ! model's optics.
    !
    ! The eV -> um conversion uses hc = 1.23984 eV um, matching q_silicate_mod
    ! and q_graphite_mod.  run_tmatrix.f90's reader rounds the same constant to
@@ -90,12 +111,19 @@ module q_astrodust_mod
    ! q_silicate_mod, which does the same job for the D03 astrosilicate.  The
    ! one difference is that the table length is counted at load time rather
    ! than fixed as a parameter, because the file path is settable.
+   !
+   ! THREAD SAFETY.  load_astrodust_index WRITES the cached table; everything
+   ! else only reads it.  A caller that evaluates the optics from several
+   ! threads must therefore load the table before the threads start (sed_init
+   ! does), after which any number of threads may call astrodust_index_at,
+   ! q_astrodust_abs or q_astrodust_full at once.
 
    use constants,   only: wp
    use sed_mathlib, only: interp
    use mie_mod,     only: mie
    implicit none
    private
+   public :: astrodust_index_at
    public :: q_astrodust_abs
    public :: q_astrodust_full
    public :: set_astrodust_index_path
@@ -223,6 +251,28 @@ contains
    end subroutine load_astrodust_index
 
 
+   subroutine astrodust_index_at(lambda, nr, ki)
+      ! Refractive index m = nr + i*ki of the loaded astrodust dielectric
+      ! function at one wavelength [um].  Exactly the interpolation
+      ! q_astrodust_abs and q_astrodust_full do internally, with the Mie call
+      ! left out, so a caller that brings its own optics -- the T-matrix EUV
+      ! band of sed_astrodust -- reads the SAME index the sphere route would.
+      !
+      ! The lazy load below WRITES module state and so must never be reached
+      ! from inside a parallel region: call load_astrodust_index() once before
+      ! the threads start (sed_init does).  Past that point this routine only
+      ! reads the cached table and is safe to call from many threads at once.
+      real(wp), intent(in)  :: lambda
+      real(wp), intent(out) :: nr, ki
+
+      if (.not. loaded) call load_astrodust_index()
+
+      ! ad_wavl is descending (eV ascending in file); interp handles both.
+      call interp(ad_wavl, ad_n, lambda, nr)
+      call interp(ad_wavl, ad_k, lambda, ki)
+   end subroutine astrodust_index_at
+
+
    subroutine q_astrodust_abs(agrain, lambda, Qabs)
       ! Q_abs for an astrodust sphere of volume-equivalent radius agrain.
       ! agrain, lambda: um. Qabs: C_abs/(pi a^2).
@@ -245,7 +295,9 @@ contains
       ! Full Mie output (extinction, scattering, absorption efficiencies and
       ! scattering asymmetry g) for an astrodust sphere of volume-equivalent
       ! radius agrain. agrain, lambda: um. Same dielectric path as
-      ! q_astrodust_abs -- just keeps every Mie return.
+      ! q_astrodust_abs -- just keeps every Mie return.  This is the sphere
+      ! APPROXIMATION of the module header, reached only when a caller asks
+      ! for it (sed_init's euv_tmatrix = .false.).
       real(wp), intent(in)  :: agrain, lambda
       real(wp), intent(out) :: Qext, Qsca, Qabs, gsca
       real(wp) :: x, nr, ki, alb1

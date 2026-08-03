@@ -21,6 +21,11 @@ contains
       complex(wp) :: an, an1, bn, bn1, refrl, xi, xi1, y
       complex(wp), allocatable :: d(:)
 
+      ! Exact-zero test on purpose: x = 2 pi a / lambda is zero only for a
+      ! grain of zero radius, which has no cross section, and the series below
+      ! divides by x.  A tolerance would silently zero out arbitrarily small
+      ! but physical grains.  This is the -Wcompare-reals warning this file
+      ! deliberately keeps.
       if (x == 0.0_wp) then
          qext = 0.0_wp
          qsca = 0.0_wp

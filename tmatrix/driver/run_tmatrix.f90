@@ -1,6 +1,9 @@
 program run_tmatrix
    ! Precomputes (Q_ext, Q_abs, Q_sca, albedo, g) for the DH21 astrodust
    ! grain on its native (a_eff, lambda) grid.
+   ! Every point goes through `spheroid_q`, which selects the size-parameter
+   ! regime and, in the T-matrix regime, calls the default full-direct
+   ! reentrant library backend.
    !
    ! Usage:
    !   ./run_tmatrix.x                       ! full sweep, 169 x 1129 points
@@ -16,27 +19,33 @@ program run_tmatrix
    ! Columns:
    !   lambda[um]  a_eff[um]  Q_ext  Q_abs  Q_sca  albedo  g  flag
    !
+   ! Regime selection, the flag convention below, and the physical-consistency
+   ! bounds all live in driver/spheroid_optics.f90; this program only supplies
+   ! the astrodust grid and refractive index and writes the table.
+   !
    ! flag legend:
    !    0    T-matrix converged
-   !   10    small-x limit (Rayleigh dipole)
-   !   20    large-x limit (geometric optics)
-   !   1..5  T-matrix returned IERR=1..5 (see tmd_one.f header; IERR=5 is
-   !         the Gaussian-quadrature refinement loop failing to converge),
+   !   10    Rayleigh dipole limit (x < X_RAYLEIGH_MAX)
+   !   20    geometric optics limit (x > X_GEOMETRIC_MIN)
+   !   1..9  T-matrix returned IERR=1..9 (IERR=5 is the Gaussian-quadrature
+   !         refinement loop failing to converge and IERR=6..9 are
+   !         internal/LAPACK failures),
    !         then the result was taken from whichever limit x is closer to:
-   !           IERR in 1..5 with x < 1.0    : redirected to the small-x limit
-   !                                          (flag = IERR + 10)
-   !           IERR in 1..5 with x >= 1.0   : redirected to the large-x limit
-   !                                          (flag = IERR + 20)
-   !  100+  : failed physical-consistency check (see stderr).  The base flag
-   !         is preserved in the low two digits; +100 marks a written row
-   !         whose Q / albedo / g fell outside the finiteness, non-negativity,
-   !         or range bounds.
+   !           IERR in 1..9 with x <  X_LIMIT_SPLIT : Rayleigh dipole limit
+   !                                                  (flag = IERR + 10)
+   !           IERR in 1..9 with x >= X_LIMIT_SPLIT : geometric optics limit
+   !                                                  (flag = IERR + 20)
+   !  100+  : failed physical-consistency check (see the warning on stdout).
+   !         The base flag is preserved in the low two digits; +100 marks a
+   !         written row whose Q / albedo / g fell outside the finiteness,
+   !         non-negativity, or range bounds.
 
-   use, intrinsic :: iso_fortran_env, only: real64
-   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-   use constants, only: wp
+   use tmatrix_api, only: wp, tmatrix_options_t, &
+                          tmatrix_workspace_t, tmatrix_workspace_init, &
+                          tmatrix_workspace_finalize
+   use tmatrix_status, only: TMATRIX_SUCCESS
    use read_index, only: load_index, interp_m
-   use asymptotic_optics, only: rayleigh_limit, geometric_optics_limit
+   use spheroid_optics, only: spheroid_q, check_physical_bounds
    implicit none
 
    ! Reference parameters (HD23 best fit)
@@ -58,20 +67,21 @@ program run_tmatrix
    real(wp), parameter :: DDELT   = 1.0e-3_wp
    integer,  parameter :: NDGS    = 2
    integer,  parameter :: NP_OBL  = -1            ! oblate spheroid, Mishchenko convention
-   real(wp), parameter :: X_SMALL = 0.1_wp        ! small-x cutoff
-   real(wp), parameter :: X_LARGE = 50.0_wp       ! large-x cutoff
-   real(wp), parameter :: PI      = acos(-1.0_wp)
 
    real(wp) :: a_eff(NA), lambda(NW)
    real(wp) :: nr_cache(NW), ki_cache(NW)
-   real(wp) :: nr, ki, x, qext, qabs, qsca, walb, asymm
-   integer  :: ja, jw, ierr_t, flag
+   real(wp) :: nr, ki, qext, qabs, qsca, walb, asymm
+   type(tmatrix_workspace_t) :: work
+   type(tmatrix_options_t) :: tm_options
+   integer  :: ja, jw, flag, tm_status
    integer  :: ja_step, jw_step, jw_lo, jw_hi, n_total, n_done
    integer  :: u_out, ios
    integer  :: n_viol
    logical  :: phys_ok
+   character(len=160) :: tm_message
    character(len=96)  :: viol_reason
    character(len=256) :: f_out
+   character(len=256) :: output_override
    character(len=32)  :: arg, arg2, arg3
    integer, parameter :: MODE_FULL=0, MODE_TEST=1, MODE_RANGE=2
    integer  :: mode
@@ -112,6 +122,18 @@ program run_tmatrix
    call read_one_col(f_aeff, NA, a_eff)
    call read_one_col(f_wave, NW, lambda)
    call load_index(f_index)
+   tm_options%aspect_ratio = EPS_BA
+   tm_options%tolerance    = DDELT
+   tm_options%shape        = NP_OBL
+   tm_options%ndgs         = NDGS
+   ! A workspace that cannot be allocated is a setup failure, not a point
+   ! failure: report it and stop before the sweep rather than letting every
+   ! point report the same thing.
+   call tmatrix_workspace_init(work, tm_status, tm_message)
+   if (tm_status /= TMATRIX_SUCCESS) then
+      write(*,'(a,a)') ' ERROR: libtmatrix: ', trim(tm_message)
+      stop 2
+   end if
 
    ! Cache m(lambda) once per wavelength (lambda-loop outer)
    do jw = 1, NW
@@ -138,6 +160,11 @@ program run_tmatrix
       jw_step = 1
       f_out   = f_out_full
    end select
+   ! Test automation can redirect the generated table outside the source tree.
+   ! Ordinary standalone operation deliberately keeps its historical output/
+   ! paths when TMATRIX_OUTPUT_FILE is not set.
+   call get_environment_variable('TMATRIX_OUTPUT_FILE', output_override, status=ios)
+   if (ios == 0 .and. len_trim(output_override) > 0) f_out = trim(output_override)
    n_total = ((NA - 1)/ja_step + 1) * ((jw_hi - jw_lo)/jw_step + 1)
    n_done  = 0
    n_viol  = 0
@@ -161,39 +188,24 @@ program run_tmatrix
       nr = nr_cache(jw)
       ki = ki_cache(jw)
       do ja = 1, NA, ja_step
-         x = 2.0_wp * PI * a_eff(ja) / lambda(jw)
+         call spheroid_q(work, a_eff(ja), lambda(jw), nr, ki, tm_options, &
+                         qext, qabs, qsca, walb, asymm, flag, tm_status, tm_message)
 
-         if (x < X_SMALL) then
-            call rayleigh_limit(a_eff(ja), lambda(jw), nr, ki, EPS_BA, qext, qsca, walb, asymm)
-            qabs = qext - qsca
-            flag = 10
-         else if (x > X_LARGE) then
-            call geometric_optics_limit(a_eff(ja), lambda(jw), nr, ki, qext, qsca, walb, asymm)
-            qabs = qext - qsca
-            flag = 20
-         else
-            call tmd_one(a_eff(ja), lambda(jw), nr, ki, EPS_BA, NP_OBL, &
-                         DDELT, NDGS, qext, qsca, walb, asymm, ierr_t)
-            if (ierr_t /= 0) then
-               if (x < 1.0_wp) then
-                  call rayleigh_limit(a_eff(ja), lambda(jw), nr, ki, EPS_BA, qext, qsca, walb, asymm)
-                  flag = ierr_t + 10
-               else
-                  call geometric_optics_limit(a_eff(ja), lambda(jw), nr, ki, qext, qsca, walb, asymm)
-                  flag = ierr_t + 20
-               end if
-            else
-               flag = 0
-            end if
-            qabs = qext - qsca
+         ! A nonzero status with flag = 0 is a library failure the IERR
+         ! redirection does not cover.  Keep the row and let the bounds check
+         ! below mark it, rather than abandoning a multi-hour sweep over one
+         ! point: the reader rebuilds the grid from the row count.
+         if (tm_status /= TMATRIX_SUCCESS .and. flag == 0) then
+            write(*,'(a,es13.6,a,es13.6,a,a)') &
+               ' WARNING libtmatrix: lambda=', lambda(jw), &
+               ' um  a_eff=', a_eff(ja), ' um  ', trim(tm_message)
          end if
 
-         ! Physical-consistency check.  All three branches (T-matrix,
-         ! small-x, large-x) converge here, so validating just before the
-         ! write covers every result path.  A failure keeps the row (the
-         ! downstream reader counts rows to rebuild the grid) but marks its
-         ! flag with +100 and emits a one-line warning.
-         call check_physics(qext, qabs, qsca, walb, asymm, phys_ok, viol_reason)
+         ! Physical-consistency check.  All three regimes (Rayleigh dipole,
+         ! T-matrix, geometric optics) converge here, so validating just
+         ! before the write covers every result path.  A failure keeps the
+         ! row but marks its flag with +100 and emits a one-line warning.
+         call check_physical_bounds(qext, qabs, qsca, walb, asymm, phys_ok, viol_reason)
          if (.not. phys_ok) then
             n_viol = n_viol + 1
             write(*,'(a,es13.6,a,es13.6,a,i0,a,a)') &
@@ -214,6 +226,7 @@ program run_tmatrix
       end do
    end do
    close(u_out)
+   call tmatrix_workspace_finalize(work)
    write(*,'(a,a)') ' wrote ', trim(f_out)
    write(*,'(a,i0,a,i0,a)') ' physical-consistency violations: ', n_viol, &
       ' of ', n_done, ' rows'
@@ -239,36 +252,5 @@ contains
       read(u,*) x(1:n)
       close(u)
    end subroutine read_one_col
-
-   subroutine check_physics(qe, qa, qs, wa, gg, ok, reason)
-      ! Physical-consistency test for one (lambda, a_eff) result.
-      ! Sets ok = .false. and appends a short tag to reason for every bound
-      ! that is violated; reason is empty when everything passes.
-      real(wp),         intent(in)  :: qe, qa, qs, wa, gg   ! qext,qabs,qsca,albedo,g
-      logical,          intent(out) :: ok
-      character(len=*), intent(out) :: reason
-      real(wp), parameter :: tol = 1.0e-9_wp
-
-      reason = ''
-      ! Finiteness (NaN / Inf).
-      if (.not. ieee_is_finite(qe)) reason = trim(reason)//' qext-nonfinite'
-      if (.not. ieee_is_finite(qs)) reason = trim(reason)//' qsca-nonfinite'
-      if (.not. ieee_is_finite(qa)) reason = trim(reason)//' qabs-nonfinite'
-      if (.not. ieee_is_finite(wa)) reason = trim(reason)//' albedo-nonfinite'
-      if (.not. ieee_is_finite(gg)) reason = trim(reason)//' g-nonfinite'
-      ! Non-negativity (small negative roundoff tolerated) and qext >= qsca.
-      if (ieee_is_finite(qe) .and. qe < -tol) reason = trim(reason)//' qext<0'
-      if (ieee_is_finite(qs) .and. qs < -tol) reason = trim(reason)//' qsca<0'
-      if (ieee_is_finite(qa) .and. qa < -tol) reason = trim(reason)//' qabs<0'
-      if (ieee_is_finite(qe) .and. ieee_is_finite(qs) .and. qe < qs - tol) &
-         reason = trim(reason)//' qext<qsca'
-      ! Albedo in [0,1] and asymmetry g in [-1,1].
-      if (ieee_is_finite(wa) .and. (wa < -tol .or. wa > 1.0_wp + tol)) &
-         reason = trim(reason)//' albedo-range'
-      if (ieee_is_finite(gg) .and. (gg < -1.0_wp - tol .or. gg > 1.0_wp + tol)) &
-         reason = trim(reason)//' g-range'
-
-      ok = (len_trim(reason) == 0)
-   end subroutine check_physics
 
 end program run_tmatrix

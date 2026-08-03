@@ -21,13 +21,46 @@ module dust_lib
    ! longer grid; everything else about the API is unchanged. OMITTING lam_min
    ! leaves the grid, and every number the model produces, exactly as before.
    !
-   ! In the extended band the astrodust optics are Bohren-Huffman Mie on the
-   ! DH21 dielectric function for the volume-equivalent SPHERE, not the b/a=1.4
-   ! oblate spheroid of the T-matrix table -- the table simply does not reach
-   ! there. That approximation is good to ~2% over 13.6-100 eV; q_astrodust.f90
-   ! documents it size by size, and where it stops being valid. The carbonaceous
-   ! optics have no such seam: above the DL07 PAH cutoff (21.4 eV) they are Mie
-   ! on the D03 graphite dielectric functions, which run to 6.2e-5 um.
+   ! In the extended band the astrodust optics are computed from the DH21
+   ! dielectric function by the T-MATRIX, on the same b/a = 1.400 oblate
+   ! spheroid and the same random-orientation average as the Q table itself
+   ! (spheroid_q, which takes the Rayleigh dipole limit below x = 0.1 and the
+   ! geometric-optics limit above x = 50, exactly as the table's own driver
+   ! does). The band is therefore a continuation of the table, not a different
+   ! particle glued to it: measured at the seam, C_abs matches a log-log
+   ! extrapolation of the table to 0.07% at worst over the whole size range,
+   ! and <cos> agrees exactly where the table's own regime bounds put it at 0.
+   !
+   ! That costs real time. Measured here on 167 radii (gfortran 13.1, -O3),
+   ! band only:
+   !
+   !   lam_min                 n_euv  band pts  T-matrix pts  threads    time
+   !   0.0247968 um (50 eV)      113    18,871        12,204        1   527.5 s
+   !                                                               2   264.2 s
+   !                                                               4   136.7 s
+   !                                                               8    69.2 s
+   !   1.001e-4 um (12.4 keV)    590    98,530        41,900       72    73.5 s
+   !
+   ! so the band is built with OpenMP (one T-matrix workspace for each thread,
+   ! 80 MiB apiece once its full-direct arrays are allocated; nothing is
+   ! allocated when there is no EUV band). Peak resident memory grows with it:
+   ! 64 / 110 / 197 / 376 MB at 1 / 2 / 4 / 8 threads, 3.0 GB at 72. The size
+   ! loop carries no dependence, so the result does not depend on the thread
+   ! count or the schedule -- the four runs above were byte-identical.
+   !
+   ! A host that cannot afford this passes euv_tmatrix = .false.:
+   !   call build_astrodust(m, qtab, sizedist, NT, T_lo, T_hi, &
+   !                        lam_min=0.0124_wp, euv_tmatrix=.false.)
+   ! which substitutes Bohren-Huffman Mie for the volume-equivalent SPHERE and
+   ! runs in a tenth of a second. It is an APPROXIMATION: good to ~2% where the
+   ! T-matrix regime holds, but converging on a fixed ~2% underestimate for
+   ! grains in the geometric-optics limit rather than on zero, and leaving a
+   ! visible step at the seam (median 1.2%, worst 16% in C_abs; <cos> jumps
+   ! from 0.9 to 0 for a >~ 1 um). q_astrodust.f90 documents it size by size.
+   !
+   ! The carbonaceous optics have no such seam: above the DL07 PAH cutoff
+   ! (21.4 eV) they are Mie on the D03 graphite dielectric functions, which
+   ! run to 6.2e-5 um.
    !
    ! The dielectric function must be the one the Q table was computed from --
    ! same porosity, iron fraction and axial ratio -- or the model changes
@@ -169,6 +202,16 @@ module dust_lib
    !                     7 size-dist read    8 calorimetry read failed
    !                     9 an explicitly named kext_path failed to load
    !
+   ! LINKING. Two archives, not one, since the astrodust EUV band calls the
+   ! T-matrix:
+   !   cd tmatrix && make libtmatrix.a
+   !   cd sed     && make libsedust.a
+   !   gfortran -I<sed> -I<tmatrix> my_rt.f90 \
+   !            -L<sed> -lsedust -L<tmatrix> -ltmatrix -fopenmp -o my_rt.x
+   ! Both .mod search paths are needed as well: the model API's interfaces
+   ! reach the T-matrix types. libtmatrix.a itself needs no OpenMP runtime; the
+   ! threading is on the SEDust side.
+   !
    ! The validated solver core (sed_grain_loop & helpers in sed_astrodust_mod)
    ! is untouched; this module only re-exports the model API and adds the
    ! table/interpolation layer.
@@ -297,7 +340,7 @@ contains
       real(wp),                intent(out) :: lamI_total(:)      ! (NLAM)
       real(wp), optional,      intent(out) :: lamI_chan(:,:)     ! (NLAM, n_channel)
       ! Optional error report (0 = success); see the module header for codes.
-      ! Validation is scalar/size-only to keep this on the per-cell hot path.
+      ! Validation is scalar/size-only to keep this on the hot path.
       integer, optional,       intent(out) :: status
       real(wp) :: ly(tab%NU)
       real(wp) :: lr, lUq

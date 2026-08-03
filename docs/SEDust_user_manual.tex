@@ -95,10 +95,15 @@ for an RT run that uses a single dust model; to switch models, rebuild.
 %====================================================================
 \section{Building the library}
 
-From \code{SEDust/sed/}:
+Two archives, built in this order:
 \begin{lstlisting}[style=sh]
-make libsedust.a      # the library archive (link this into your RT code)
+cd SEDust/tmatrix && make libtmatrix.a   # T-matrix, needed by the EUV band
+cd SEDust/sed     && make libsedust.a    # the library archive
 \end{lstlisting}
+\code{libtmatrix.a} must exist first: the astrodust extreme-ultraviolet band
+(\S\ref{sec:euv}) computes its optics with the T-matrix, so every SEDust target
+that links \code{sed\_astrodust.f90} links it too. The \code{sed} \code{Makefile}
+stops with an instruction rather than a link error when it is missing.
 
 The compiler is \code{gfortran}. The default flags are
 \code{-O3 -ffree-line-length-none -fopenmp} plus a warning set --- deliberately
@@ -138,7 +143,8 @@ parameters internally.}
 keyword argument in the order shown):
 \begin{lstlisting}
 call build_astrodust(m, qtable_path, sizedist_path, NT, T_lo, T_hi &
-                     [, status] [, lam_min] [, astrodust_index_path] [, kext_path])
+                     [, status] [, lam_min] [, astrodust_index_path] [, kext_path] &
+                     [, euv_tmatrix])
 call build_dl07     (m, qtable_path, sizedist_path, sd_index, U, NT, T_lo, T_hi &
                      [, status] [, lam_min] [, kext_path])
 call build_zubko    (m, config_path, data_dir, NT, T_lo, T_hi [, status] [, kext_path])
@@ -179,6 +185,13 @@ tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat
       (Table~\ref{tab:models:kext}) is tried, and a default that is not there
       leaves the model with no extinction to serve --- but the build succeeds,
       so a driver that only computes emission still runs.
+\item \code{euv\_tmatrix} (optional, astrodust only, default \code{.true.}):
+      how the extended band's optics are computed. \code{.true.} is the
+      T-matrix on the same $b/a = 1.400$ oblate spheroid as the $Q$ table;
+      \code{.false.} substitutes the volume-equivalent-sphere Mie
+      approximation, which is far cheaper and about 2\% low in the
+      geometric-optics limit. See \S\ref{sec:euv-shape}. Ignored when
+      \code{lam\_min} asks for no extension.
 \end{itemize}
 
 \begin{table}[h]
@@ -566,10 +579,14 @@ bit-identical to before.}
 \subsection{Where the optics come from in the extended band}
 
 \begin{itemize}
-\item \textbf{Astrodust grains.} Bohren--Huffman Mie for the
-      \emph{volume-equivalent sphere} on the Draine \& Hensley (2021)
-      dielectric function --- the same material as the $Q$ table, but not the
-      same shape. See \S\ref{sec:euv-shape}.
+\item \textbf{Astrodust grains.} The T-matrix on the Draine \& Hensley (2021)
+      dielectric function --- the same material \emph{and} the same $b/a =
+      1.400$ oblate spheroid as the $Q$ table, on the same random-orientation
+      average, so the band continues the table's own calculation instead of
+      substituting a different particle for it. This is the default. Passing
+      \code{euv\_tmatrix=.false.} instead selects Bohren--Huffman Mie for the
+      \emph{volume-equivalent sphere}: much cheaper, but an approximation.
+      Both are described in \S\ref{sec:euv-shape}.
 \item \textbf{PAH / carbonaceous.} Above \SI{21.4}{\electronvolt}
       ($1/\lambda = 17.25\ \mu\mathrm{m}^{-1}$) the DL07 PAH cross section is
       zero by construction, so graphite is the \emph{whole} carbonaceous
@@ -594,14 +611,55 @@ bit-identical to before.}
       with.
 \end{itemize}
 
-\subsection{The shape approximation, and why it is bounded}\label{sec:euv-shape}
+\subsection{The two routes, and what the cheap one costs}\label{sec:euv-shape}
 
 The $Q$ table is a random-orientation T-matrix solution for an oblate spheroid
-of axial ratio $b/a = 1.4$; the extended band uses the volume-equivalent
-\emph{sphere}. The justification is \textbf{not} the anomalous-diffraction
-argument $|m-1|\ll1$: for this material $|m-1| = 0.77$ at the seam and still
-$0.56$ at \SI{20}{\electronvolt}. It rests instead on the two limits that
-actually apply:
+of axial ratio $b/a = 1.4$. \textbf{By default the extended band is the same
+solution}, called directly (\code{spheroid\_q} in
+\code{tmatrix/driver/spheroid\_optics.f90}) on the same dielectric function,
+with the same convergence tolerance and the same regime bounds the table's own
+driver uses: the Rayleigh dipole limit below $x = 2\pi a_{\rm eff}/\lambda =
+0.1$, the T-matrix between $0.1$ and $50$, the geometric-optics limit above
+$50$. Nothing about the particle changes across the seam.
+
+That is not free. Measured on this machine (\code{gfortran}~13.1, \code{-O3},
+167 radii; the timings are the band alone, as \code{sed\_init} reports them):
+
+\begin{center}
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+\code{lam\_min} & $n_{\rm euv}$ & band points & of which T-matrix & threads & time \\
+\midrule
+$0.0247968$\um\ (\SI{50}{\electronvolt}) & 113 & 18\,871 & 12\,204 &  1 & 527.5\,s \\
+\qquad''                                 &     &         &         &  2 & 264.2\,s \\
+\qquad''                                 &     &         &         &  4 & 136.7\,s \\
+\qquad''                                 &     &         &         &  8 &  69.2\,s \\
+$1.001\times10^{-4}$\um\ (12.4\,keV)     & 590 & 98\,530 & 41\,900 & 72 &  73.5\,s \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The second row is the floor \code{calc\_kext.x astrodust euv} picks by
+default. Most of a deeper band is cheap, because past $x = 50$ it is the
+geometric-optics limit: going from \SI{50}{\electronvolt} down to
+\SI{12.4}{\kilo\electronvolt} multiplies the band points by 5.2 but the T-matrix
+points by only 3.4.
+
+The band is built with OpenMP over grain radii, with one T-matrix workspace for
+each thread (37\,MiB at allocation, 80\,MiB once its full-direct arrays are in
+place; nothing is allocated when there is no band to compute). That is the one
+thing to watch on a many-core host: peak resident memory measured
+64\,MB / 110\,MB / 197\,MB / 376\,MB at 1 / 2 / 4 / 8 threads and 3.0\,GB at 72,
+so cap \code{OMP\_NUM\_THREADS} if memory is tight. Each radius writes its own
+column and reads no other, so the result does not depend on the thread count or
+the schedule --- the four runs above wrote byte-identical optics.
+
+\paragraph{The cheap route.} \code{euv\_tmatrix=.false.} replaces the spheroid
+by its volume-equivalent \emph{sphere} and solves it with Bohren--Huffman Mie,
+in a tenth of a second. The justification for that substitution is \textbf{not}
+the anomalous-diffraction argument $|m-1|\ll1$: for this material $|m-1| = 0.77$
+at the seam and still $0.56$ at \SI{20}{\electronvolt}. It rests instead on the
+two limits that actually apply:
 
 \begin{itemize}
 \item \textbf{Small grains are in the Rayleigh limit} ($x = 2\pi a/\lambda =
@@ -628,15 +686,70 @@ recovering, and the largest sizes settle at a nearly energy-independent
 $-1.9$ to $-2.0\%$. Over the whole band and the whole size range the error stays
 within about 2\%; \code{sed/src/q\_astrodust.f90} tabulates it size by size.
 
-\paragraph{Seam continuity.} In the size-integrated curve the step across
-$0.0912$\um\ is $-1.54\%$ in $C_{\rm ext}$ and $-1.90\%$ in $C_{\rm abs}$ ---
-\emph{smaller} than the neighboring steps of the table's own grid ($-1.95\%$ and
-$-1.72\%$ for $C_{\rm ext}$; $-2.20\%$ and $-1.94\%$ for $C_{\rm abs}$), so
-absorption and extinction join without a visible discontinuity. Scattering does
-show one: $C_{\rm sca}$ steps by $+0.74\%$ where its neighbors step by $-0.39\%$
-and $-0.36\%$, and the albedo by $+2.31\%$ where its neighbors give $+1.59\%$
-and $+1.39\%$ --- a seam of roughly one percentage point, consistent with the
-2\% shape error being carried mostly by $Q_{\rm sca}$.
+\paragraph{Measured against the default.} Building the same model both ways with
+\code{lam\_min}~$=0.0247968$\um\ gives, for $\Delta C_{\rm abs} = ({\rm Mie} -
+{\rm T\ matrix})/{\rm T\ matrix}$ [\%]:
+
+\begin{center}
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+$a$ [\um] & 13.8\,eV & 17.7 & 24.8 & 30.1 & 40.2 & 50 \\
+\midrule
+$4.73\times10^{-4}$ & $-0.31$ & $+0.71$ & $-0.01$ & $-0.08$ & $-0.13$ & $-0.02$ \\
+$1.00\times10^{-3}$ & $-0.14$ & $+0.75$ & $+0.05$ & $-0.00$ & $-0.03$ & $-0.02$ \\
+$5.01\times10^{-3}$ & $-0.16$ & $+0.75$ & $-0.09$ & $-0.17$ & $-0.24$ & $-0.23$ \\
+$1.00\times10^{-2}$ & $+0.30$ & $+0.24$ & $-0.60$ & $-0.57$ & $-0.37$ & $-0.27$ \\
+$5.01\times10^{-2}$ & $-1.28$ & $-1.47$ & $-1.59$ & $-1.58$ & $-1.47$ & $-1.27$ \\
+$1.00\times10^{-1}$ & $-1.62$ & $-1.74$ & $-1.85$ & $-1.87$ & $-1.86$ & $-1.77$ \\
+$2.99\times10^{-1}$ & $-1.90$ & $-1.96$ & $-2.01$ & $-2.02$ & \multicolumn{2}{c}{(geometric optics)} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Over the $0.1\le x\le50$ block where the T-matrix itself answers,
+$\Delta C_{\rm abs}$ runs from $-2.03$ to $+0.77\%$ with a median of $-0.70\%$,
+exactly the bound argued above. Where $x>50$ both routes leave the T-matrix ---
+the spheroid one for its geometric-optics limit, which is what the $Q$ table
+uses there too --- and the two disagree by $-6$ to $-19\%$; that is Mie against
+a chord approximation, not against the T-matrix.
+
+\paragraph{Seam continuity.} Extrapolating the $Q$ table's first two
+wavelengths log--log back to the last extended-band wavelength and comparing
+with what the band actually produced there, over all 167 radii:
+
+\begin{center}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+route & median $|$step$|$ & max $|$step$|$ & RMS step \\
+\midrule
+T-matrix (default)                & 0.012\% & 0.068\%  & 0.027\% \\
+Mie sphere (\code{euv\_tmatrix=.false.}) & 1.167\% & 15.709\% & 6.186\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The default is continuous to a few hundredths of a percent, about a
+hundred times smoother than the sphere substitution. The asymmetry parameter
+behaves the same way: the table gives $\langle\cos\theta\rangle = 0$ wherever
+its own regime bounds put a radius in the Rayleigh or geometric-optics limit,
+and the default reproduces that exactly, whereas the sphere route steps from
+$0.90$ to $0$ across the seam for $a\gtrsim1$\um.
+
+\paragraph{The shipped extinction table.} \code{data/kext\_astrodust\_MW\_euv.dat}
+is integrated with the default T-matrix route, so the extinction it serves and
+the emission the model computes are one calculation of one particle at every
+wavelength. It was regenerated for that change; the $1129$ rows at
+$\lambda\ge0.0912$\um\ are byte-identical to the sphere-route version, because
+those come from the $Q$ table either way. Below the seam the sphere route was
+low in $C_{\rm abs}$ and $K_{\rm abs}$ by up to $3.6\%$, high in $C_{\rm sca}$
+by up to $4.6\%$ and in albedo by up to $5.1\%$, and wrong in $\langle\cos
+\theta\rangle$ by up to a factor of four at the shortest wavelengths, where the
+sphere keeps a forward-scattering asymmetry the spheroid's geometric-optics
+limit does not. $C_{\rm ext}$ moved least, by $0.72\%$. Regenerating costs
+about five minutes on 64 threads
+(\code{OMP\_NUM\_THREADS=64 ./calc\_kext.x astrodust euv}); pass
+\code{euv\_tmatrix=.false.} to \code{build\_astrodust} first if the sphere
+route is wanted instead.
 
 \subsection{The single-photon ceiling comes from the field}\label{sec:euv-ceiling}
 
@@ -798,9 +911,11 @@ $Q_{\rm abs}$, $Q_{\rm sca}$, $Q_{\rm ext}$, $g$ for each radius \\
 
 \noindent The consequence is blunt: \textbf{the astrodust EUV band has no
 external reference at all}, because the HD23 release stops at
-\SI{12.4}{\electronvolt} --- exactly where the extension begins. Its accuracy
-claim rests entirely on the internal argument of \S\ref{sec:euv-shape} and on
-the seam being continuous.
+\SI{12.4}{\electronvolt} --- exactly where the extension begins. What can be
+said is that the band is computed the same way the published part of the model
+is, from the same dielectric function and for the same particle
+(\S\ref{sec:euv-shape}), and that it joins the table without a step. That is a
+consistency argument, not a validation.
 
 The DL07 model \emph{can} be checked, because Draine published the same model
 over the whole range. Comparing \code{data/kext\_dl07\_MW\_euv.dat} with
@@ -1033,11 +1148,18 @@ models.
 %====================================================================
 \section{Linking into a 3D RT code}
 
-Compile your RT source against \code{libsedust.a} with the \code{.mod} search path
-pointing at \code{SEDust/sed/}:
+Compile your RT source against \emph{both} archives, with \code{.mod} search
+paths pointing at \code{SEDust/sed/} and \code{SEDust/tmatrix/}:
 \begin{lstlisting}[style=sh]
-gfortran -I<sed> my_rt.f90 <sed>/libsedust.a -fopenmp -o my_rt.x
+gfortran -I<sed> -I<tmatrix> my_rt.f90 \
+         -L<sed> -lsedust -L<tmatrix> -ltmatrix -fopenmp -o my_rt.x
 \end{lstlisting}
+\code{libtmatrix.a} entered the contract when the astrodust EUV band moved to
+the T-matrix (\S\ref{sec:euv-shape}); a host that links \code{-lsedust} alone
+now fails at link time. The archive itself needs no OpenMP runtime --- the
+threading is on the SEDust side --- so \code{-fopenmp} is required only because
+\code{libsedust.a} uses it.
+
 A complete minimal example is provided in
 \code{SEDust/sed/rt\_example/use\_dustlib.f90}: it builds a model, computes
 emission for one field, and prints the SED peak. No \code{ISO\_C\_BINDING} is

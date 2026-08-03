@@ -150,20 +150,37 @@ PAH uses the DL07 cross sections (Sect.~\ref{sec:pah}). The
 present section is the astrodust track. The PAH track lives in
 Sect.~\ref{sec:pah}.
 
-\subsection{T-matrix wrapper and parallel sweep}
+\subsection{T-matrix engine and parallel sweep}
 
-We use the Mishchenko et al.\ (1996) random-orientation T-matrix code
-(\texttt{tmd.lp.f}) wrapped as a callable subroutine
+We use the Mishchenko et al.\ (1996) random-orientation T-matrix code. It
+entered the tree as \texttt{tmd.lp.f} wrapped as a callable subroutine
 \texttt{TMD\_ONE(AXI, LAM, MRR, MRI, EPS, NP, DDELT, NDGS,
-QEXT, QSCA, WALB, ASYMM, IERR)}. The wrapper is a mechanical
-conversion of the original main program: inline test-case inputs become
-arguments, the size-distribution loop is removed (one $a$ per call),
-file I/O is dropped, and \texttt{STOP} statements are replaced with
+QEXT, QSCA, WALB, ASYMM, IERR)}, a mechanical
+conversion of the original main program: inline test-case inputs became
+arguments, the size-distribution loop was removed (one $a$ per call),
+file I/O was dropped, and \texttt{STOP} statements were replaced with
 \texttt{IERR}~/~\texttt{RETURN}. A critical footgun: the original main
 mutates the input \texttt{DDELT} (\texttt{DDELT~=~0.1*DDELT}); when
 called from F90 with a \texttt{parameter} constant, the write traps as
-SIGBUS on a read-only page. The wrapper copies to a local
+SIGBUS on a read-only page. The wrapper copied to a local
 \texttt{DDELT\_LOC} before mutating.
+
+That f77 driver has since been rewritten as a modern-Fortran library under
+\texttt{tmatrix/src/}, and the entry point is now
+\texttt{tmatrix\_eval(work, a\_um, lambda\_um, nr, ki, options,
+result)}. The only fixed-form file left is \texttt{lpd.f}, the linear-algebra
+routines the solver calls. The library holds no \texttt{COMMON}, no
+\texttt{EQUIVALENCE} and no mutable \texttt{SAVE}: every working array lives in
+a caller-owned \texttt{tmatrix\_workspace\_t}, one active caller for each
+workspace, and distinct workspaces may be evaluated concurrently. The
+convergence tolerance is a component of an \texttt{intent(in)}
+\texttt{tmatrix\_options\_t}, so the \texttt{DDELT} hazard above cannot recur.
+Mishchenko's unmodified sources (\texttt{tmd.lp.f}, \texttt{tmd.par.f},
+\texttt{ampld.lp.f}, \texttt{ampld.par.f}) are kept under
+\texttt{tmatrix/reference/upstream/} so that each migrated routine stays
+checkable line by line against its original; nothing there is compiled. The
+transition is numerically inert: the $Q$ tables it produces are byte-identical
+across it.
 
 Convergence-failure fallbacks are implemented for $x = 2\pi a/\lambda
 < 0.1$ (small-$x$ spheroidal Rayleigh polarizability ported from
@@ -1625,9 +1642,11 @@ that genuinely do not scatter (the astrodust PAHs, which are
 Rayleigh-negligible) leave those arrays unallocated and contribute
 zero.
 
-\paragraph{Linking and validation.} \texttt{make libsedust.a} produces a
-static archive that an external Fortran RT links with
-\texttt{gfortran -I<sed> rt.f90 libsedust.a -fopenmp}; a minimal working
+\paragraph{Linking and validation.} \texttt{make libtmatrix.a} then
+\texttt{make libsedust.a} produce two static archives that an external Fortran
+RT links with \texttt{gfortran -I<sed> -I<tmatrix> rt.f90 -L<sed> -lsedust
+-L<tmatrix> -ltmatrix -fopenmp}; the T-matrix archive is required because the
+astrodust ionizing band computes its optics with it. A minimal working
 driver is \texttt{sed/rt\_example/use\_dustlib.f90}. Validation: the typed path
 reproduces the production astrodust and DL07 channels to machine
 precision; the table interpolated at a grid point matches the direct
@@ -1670,9 +1689,14 @@ table, at a step no coarser than the table's own
 $\Delta\ln\lambda = 0.01156$. Omitting \texttt{lam\_min} prepends
 nothing, so every earlier result is bit-identical.
 
-In the extended band the astrodust optics come from Bohren--Huffman Mie
-on the DH21 dielectric function --- the same material as the table, so
-the model does not change composition at the seam. The carbonaceous
+In the extended band the astrodust optics come from the DH21 dielectric
+function, solved by the T-matrix for the same $b/a = 1.4$ oblate
+spheroid and the same random-orientation average as the table itself,
+so the model changes neither composition nor shape at the seam.
+Bohren--Huffman Mie for the volume-equivalent \emph{sphere} remains
+available as a far cheaper approximation, selected with
+\texttt{euv\_tmatrix=.false.}; the next subsection is the measurement
+of what that substitution costs. The carbonaceous
 side changes character at \SI{21.4}{\electronvolt}
 ($1/\lambda = 17.25\,\mu\mathrm{m}^{-1}$), where the DL07 PAH cross
 section is zero by construction and graphite becomes the whole
@@ -1692,8 +1716,11 @@ clamp. The unextended grid never reaches this branch
 \subsection{The shape approximation and its two limits}
 
 The $Q$ table is a random-orientation T-matrix solution for a
-$b/a = 1.4$ oblate spheroid; the extended band uses Mie for the
-volume-equivalent \emph{sphere}. The justification is \emph{not} the
+$b/a = 1.4$ oblate spheroid, and so, by default, is the extended band.
+This subsection concerns the \emph{optional} cheap route
+(\texttt{euv\_tmatrix=.false.}), which replaces that spheroid by its
+volume-equivalent \emph{sphere} and solves it with Mie. The
+justification is \emph{not} the
 anomalous-diffraction condition $|m-1|\ll1$: for this material
 $|m-1| = 0.77$ at the seam and still $0.56$ at
 \SI{20}{\electronvolt}. It is instead that the two ends of the size
@@ -1733,16 +1760,30 @@ $Q_{\rm ext}$, $-1.89\%$ in $Q_{\rm abs}$ and $-1.94\%$ in
 $Q_{\rm sca}$ --- the geometric-optics constant, arrived at from the
 other side.
 
-In the size-integrated curve the step across
-\SI{0.0912}{\micro\meter} is $-1.54\%$ in $C_{\rm ext}$ and $-1.90\%$
-in $C_{\rm abs}$, \emph{smaller} than the neighboring steps of the
-table's own grid ($-1.95\%$ / $-1.72\%$ and $-2.20\%$ / $-1.94\%$), so
-absorption and extinction join without a visible discontinuity.
-Scattering does show one: $C_{\rm sca}$ steps $+0.74\%$ where its
-neighbors step $-0.39\%$ and $-0.36\%$, and the albedo $+2.31\%$
-against $+1.59\%$ and $+1.39\%$ --- a seam of roughly one percentage
-point, consistent with the $2\%$ shape error being carried mostly by
-$Q_{\rm sca}$.
+In the size-integrated curve that this route produces --- which is what
+\texttt{data/kext\_astrodust\_MW\_euv.dat} held before it was
+regenerated for the default route --- the step
+across \SI{0.0912}{\micro\meter} is $-1.54\%$ in $C_{\rm ext}$ and
+$-1.90\%$ in $C_{\rm abs}$, \emph{smaller} than the neighboring steps
+of the table's own grid ($-1.95\%$ / $-1.72\%$ and $-2.20\%$ /
+$-1.94\%$), so absorption and extinction join without a visible
+discontinuity. Scattering does show one: $C_{\rm sca}$ steps $+0.74\%$
+where its neighbors step $-0.39\%$ and $-0.36\%$, and the albedo
+$+2.31\%$ against $+1.59\%$ and $+1.39\%$ --- a seam of roughly one
+percentage point, consistent with the $2\%$ shape error being carried
+mostly by $Q_{\rm sca}$.
+
+Grain by grain, the default T-matrix route removes that seam almost
+entirely. Extrapolating the $Q$ table's first two wavelengths
+log--log back to the last extended-band wavelength and comparing with
+what the band produced there, over all 167 radii, the step in
+$C_{\rm abs}$ has median $0.012\%$ and maximum $0.068\%$ for the
+T-matrix, against median $1.17\%$ and maximum $15.7\%$ for the sphere.
+The asymmetry parameter behaves the same way: the table returns
+$\langle\cos\theta\rangle = 0$ wherever its own regime bounds place a
+radius in the Rayleigh or geometric-optics limit, which the default
+reproduces exactly, while the sphere route steps from $0.90$ to $0$
+across the seam for $a\gtrsim\SI{1}{\micro\meter}$.
 
 \subsection{Two invariants that had to be protected}
 
@@ -1916,7 +1957,15 @@ wavelength the data the model is made of actually covers, and a request
 below it is refused rather than served with a refractive index frozen
 at the table boundary. \texttt{kext\_astrodust\_MW.dat} is a tracked
 regression reference and is reproduced byte for byte by
-\texttt{./calc\_kext.x astrodust}.
+\texttt{./calc\_kext.x astrodust}, which builds no extended band and is
+therefore untouched by the T-matrix route.
+\texttt{kext\_astrodust\_MW\_euv.dat} is integrated with that route: its
+$1129$ rows at $\lambda\ge\SI{0.0912}{\micro\meter}$ are byte-identical
+to the sphere-route version, since both read them off the $Q$ table,
+and below the seam the sphere route was low in $C_{\rm abs}$ by up to
+$3.6\%$, high in $C_{\rm sca}$ by up to $4.6\%$ and in albedo by up to
+$5.1\%$, and wrong in $\langle\cos\theta\rangle$ by up to a factor of
+four at the shortest wavelengths. $C_{\rm ext}$ moved by $0.72\%$.
 
 \section{Conclusions and next steps}
 

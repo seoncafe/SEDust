@@ -20,7 +20,7 @@ module sed_astrodust_mod
    ! limited to a single dust species (astrodust). The stochastic-vs-
    ! equilibrium decision and P(T) solver are unchanged in algorithm.
 
-   use, intrinsic :: iso_fortran_env, only: real64
+   use, intrinsic :: iso_fortran_env, only: real64, int64
    use constants,             only: wp
    use sed_mathlib,               only: interp, first_location, last_location, locate
    use radfield,              only: bbody, calc_bbody, hardest_photon_energy, &
@@ -48,16 +48,30 @@ module sed_astrodust_mod
                                     graphite_index_lambda_range
    ! Astrodust optics from the DH21 dielectric function, for the EUV band
    ! below the T-matrix Q table's 0.0912 um (13.6 eV) short-wavelength end.
-   use q_astrodust_mod,       only: q_astrodust_full, load_astrodust_index, &
+   ! astrodust_index_at feeds the refractive index to the T-matrix (the
+   ! default route); q_astrodust_full is the volume-equivalent-sphere Mie
+   ! approximation, selected by euv_tmatrix = .false.
+   use q_astrodust_mod,       only: astrodust_index_at, q_astrodust_full, &
+                                    load_astrodust_index, &
                                     set_astrodust_index_path, &
                                     get_astrodust_index_path, &
                                     astrodust_index_lambda_range
+   ! Spheroid optics over the whole size-parameter range (Rayleigh dipole /
+   ! T-matrix / geometric optics, chosen from x = 2 pi a / lambda). This is
+   ! the SAME calculation the astrodust Q table is made of, so calling it
+   ! below the table's short-wavelength end continues the table rather than
+   ! substituting a different particle for it.
+   use spheroid_optics,       only: spheroid_q, check_physical_bounds
+   use tmatrix_api,           only: tmatrix_options_t, tmatrix_workspace_t, &
+                                    tmatrix_workspace_init, &
+                                    tmatrix_workspace_finalize
    use pah_ioniz_mod,         only: pah_ionfrac
    use dust_model_mod,        only: dust_model_t, grain_pop_t, free_dust_model
    use kext_table_mod,        only: load_kext_table
    use zubko_io,              only: zda_comp_t, read_zda_config, zda_gofa, &
                                     read_zubko_optics, read_zubko_calor, &
                                     read_dnda_table, ZDA_MAXCOMP
+   !$ use omp_lib, only: omp_get_max_threads
    implicit none
    private
    public :: sed_init, sed_solve, sed_solve_pah, sed_solve_qm_batch
@@ -104,6 +118,17 @@ module sed_astrodust_mod
 
    real(wp), parameter :: PI    = 3.141592653589793238462643383279502884197d0
    real(wp), parameter :: UM2CM = 1.0e-4_wp
+
+   ! Particle the astrodust EUV band is solved for.  These are the settings
+   ! tmatrix/driver/run_tmatrix.f90 used to compute
+   ! q_astrodust_P0.20_Fe0.00_1.400.dat (its EPS_BA, DDELT, NP_OBL, NDGS), and
+   ! they must stay equal to them: the extension and the table are then one
+   ! calculation of one particle, differing only in wavelength.  A mismatch
+   ! would change the grain's shape or the solver's accuracy at the seam.
+   real(wp), parameter :: AD_AXIAL_RATIO = 1.4_wp      ! b/a > 1: oblate spheroid
+   real(wp), parameter :: AD_TM_TOL      = 1.0e-3_wp   ! T-matrix convergence tolerance
+   integer,  parameter :: AD_TM_SHAPE    = -1          ! Mishchenko code for a spheroid
+   integer,  parameter :: AD_TM_NDGS     = 2           ! Gaussian division points per order
 
    ! Solid mass densities of the two DL07 / WD01 materials [g/cm^3], used to
    ! turn that model's size distribution into a dust mass per H.
@@ -293,7 +318,7 @@ contains
 
    ! =====================================================================
    subroutine sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status, lam_min, &
-                       astrodust_index_path)
+                       astrodust_index_path, euv_tmatrix)
       character(len=*), intent(in) :: qtable_path, sizedist_path
       integer,          intent(in) :: NT_in
       real(wp),         intent(in) :: T_lo, T_hi
@@ -308,8 +333,8 @@ contains
       integer, optional, intent(out) :: status
       ! Optional shortest wavelength [um] the model must cover. When it is
       ! shorter than the Q table's 0.0912 um the grid is carried down to it and
-      ! the astrodust optics there come from the DH21 dielectric function
-      ! (q_astrodust_mod) instead of the table. Absent = the table grid alone.
+      ! the astrodust optics there are computed from the DH21 dielectric
+      ! function instead of read off the table. Absent = the table grid alone.
       real(wp), optional, intent(in) :: lam_min
       ! Optional dielectric function for that EUV band. It must be the file the
       ! Q table was computed from -- same porosity, iron fraction and axial
@@ -317,16 +342,35 @@ contains
       ! q_astrodust_mod default, which pairs with
       ! q_astrodust_P0.20_Fe0.00_1.400.dat.
       character(len=*), optional, intent(in) :: astrodust_index_path
+      ! How the EUV band's optics are computed. Default .true.: the T-matrix
+      ! (spheroid_q) on the b/a = 1.400 oblate spheroid, i.e. the same particle
+      ! and the same random-orientation average as the Q table, so the grain
+      ! does not change shape at the seam. .false. substitutes the
+      ! volume-equivalent-sphere Mie approximation of q_astrodust_mod, which is
+      ! ~2% low in the geometric-optics limit (that module measures it size by
+      ! size) but costs milliseconds where the T-matrix costs minutes.
+      ! Ignored when there is no EUV band.
+      logical, optional, intent(in) :: euv_tmatrix
       integer  :: i, ja, jw, jt, is, n_euv
       real(wp) :: a_um, x, t, Q_neu, Q_ion
-      real(wp) :: qext1, qsca1, qabs1, gsca1
+      real(wp) :: qext1, qsca1, qabs1, gsca1, alb1, nr1, ki1
       real(wp) :: ad_lam_lo, ad_lam_hi
       real(wp), allocatable :: lam_grid(:)
       logical  :: rok
+      ! EUV band: route selector, T-matrix state, and the cost report.
+      logical  :: use_tm, phys_ok
+      integer  :: tm_flag, tm_stat, n_euv_bad, n_thread
+      integer(int64) :: tick0, tick1, tick_rate
+      character(len=160) :: tm_msg
+      character(len=192) :: phys_why
+      type(tmatrix_options_t)   :: tm_opts
+      type(tmatrix_workspace_t) :: tm_work
 
       if (present(status)) status = 0
       if (present(astrodust_index_path)) &
          call set_astrodust_index_path(astrodust_index_path)
+      use_tm = .true.
+      if (present(euv_tmatrix)) use_tm = euv_tmatrix
 
       ! ---- Load Q table and size dist (modules cache their own state) ----
       if (present(status)) then
@@ -342,11 +386,13 @@ contains
       call euv_extended_lambda_grid(lam_grid, lam_min, n_extra=n_euv)
 
       ! ---- EUV band below the Q table -----------------------------------
-      ! Its optics are Mie on the DH21 dielectric function, so load that file
+      ! Its optics come from the DH21 dielectric function, so load that file
       ! HERE, before anything is built, rather than letting the first optics
-      ! call load it lazily inside the size loop: a missing file or a lam_min
-      ! the file cannot cover has to reach the caller through `status`, which
-      ! is what sed_init promises, and not stop the process out of an RT host.
+      ! call load it lazily inside the size loop.  Two reasons: a missing file
+      ! or a lam_min the file cannot cover has to reach the caller through
+      ! `status`, which is what sed_init promises, and not stop the process out
+      ! of an RT host; and the size loop below is threaded, where a lazy load
+      ! would be several threads writing one cache at once.
       ! Also name the file, so its pairing with the Q table is visible.
       if (n_euv > 0) then
          if (present(status)) then
@@ -371,6 +417,13 @@ contains
             ' wavelengths below the Q table.'
          write(*,'(a,a)')    '           astrodust dielectric function: ', &
             trim(get_astrodust_index_path())
+         if (use_tm) then
+            write(*,'(a,f5.3,a)') '           EUV optics: T-matrix, b/a = ', &
+               AD_AXIAL_RATIO, ' oblate spheroid (same particle as the table).'
+         else
+            write(*,'(a)')      '           EUV optics: Mie, volume-equivalent'// &
+               ' sphere (shape approximation).'
+         end if
       end if
 
       NLAM      = size(lam_grid)
@@ -425,6 +478,32 @@ contains
       ! ---- Cabs(NLAM, NA) and Csca(NLAM, NA) by interpolating Q in log(a) ----
       ! Q table grid (qt_aeff) is denser than dist grid (aeff); interpolate to
       ! the dist grid where the size sum lives.
+      !
+      ! Threading.  Each ja writes its own column of Cabs / Csca / gsca_ad and
+      ! reads nothing another ja writes, so the loop carries no dependence and
+      ! the result cannot depend on the schedule or the thread count.  The
+      ! region is entered only when there IS an EUV band to compute (if clause):
+      ! without one the loop is three interpolations per size, and the old
+      ! serial path is what runs.
+      tm_opts%aspect_ratio = AD_AXIAL_RATIO
+      tm_opts%tolerance    = AD_TM_TOL
+      tm_opts%shape        = AD_TM_SHAPE
+      tm_opts%ndgs         = AD_TM_NDGS
+      n_euv_bad = 0
+      call system_clock(tick0, tick_rate)
+      !$omp parallel if(n_euv > 0) default(none) &
+      !$omp&   shared(NA, n_euv, use_tm, lam, aeff, Cabs, Csca, gsca_ad, tm_opts, &
+      !$omp&          qt_aeff, qt_qabs, qt_qsca, qt_gpar) &
+      !$omp&   private(ja, jw, a_um, x, qext1, qsca1, qabs1, gsca1, alb1, &
+      !$omp&           nr1, ki1, tm_flag, tm_stat, tm_msg, tm_work, &
+      !$omp&           phys_ok, phys_why) &
+      !$omp&   reduction(+:n_euv_bad)
+      ! One T-matrix workspace for each thread, because a workspace may have
+      ! only one active caller.  It costs 37 MiB here and grows to 80 MiB on
+      ! the first evaluation, so it is allocated only when there is an EUV band
+      ! that will actually use it.
+      if (n_euv > 0 .and. use_tm) call tmatrix_workspace_init(tm_work)
+      !$omp do schedule(dynamic)
       do ja = 1, NA
          a_um = aeff(ja)
          x = log(a_um)
@@ -433,13 +512,45 @@ contains
          ! Asymmetry <cos> comes from the same table on the same grid, but it
          ! is already dimensionless -- no pi a^2 conversion.
          call interp_q_grid(x, qt_aeff, qt_gpar, gsca_ad(n_euv+1:, ja))
-         ! EUV band below the Q table (n_euv = 0 unless lam_min asked for it):
-         ! Mie on the DH21 astrodust dielectric function, i.e. the same
-         ! material as the table, for the volume-equivalent sphere rather than
-         ! the b/a = 1.4 spheroid. q_astrodust_mod carries the domain of
-         ! validity of that shape approximation.
+         ! EUV band below the Q table (n_euv = 0 unless lam_min asked for it).
+         ! Default: the T-matrix on the DH21 astrodust index -- same material,
+         ! same b/a = 1.400 oblate spheroid and same random-orientation average
+         ! as the table, so the extension continues the table's own calculation
+         ! and the grain does not change shape at the seam.  spheroid_q selects
+         ! the Rayleigh dipole limit below x = 0.1 and the geometric-optics
+         ! limit above x = 50, which is physics, not a shortcut: the T-matrix
+         ! expansion is ill-conditioned at both ends.
+         ! euv_tmatrix = .false. instead substitutes the volume-equivalent
+         ! SPHERE (Mie); q_astrodust_mod measures what that costs in accuracy.
          do jw = 1, n_euv
-            call q_astrodust_full(a_um, lam(jw), qext1, qsca1, qabs1, gsca1)
+            if (use_tm) then
+               call astrodust_index_at(lam(jw), nr1, ki1)
+               call spheroid_q(tm_work, a_um, lam(jw), nr1, ki1, tm_opts, &
+                               qext1, qabs1, qsca1, alb1, gsca1, tm_flag, &
+                               status=tm_stat, message=tm_msg)
+               call check_physical_bounds(qext1, qabs1, qsca1, alb1, gsca1, &
+                                          phys_ok, phys_why)
+               ! A nonzero status with flag = 0 is a library failure the
+               ! asymptotic-limit redirection does not cover, so report it too.
+               if (tm_stat /= 0 .and. tm_flag == 0) then
+                  phys_ok  = .false.
+                  phys_why = trim(phys_why)//' '//trim(tm_msg)
+               end if
+               if (.not. phys_ok) then
+                  ! Warn and carry on: sed_init may be running inside an RT
+                  ! host, which is told about failures through `status`, not by
+                  ! having its process stopped.
+                  n_euv_bad = n_euv_bad + 1
+                  !$omp critical (euv_optics_warning)
+                  write(*,'(a,es12.5,a,es12.5,a,i0,a,a)') &
+                     ' sed_init: EUV optics failed a physical bound at lambda=', &
+                     lam(jw), ' um, a_eff=', a_um, ' um, flag=', tm_flag, &
+                     ', broken:', trim(phys_why)
+                  !$omp end critical (euv_optics_warning)
+               end if
+            else
+               call q_astrodust_full(a_um, lam(jw), qext1, qsca1, qabs1, gsca1)
+            end if
             Cabs(jw, ja)    = qabs1
             Csca(jw, ja)    = qsca1
             gsca_ad(jw, ja) = gsca1
@@ -448,6 +559,19 @@ contains
          Cabs(:, ja) = Cabs(:, ja) * PI * (a_um * UM2CM)**2
          Csca(:, ja) = Csca(:, ja) * PI * (a_um * UM2CM)**2
       end do
+      !$omp end do
+      if (n_euv > 0 .and. use_tm) call tmatrix_workspace_finalize(tm_work)
+      !$omp end parallel
+      call system_clock(tick1)
+      if (n_euv > 0) then
+         n_thread = 1
+         !$ n_thread = omp_get_max_threads()
+         write(*,'(a,i0,a,f9.2,a,i0,a)') '           EUV band: ', n_euv * NA, &
+            ' points in ', real(tick1 - tick0, wp) / real(tick_rate, wp), &
+            ' s on ', n_thread, ' thread(s).'
+         if (n_euv_bad > 0) write(*,'(a,i0,a)') '           ', n_euv_bad, &
+            ' of them failed a physical bound (warnings above).'
+      end if
 
       ! ---- kappB_first(NT, NA) = integral of Cabs * B_lambda over lambda ----
       call build_kappB()
@@ -1945,7 +2069,7 @@ contains
    ! Build the HD23 astrodust model into m. Channels: AD_S1, AD_S2, PAH
    ! (PAH = neutral + cation populations summed into one channel).
    subroutine build_astrodust(m, qtable_path, sizedist_path, NT_in, T_lo, T_hi, status, &
-                              lam_min, astrodust_index_path, kext_path)
+                              lam_min, astrodust_index_path, kext_path, euv_tmatrix)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: qtable_path, sizedist_path
       integer,            intent(in)  :: NT_in
@@ -1973,6 +2097,11 @@ contains
       ! without it simply has no extinction to serve; named, a file that cannot
       ! be read fails the build.
       character(len=*), optional, intent(in) :: kext_path
+      ! How the EUV band's optics are computed; see sed_init. Default .true.
+      ! = the T-matrix on the b/a = 1.400 oblate spheroid of the Q table.
+      ! .false. = the volume-equivalent-sphere Mie approximation, far cheaper
+      ! and ~2% low in the geometric-optics limit.
+      logical, optional, intent(in) :: euv_tmatrix
       logical :: kok
       character(len=512) :: kpath
 
@@ -1981,7 +2110,8 @@ contains
       ! Astrodust/HD23 optics: Nc=417 (rho=2.0), D16 turbostratic graphite.
       nc_coeff = 417.0d0;  nc_integer = .false.;  qpah_use_d03_graphite = .false.
       call sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status=status, &
-                    lam_min=lam_min, astrodust_index_path=astrodust_index_path)  ! sets globals
+                    lam_min=lam_min, astrodust_index_path=astrodust_index_path, &
+                    euv_tmatrix=euv_tmatrix)  ! sets globals
       if (present(status)) then
          if (status /= 0) return
       end if
