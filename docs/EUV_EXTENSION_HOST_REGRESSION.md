@@ -6,17 +6,20 @@ changes to `sed/src/sed_astrodust.f90` and `sed/src/zubko_io.f90`
 **Baseline:** the SEDust copy inside MoCafe v2.00 as it stood before the update
 (MoCafe git HEAD)
 **Host:** MoCafe v2.00, `examples/dustemis/model_compare_{astrodust,dl07,zubko}.in`
-**Status:** **RESOLVED, 2026-08-01.** The three expressions of section 5 now
-call `hardest_photon_energy(lam_um, J_lam)` (`sed/src/radfield.f90`), which
-takes the bound from the radiation field instead of from the wavelength grid.
-Reproducing the section 5 comparison with the fix in place rather than with the
-bound reverted: for a Mathis field the zubko output is **md5 identical** to the
-baseline (exact, not the 8e-13 of section 5, because the `max()` then selects
-the 13.6 eV constant itself), astrodust and dl07 are byte-identical, and a field
-carrying an EUV component moves the zubko result by up to 0.46 in relative terms
-— the bound does respond when a hard photon is actually present. Sections 8 and
-9 give the detail; sections 1-7 are left as written, as the record of the
-measurement that found the defect.
+**Status: SUPERSEDED, 2026-08-03.** The 2026-08-01 fix was incomplete. It
+repaired three of the four places that confuse the wavelength grid with the
+radiation field; the fourth, `calc_P` in `sed/src/p_sub.f90`, was found on
+2026-08-03 and is described in section 10. Every host measurement in sections
+4-6 was taken with that fourth site still defective, so those numbers no longer
+describe the library and have to be remeasured. Sections 1-9 are left as
+written, as the record of the first defect and of a fix that looked complete.
+
+What the 2026-08-01 entry claimed, and what is no longer true: that with the
+fix in place a Mathis field leaves the zubko output md5 identical to the
+baseline, and astrodust and dl07 byte-identical. With the fourth site repaired
+as well, a Mathis field moves zubko by 3.05 per cent (6.00 per cent for its EUV
+variant) even though its grid length never changes, and all three models move.
+Section 10 gives the numbers.
 
 At the time of measurement: no SEDust source or data file was modified. The
 reverted-bound library of section 5 was built in a scratch directory and
@@ -214,6 +217,9 @@ now read:
 | `sed_astrodust.f90`, `sed_grain_loop` | `max(U_UV1_ERG, hardest_photon_energy(lam, J_lam))` |
 | `sed_astrodust.f90`, `narrow_iterative` | `max(U_UV1_ERG, hardest_photon_energy(lam, J_lam))` |
 
+**This table was incomplete.** A fourth site, `calc_P` in `sed/src/p_sub.f90`,
+reads the same quantity from the grid and was not changed here. Section 10.
+
 **Why the threshold is 1e-12 of the peak and not an exact `> 0`.** Exact zeros
 must be excluded — `J_Mathis` returns exactly zero below 0.0912 um — but an
 exact positivity test would accept denormal or roundoff-level residue in the
@@ -274,3 +280,109 @@ the extinction size integral. Without `euv` the Mathis field stops at the Lyman
 limit and the bound must stay at 13.6 eV however far the optics grid extends;
 with `euv` a diluted 1e5 K blackbody occupies the band below the Lyman limit and
 the bound must follow the field up. Running both is the regression.
+
+## 10. The fourth site
+
+*Added 2026-08-03.*
+
+Section 8 listed three places that took the single-photon bound from the
+wavelength grid. There were four. `calc_P` in `sed/src/p_sub.f90` integrates
+the transitions into the highest enthalpy bin -- every photon harder than that
+bin -- and took the lower limit of that integral from the grid as well:
+
+```fortran
+dlnwav = log(wavl/lambda(1))/(nwav-1)     ! lambda(1): where the grid ends
+```
+
+Two consequences, both measured rather than inferred:
+
+**A photon that was not there.** `interp1` in `sed_mathlib.f90` clamps outside
+its range: below `x(1)` it returns `y(1)`. `wavl = hc/ener` for the top bin is
+always shorter than the grid floor, so on the old 0.0912 um grid every top-bin
+transition was fed `J(0.0912) = 1.359` -- the value at the Lyman limit -- for a
+band in which `J_Mathis` is exactly zero. The emission solvers were absorbing
+photons the field does not carry.
+
+**An integral that ran backwards.** When `ener > u_hard` the span is negative,
+so `dlnwav < 0` and the loop subtracted transition rate instead of adding it.
+
+Both are repaired. The lower limit is now `hardest_photon_energy(lambda,
+Jfield)`, the same function section 8 introduced; `Jwavl` is set to zero when
+`ener > u_hard`; and the loop is skipped entirely in that case. The fixed count
+of 51 sample points became `min(301, max(51, ceiling(span/0.02) + 1))`, so the
+sampling follows the width of the illuminated band instead of the width of the
+grid.
+
+### What changed, decomposed
+
+Four builds were run to separate the causes: old grid with the old `calc_P`
+(the committed results), old grid with only the ghost photon removed, old grid
+with the whole fix, and the 12.4 keV grid with the whole fix. Largest relative
+difference over each file:
+
+| step | S1 | S2 | PAH |
+|---|---:|---:|---:|
+| ghost photon removed | **9.98%** | **12.08%** | **3.93%** |
+| sampling rule | 0.0000% | 0.0000% | 0.0000% |
+| grid extension itself | 0.0088% | 0.0085% | 1.011% |
+
+The decomposition is complete: the steps sum to the total. Nearly all of the
+change is the ghost photon. The sampling rule contributing nothing is a result,
+not a null: once the lower limit is right, 51 points were already converged.
+Extending the table to 12.4 keV moves the astrodust SED by 0.009 per cent.
+
+### Energy conservation
+
+Emitted power over absorbed power, the same field and the same size
+distribution on both sides:
+
+| | S1+PAH | S2+PAH |
+|---|---:|---:|
+| before (ghost photon present) | +0.236% | -0.125% |
+| after | **-0.057%** | -0.108% |
+
+The old code is the worse of the two, which is the direction a spurious
+absorption term predicts.
+
+### Which models are affected
+
+All three, and zubko independently of anything to do with the astrodust table.
+Its grid starts at 1.0e-3 um and its length does not change here, yet its SED
+moves by 3.05 per cent (6.00 per cent for the EUV variant) purely from this
+fix -- for the reason section 6 already gave, now applied to a fourth site.
+DL07 moves most in integrated power, -2.81 per cent.
+
+**Any SED produced before 2026-08-03 contains photons the radiation field did
+not carry**, in the transitions into the top enthalpy bin. That includes the
+host measurements in sections 4-6 of this document.
+
+### What still has to be remeasured
+
+Sections 4-6 record MoCafe runs (8 MPI ranks, `iseed = 1234`,
+`OMP_NUM_THREADS = 1`, `examples/dustemis/model_compare_*.in`). They cannot be
+redone inside SEDust, and the SEDust copy inside MoCafe is older than this fix,
+so the host has to be updated first. Specifically:
+
+- the dust-emission table of section 4 (astrodust 1.7e-13, dl07 2.8e-12, zubko
+  5.9e-02) and the zubko detail table below it;
+- the section 8 verification table, whose "md5 identical" and "byte-identical"
+  rows no longer hold;
+- section 9's coverage claim, which should now say that a driver exercising the
+  top-bin integral on a model whose grid reaches past the illuminated band is
+  what was missing.
+
+Size-integrated extinction (the first table of section 4) does **not** need
+remeasuring: it is read from the `kext_*.dat` tables and never passes through
+`calc_P`. Its `nlam` entries do change, to 1762 for astrodust and dl07, because
+the Q table now carries the grid to 12.4 keV.
+
+### How it escaped the 2026-08-01 review
+
+Section 9 asked why no driver caught the first defect and answered: for
+astrodust and dl07 the grid floor and the field's short end are the same
+number. That answer was right and also incomplete. The search that produced the
+section 8 table looked for expressions computing a *bound* -- `umax`, a window
+edge. `calc_P` does not compute a bound; it computes an integral, and its lower
+limit is the same physical quantity wearing a different name. Grepping for the
+concept rather than for the idiom would have found it.
+

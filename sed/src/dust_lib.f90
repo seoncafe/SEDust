@@ -31,6 +31,24 @@ module dust_lib
    ! extrapolation of the table to 0.07% at worst over the whole size range,
    ! and <cos> agrees exactly where the table's own regime bounds put it at 0.
    !
+   ! That spheroid is the ONLY thing in this library that needs the T-matrix,
+   ! and it is not compiled in by default. The plain libsedust.a therefore has
+   ! no T-matrix in it and links without one; asking it for the spheroid
+   ! (euv_tmatrix = .true., the default whenever lam_min is given) is REFUSED
+   ! with status 6 rather than answered with a sphere. To get the spheroid:
+   !
+   !   cd tmatrix && make libtmatrix.a
+   !   cd sed     && WITH_TMATRIX=1 make libsedust.a     # or ./build_lib.sh
+   !
+   ! and, once in the host, before the model is built:
+   !
+   !   use euv_astrodust_tmatrix, only: use_tmatrix_euv_band_optics
+   !   call use_tmatrix_euv_band_optics()
+   !
+   ! (Or register an implementation of your own: sed_register_euv_band_optics
+   ! takes any procedure matching the abstract interface euv_band_optics_i,
+   ! both re-exported here, and sed_forget_euv_band_optics undoes it.)
+   !
    ! That costs real time. Measured here on 167 radii (gfortran 13.1, -O3),
    ! band only:
    !
@@ -192,6 +210,12 @@ module dust_lib
    !                                  3 astrodust dielectric function load failed
    !                                  4 lam_min below that dielectric function's
    !                                    shortest wavelength
+   !                                  6 euv_tmatrix = .true. but the spheroid
+   !                                    optics of that band are not available:
+   !                                    no euv_band_optics_i is registered (a
+   !                                    library built without the T-matrix), or
+   !                                    the registered one could not compute
+   !                                    the band
    !   build_zubko:   1 config read failed        2 fewer than 3 components
    !                  3 a component's optics read  4 grid inconsistent
    !                  5 a component's calorimetry read failed
@@ -202,15 +226,19 @@ module dust_lib
    !                     7 size-dist read    8 calorimetry read failed
    !                     9 an explicitly named kext_path failed to load
    !
-   ! LINKING. Two archives, not one, since the astrodust EUV band calls the
-   ! T-matrix:
+   ! LINKING. One archive, and one .mod search path:
+   !   cd sed && make libsedust.a          # or ./build_lib.sh -> sed/lib/
+   !   gfortran -I<sed> my_rt.f90 -L<sed> -lsedust -fopenmp -o my_rt.x
+   ! Nothing in this library reaches the T-matrix, so ../tmatrix need not even
+   ! be built.
+   !
+   ! A host that wants the astrodust EUV band on the spheroid builds the
+   ! T-matrix into the SAME archive, so the link line does not change:
    !   cd tmatrix && make libtmatrix.a
-   !   cd sed     && make libsedust.a
-   !   gfortran -I<sed> -I<tmatrix> my_rt.f90 \
-   !            -L<sed> -lsedust -L<tmatrix> -ltmatrix -fopenmp -o my_rt.x
-   ! Both .mod search paths are needed as well: the model API's interfaces
-   ! reach the T-matrix types. libtmatrix.a itself needs no OpenMP runtime; the
-   ! threading is on the SEDust side.
+   !   cd sed     && WITH_TMATRIX=1 make libsedust.a
+   !   gfortran -I<sed> my_rt.f90 -L<sed> -lsedust -fopenmp -o my_rt.x
+   ! and calls use_tmatrix_euv_band_optics() once, as above. libtmatrix.a
+   ! itself needs no OpenMP runtime; the threading is on the SEDust side.
    !
    ! The validated solver core (sed_grain_loop & helpers in sed_astrodust_mod)
    ! is untouched; this module only re-exports the model API and adds the
@@ -221,7 +249,9 @@ module dust_lib
                                 build_astrodust, build_dl07, build_zubko, build_from_files, &
                                 dust_emission, dust_emission_single_teq, &
                                 dust_extinction, size_integrated_extinction, &
-                                dust_mass_per_H
+                                dust_mass_per_H, euv_band_optics_i, &
+                                sed_register_euv_band_optics, &
+                                sed_forget_euv_band_optics
    implicit none
    private
 
@@ -229,6 +259,9 @@ module dust_lib
    public :: dust_model_t, build_astrodust, build_dl07, build_zubko, build_from_files
    public :: dust_emission, dust_emission_single_teq, dust_extinction
    public :: size_integrated_extinction, dust_mass_per_H
+   ! Optics of the astrodust EUV band; see the EXTREME ULTRAVIOLET note above.
+   public :: euv_band_optics_i
+   public :: sed_register_euv_band_optics, sed_forget_euv_band_optics
    ! Table API
    public :: dust_emis_table_t, dust_build_table, dust_emission_interp, dust_free_table
    ! Convenience accessors

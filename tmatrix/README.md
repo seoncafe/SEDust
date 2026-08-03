@@ -8,7 +8,8 @@ apply astrodust-specific asymptotic limits.
 Build and validate it from this directory:
 
 ```sh
-make libtmatrix.a example test smoke test-full-direct-parallel test-api-parallel
+make libtmatrix.a example test smoke test-full-direct-parallel test-api-parallel \
+     test-scattering-matrix-parallel test-spheroid-optics-parallel
 ```
 
 Source layout is separated by responsibility:
@@ -189,6 +190,55 @@ does the same through the public API regression harness; and
 `tmatrix_eval_scattering_matrix` followed by `ampl`, comparing IEEE bit
 patterns rather than a tolerance.
 
+**The contract covers `driver/` as well, not only `src/`.** `spheroid_q` is the
+entry point a host is told to call, and the SED solver calls it from an OpenMP
+loop to solve the astrodust extreme-ultraviolet band; `spheroid_q` in turn calls
+`rayleigh_limit` and `geometric_optics_limit`, whose orientation-resolved
+branch runs a surface quadrature in `fresnel_opaque_absorption`. Every local of
+all three must therefore live on the calling thread's stack, so every driver
+object is compiled with the reentrancy flag, exactly as the library is.
+`make test-spheroid-optics-parallel` is the harness for that layer: it drives
+`spheroid_q` through all three size-parameter regimes and calls both closed-form
+limits with their orientation-resolved outputs, again comparing IEEE bit
+patterns at 1, 2, 4, and 8 threads. Requesting those optional outputs is what
+makes the harness meaningful — the cross-section-only path through `spheroid_q`
+never reaches the quadrature, and a harness that stopped there passes even when
+the storage is shared.
+
+## Compiler flags
+
+The Makefile detects the compiler family from `FC` (`ifort`, `ifx`, `mpiifort`,
+`mpiifx` select Intel; anything else GNU) and picks the flag spellings from
+there. Override with `FC_FAMILY=intel` when the compiler is reached through a
+wrapper whose name hides it, such as `mpif90` or `ftn`. The object list, the
+reentrancy contract, and the tests are the same for both families.
+
+| | GNU | Intel |
+| --- | --- | --- |
+| reentrancy | `-frecursive` | `-recursive` |
+| core not inlined | `-fno-inline` | `-inline-level=0` |
+| optimization | `-O2` | `-O2 -fp-model precise` |
+| OpenMP | `-fopenmp` | `-qopenmp` |
+
+**The reentrancy flag is required on Intel, not decorative.** gfortran gives
+local variables automatic storage by default, so a GNU build is reentrant
+whether or not the flag is present and the flag is there to state the contract.
+Intel's default is `-auto-scalar`: intrinsic-type scalars go on the stack, but
+fixed-size local arrays, derived types, and character locals go to static
+storage, which concurrent callers then share. Built without `-recursive`,
+`driver/asymptotic_optics.o` places the `dS`, `nhat`, `shat`, `phat` vectors of
+`fresnel_opaque_absorption` and the `qe_o`, `qa_o` arrays of
+`geometric_optics_limit` in `.bss`, and `make test-spheroid-optics-parallel`
+fails at 2 threads and above. With the flag the object has no `.bss` at all and
+the harness passes at every thread count.
+
+`-fp-model precise` is an Intel-only requirement of a different kind. Intel
+defaults to `-fp-model fast`, which reassociates and contracts freely; the
+T-matrix convergence test compares successive iterates against `DDELT`, so
+value-unsafe rearrangement moves the iteration count and the 120-case golden
+regression misses its tolerance. Bit reproducibility is claimed only within one
+compiler: the shipped astrodust tables were produced by the GNU build.
+
 ## Modern full-direct core
 
 The default full-direct backend is implemented in
@@ -218,25 +268,29 @@ than a routine of its own, so there is no original name to keep; the
 expressions and their operation order are unchanged, and the declarations are
 explicit.
 
-The Makefile compiles this core with `-frecursive -fno-inline`.
+The Makefile compiles this core reentrant and not inlined, in whichever
+spelling the compiler family uses (see Compiler flags above).
 
-`-fno-inline` used to be a crash workaround, and is not one any more. The
+The no-inline flag used to be a crash workaround, and is not one any more. The
 scratch arrays that made an inlined `-O2` build overflow the OpenMP worker
 stack now belong to the workspace: the deepest full-direct call chain needs
-about 190 KB of stack inlined and 175 KB not inlined, measured with
+about 190 KB of stack inlined and 175 KB not inlined, measured with gfortran's
 `-fstack-usage`, against about 3.1 MB and 1.7 MB before the move. The default
 worker stack on the reference platform sat between those two figures, which is
 what the flag was really hiding. An inlined build now passes the 1/2/4/8-thread
 suites down to `OMP_STACKSIZE=256K`.
 
-The flag is retained for bit reproducibility. Inlining changes where the
-compiler contracts multiply-add pairs, which moves the last bits of the
+The flag is retained for bit reproducibility. This argument is a GNU-to-GNU
+one, since the shipped tables come from the GNU build. Inlining changes where
+gfortran contracts multiply-add pairs, which moves the last bits of the
 convergence test in `TMD_ONE_FULL_DIRECT`; 2 of the 6258 rows of a shipped
 astrodust table slice then shift by about 1e-6 in `Q_abs`, `Q_sca`, albedo and
 `g`, with no flag changes. That is not a physics difference, but it does mean
 an inlined build no longer reproduces the shipped table byte for byte.
-`-ffp-contract=off` does not restore it. Dropping `-fno-inline` buys about 3%
-of wall time; keeping it is the deliberate trade.
+`-ffp-contract=off` does not restore it. Dropping the flag buys about 3% of
+wall time; keeping it is the deliberate trade. `-inline-level=0` is carried on
+the Intel side so that build has the same not-inlined property, not because it
+reproduces the GNU bits.
 
 After its first successful default evaluation, one workspace accounts for
 83,926,096 bytes (80.04 MiB) of explicit storage:

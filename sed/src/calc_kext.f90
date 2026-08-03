@@ -33,6 +33,11 @@ program calc_kext
    use q_astrodust_mod,   only: astrodust_index_lambda_range, get_astrodust_index_path
    use q_silicate_mod,    only: silicate_index_lambda_range
    use q_graphite_mod,    only: graphite_index_lambda_range
+   ! The astrodust EUV band is solved on the oblate spheroid of the Q table
+   ! rather than on a volume-equivalent sphere.  That calculation is a separate
+   ! module so that the library links without the T-matrix; this driver names
+   ! it because `./calc_kext.x astrodust euv` asks for the band.
+   use euv_astrodust_tmatrix, only: use_tmatrix_euv_band_optics
    implicit none
 
    ! ---- model inputs shared with the SED drivers -------------------------
@@ -69,6 +74,8 @@ program calc_kext
    logical  :: euv, zubko_formula
    character(len=32)  :: model
    character(len=256) :: opt, fout, desc, ddir
+
+   call use_tmatrix_euv_band_optics()
 
    ! ---- command line -----------------------------------------------------
    narg = command_argument_count()
@@ -293,12 +300,21 @@ contains
          write(u,'(a)') trim(note(jw))
       end do
       if (legacy) then
-         write(u,'(a)') '#   lambda      albedo      <cos>      C_ext/H        C_abs/H' // &
-                        '        C_sca/H         K_abs'
-         write(u,'(a)') '#  (micron)                            (cm^2/H)       (cm^2/H)' // &
-                        '       (cm^2/H)       (cm^2/g)'
+         ! The wavelength column carries 8 significant digits, not the 6 this
+         ! format historically used.  The astrodust grid resolves each X-ray
+         ! absorption edge with a pair of points ~1.2e-6 apart in relative
+         ! wavelength, which 6 digits round to the same string: the column then
+         ! repeats a value, and load_kext_table rejects the file for not being
+         ! strictly ascending -- the model builds but has no extinction to
+         ! serve.  8 digits separate the closest pair by 18 units of the last
+         ! digit (7 would leave under 2).  The header is written through the
+         ! same field widths so the two cannot drift apart.
+         write(u,'(a1,a14,2(1x,a10),4(1x,a15))') '#', 'lambda', 'albedo', '<cos>', &
+              'C_ext/H', 'C_abs/H', 'C_sca/H', 'K_abs'
+         write(u,'(a1,a14,2(1x,a10),4(1x,a15))') '#', '(micron)', ' ', ' ', &
+              '(cm^2/H)', '(cm^2/H)', '(cm^2/H)', '(cm^2/g)'
          do jw = 1, nlam_out
-            write(u,'(es13.5e3,2(1x,f10.6),4(1x,es15.7e3))') &
+            write(u,'(es15.7e3,2(1x,f10.6),4(1x,es15.7e3))') &
                m%lam(jw), alb(jw), gbar(jw), Cext(jw), Cabs(jw), Csca(jw), Cabs(jw)/kabs_norm
          end do
       else if (with_kabs) then

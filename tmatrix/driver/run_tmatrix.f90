@@ -6,10 +6,13 @@ program run_tmatrix
    ! reentrant library backend.
    !
    ! Usage:
-   !   ./run_tmatrix.x                       ! full sweep, 169 x 1129 points
+   !   ./run_tmatrix.x                       ! full sweep, NA x NW points
    !   ./run_tmatrix.x test                  ! subset:  7 x 7  for smoke test
    !   ./run_tmatrix.x range JW1 JW2         ! partial sweep, jw in [JW1, JW2]
    !                                         ! (used by run_parallel.sh)
+   !
+   ! NA and NW are the lengths of the two grid files, counted at run time; no
+   ! grid size is written down here.
    !
    ! Output (text, ASCII):
    !   tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat              (full)
@@ -40,6 +43,7 @@ program run_tmatrix
    !         written row whose Q / albedo / g fell outside the finiteness,
    !         non-negativity, or range bounds.
 
+   use, intrinsic :: iso_fortran_env, only: iostat_eor
    use tmatrix_api, only: wp, tmatrix_options_t, &
                           tmatrix_workspace_t, tmatrix_workspace_init, &
                           tmatrix_workspace_finalize
@@ -53,8 +57,30 @@ program run_tmatrix
    ! (i.e. tmatrix/, where the Makefile drops run_tmatrix.x).
    character(len=*), parameter :: f_aeff  = &
       '../data/dielectric/DH21_aeff'
+   ! Wavelength axis.  DH21_wave stops at 0.0912 um (13.6 eV); DH21_wave_to_12keV
+   ! is that grid with the dielectric-function's own energy nodes below it
+   ! prepended, carrying the table to 1.0e-4 um (12398 eV).  Those nodes are
+   ! reused rather than resampled because the 21 absorption edges in this band
+   ! are tabulated as steps across ~1e-4 in relative energy: a uniform
+   ! 200-per-decade axis would average each edge into a ramp and lose, for
+   ! instance, the +211% jump of k at the Fe K edge.  On those nodes interp_m
+   ! below evaluates at zero interpolation weight and reproduces the tabulated
+   ! index exactly on both sides of every edge.
+   !
+   ! One point of the axis is an exception: 0.0912*(1 - 1e-4), just below the
+   ! Lyman limit, is NOT a dielectric-table node, so interp_m interpolates it.
+   ! That is harmless for the grain -- the astrodust dielectric function is
+   ! smooth across 13.6 eV and has no edge there -- because the point is placed
+   ! for the RADIATION FIELD.  An ISRF is zero below the Lyman limit and finite
+   ! above it, and the dielectric axis has no node between 13.595 and 14.000 eV,
+   ! so without this point a consumer's wavelength integral has one 2.98%-wide
+   ! cell straddling that step and manufactures absorption where the field
+   ! carries no photon (1.74% too much heating for the smallest grains; 0.006%
+   ! with the point in place).  Resolving a step with a close pair of nodes is
+   ! what the extension already does for the absorption edges; this applies it
+   ! to the one step that belongs to the field rather than to the grain.
    character(len=*), parameter :: f_wave  = &
-      '../data/dielectric/DH21_wave'
+      '../data/dielectric/DH21_wave_to_12keV'
    character(len=*), parameter :: f_index = &
       '../data/dielectric/index_DH21Ad_P0.20_0.00_1.400'
    character(len=*), parameter :: f_out_full = &
@@ -62,14 +88,16 @@ program run_tmatrix
    character(len=*), parameter :: f_out_test = &
       'output/q_astrodust_P0.20_Fe0.00_1.400.test.dat'
 
-   integer, parameter :: NA = 169, NW = 1129
    real(wp), parameter :: EPS_BA  = 1.4_wp
    real(wp), parameter :: DDELT   = 1.0e-3_wp
    integer,  parameter :: NDGS    = 2
    integer,  parameter :: NP_OBL  = -1            ! oblate spheroid, Mishchenko convention
+   ! Number of samples the smoke subset takes along each axis.
+   integer,  parameter :: N_SMOKE = 7
 
-   real(wp) :: a_eff(NA), lambda(NW)
-   real(wp) :: nr_cache(NW), ki_cache(NW)
+   integer  :: NA, NW
+   real(wp), allocatable :: a_eff(:), lambda(:)
+   real(wp), allocatable :: nr_cache(:), ki_cache(:)
    real(wp) :: nr, ki, qext, qabs, qsca, walb, asymm
    type(tmatrix_workspace_t) :: work
    type(tmatrix_options_t) :: tm_options
@@ -85,6 +113,12 @@ program run_tmatrix
    character(len=32)  :: arg, arg2, arg3
    integer, parameter :: MODE_FULL=0, MODE_TEST=1, MODE_RANGE=2
    integer  :: mode
+
+   ! ---- grids -------------------------------------------------------------
+   ! Read before the CLI is parsed: the `range` bounds are checked against NW.
+   call read_grid(f_aeff, NA, a_eff)
+   call read_grid(f_wave, NW, lambda)
+   call load_index(f_index)
 
    ! ---- CLI ---------------------------------------------------------------
    mode  = MODE_FULL
@@ -119,9 +153,6 @@ program run_tmatrix
       end select
    end if
 
-   call read_one_col(f_aeff, NA, a_eff)
-   call read_one_col(f_wave, NW, lambda)
-   call load_index(f_index)
    tm_options%aspect_ratio = EPS_BA
    tm_options%tolerance    = DDELT
    tm_options%shape        = NP_OBL
@@ -136,16 +167,20 @@ program run_tmatrix
    end if
 
    ! Cache m(lambda) once per wavelength (lambda-loop outer)
+   allocate(nr_cache(NW), ki_cache(NW))
    do jw = 1, NW
       call interp_m(lambda(jw), nr_cache(jw), ki_cache(jw))
    end do
 
    select case (mode)
    case (MODE_TEST)
-      ! Stride to span the full ranges with ~7 x 7 ~ 49 sample points,
-      ! exercising small-x, mid-x (T-matrix), and large-x regimes.
-      ja_step = 28
-      jw_step = 188
+      ! Stride to span the full ranges with N_SMOKE x N_SMOKE sample points,
+      ! exercising small-x, mid-x (T-matrix), and large-x regimes.  Derived
+      ! from the grid lengths so the subset keeps that coverage whatever
+      ! wavelength axis is in use (on the 169 x 1129 grid this reproduces the
+      ! strides 28 and 188 the subset has always used).
+      ja_step = max((NA - 1)/(N_SMOKE - 1), 1)
+      jw_step = max((NW - 1)/(N_SMOKE - 1), 1)
       f_out   = f_out_test
    case (MODE_RANGE)
       ! Partial sweep over jw in [jw_lo, jw_hi], full a range.
@@ -233,15 +268,24 @@ program run_tmatrix
 
 contains
 
-   subroutine read_one_col(filename, n, x)
-      ! DH21_aeff and DH21_wave have 2 header lines, then ALL n values
-      ! on a single very long whitespace-separated line. List-directed
-      ! read with implied DO across one record handles this correctly.
-      character(len=*), intent(in)  :: filename
-      integer,          intent(in)  :: n
-      real(wp),         intent(out) :: x(n)
-      integer :: u, ios
-      character(len=512) :: header
+   subroutine read_grid(filename, n, x)
+      ! DH21_aeff, DH21_wave, and DH21_wave_to_12keV have 2 header lines, then
+      ! ALL values on a single very long whitespace-separated line.
+      !
+      ! The count is taken from the record itself rather than from a parameter
+      ! here, so a grid file and this program cannot fall out of step: swapping
+      ! the wavelength axis for a longer one needs no edit below.  The record is
+      ! accumulated with non-advancing reads because it is tens of kilobytes
+      ! long and no fixed buffer should have to bound it.
+      character(len=*),      intent(in)  :: filename
+      integer,               intent(out) :: n
+      real(wp), allocatable, intent(out) :: x(:)
+      integer :: u, ios, nch, i
+      logical :: in_token
+      character(len=4096) :: chunk
+      character(len=512)  :: header
+      character(len=:), allocatable :: record
+
       open(newunit=u, file=filename, status='old', action='read', iostat=ios)
       if (ios /= 0) then
          write(*,'(a,a)') ' ERROR: cannot open ', trim(filename)
@@ -249,8 +293,42 @@ contains
       end if
       read(u,'(a)') header
       read(u,'(a)') header
-      read(u,*) x(1:n)
+      record = ''
+      reading: do
+         do
+            read(u,'(a)',advance='no',size=nch,iostat=ios) chunk
+            if (nch > 0) record = record // chunk(1:nch)
+            if (ios /= 0) exit
+         end do
+         record = record // ' '
+         if (ios /= iostat_eor) exit reading    ! end of file, or a read error
+      end do reading
       close(u)
-   end subroutine read_one_col
+
+      n = 0
+      in_token = .false.
+      do i = 1, len(record)
+         if (record(i:i) == ' ' .or. record(i:i) == achar(9)) then
+            in_token = .false.
+         else if (.not. in_token) then
+            in_token = .true.
+            n = n + 1
+         end if
+      end do
+      if (n < 2) then
+         write(*,'(a,a)') ' ERROR: fewer than 2 grid values in ', trim(filename)
+         stop 1
+      end if
+      allocate(x(n))
+      read(record,*) x(1:n)
+
+      do i = 2, n
+         if (x(i) <= x(i-1)) then
+            write(*,'(a,a,a,i0)') ' ERROR: ', trim(filename), &
+               ' is not strictly increasing at i = ', i
+            stop 1
+         end if
+      end do
+   end subroutine read_grid
 
 end program run_tmatrix

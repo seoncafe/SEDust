@@ -1,18 +1,21 @@
 program use_dustlib
    ! Minimal example of an EXTERNAL Fortran code (a 3D RT driver) linking the
    ! dust-emission library. It is NOT part of the sed build -- it is compiled
-   ! separately against libsedust.a + libtmatrix.a and their .mod search paths,
-   ! exactly as an RT code would.  Build and run it from sed/, because the data
-   ! paths below are relative to that directory:
+   ! separately against libsedust.a and its .mod search path, exactly as an RT
+   ! code would.  Build and run it from sed/, because the data paths below are
+   ! relative to that directory:
    !
    !   cd tmatrix && make libtmatrix.a
-   !   cd ../sed  && make libsedust.a
-   !   gfortran -I. -I../tmatrix rt_example/use_dustlib.f90 \
-   !            -L. -lsedust -L../tmatrix -ltmatrix -fopenmp -o use_dustlib.x
+   !   cd ../sed  && WITH_TMATRIX=1 make libsedust.a
+   !   gfortran -I. rt_example/use_dustlib.f90 -L. -lsedust -fopenmp \
+   !            -o use_dustlib.x
    !   ./use_dustlib.x
    !
-   ! Both archives are needed: the astrodust extreme-ultraviolet band computes
-   ! its optics with the T-matrix.
+   ! One archive, one -I.  WITH_TMATRIX is what puts the astrodust
+   ! extreme-ultraviolet band's spheroid optics into it, and step (4) below
+   ! asks for that band; a host that transports nothing shortward of 0.0912 um
+   ! drops both the T-matrix build and the registration call, and links the
+   ! plain `make libsedust.a`.
    !
    ! It shows the whole host flow: build a model once, take the transport
    ! optics from it, and take one cell's emission from the same model -- so
@@ -62,6 +65,9 @@ program use_dustlib
    use dust_lib,  only: dust_model_t, build_astrodust, &
                         dust_emission, dust_extinction, dust_mass_per_H, &
                         dust_nlam, dust_n_channel
+   ! Only step (4) needs this: it names the spheroid the astrodust EUV band is
+   ! solved for.  It lives in the WITH_TMATRIX build of the library.
+   use euv_astrodust_tmatrix, only: use_tmatrix_euv_band_optics
    implicit none
    character(len=*), parameter :: QTAB  = '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat'
    character(len=*), parameter :: SIZED = '../data/release/size_distribution.dat'
@@ -163,6 +169,14 @@ program use_dustlib
    ! -- the file reads fine -- and then dust_extinction would refuse the call
    ! with status 3, because the grid now runs below anything that table
    ! tabulates and the library extrapolates no optics.
+   !
+   ! In that band the grain is the b/a = 1.400 oblate spheroid of the Q table,
+   ! not a sphere, and that is a T-matrix calculation.  Name it once here;
+   ! without this call the build below returns status 6 rather than quietly
+   ! substituting the volume-equivalent sphere.  (A host that would rather have
+   ! the sphere asks for it: euv_tmatrix = .false., ~2% low in the
+   ! geometric-optics limit but milliseconds instead of minutes.)
+   call use_tmatrix_euv_band_optics()
    call build_astrodust(m_euv, QTAB, SIZED, 200, 2.7_wp, 5.0e3_wp, &
                         status=st, lam_min=LAM_MIN_EUV)
    if (st /= 0) then

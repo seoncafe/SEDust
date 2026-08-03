@@ -10,7 +10,7 @@ this file is the only surviving statement of what it computed. Do not
 regenerate it to make a changed implementation pass: explain and approve any
 intentional numerical change.
 Reference SHA-256 values are `1a127149875971f2232f35f46072b32491d7a75efdb889be75d2b70da11935b1`
-for `legacy_cases.dat` and `1436d6dc956f869118754710be6585c024164b57c5ef30df3668e0748b7221fe`
+for `legacy_cases.dat` and `6ce24b9519d5779ff7972c923c66d79503036d15757a9f4ecff26830da6bfe8c`
 for `standalone_test.dat`.
 
 `make test` runs the public API comparison against that reference, the
@@ -37,8 +37,33 @@ workspaces rather than rounding. The `ampl` status of every call is compared
 too, so a workspace that lost or replaced its T-matrix would show up as a
 status mismatch rather than as amplitudes.
 
+`test_parallel_spheroid_optics.x` is the only harness that enters the driver
+layer. It runs `spheroid_q` on 48 cases spanning all three size-parameter
+regimes — 16 Rayleigh, 24 T-matrix, 8 geometric optics, asserted from the
+returned flags so a case list that stopped covering a regime is reported rather
+than passed — and calls `rayleigh_limit` and `geometric_optics_limit` directly
+with their orientation-resolved outputs. Those optional outputs are the point:
+the cross-section-only path through `spheroid_q` never enters the surface
+quadrature of `fresnel_opaque_absorption`, so a harness that stopped at
+`spheroid_q` passes even when that routine's locals are shared between threads.
+`make test-spheroid-optics-parallel` runs it at 1, 2, 4, and 8 threads, again on
+IEEE bit patterns, and compares the regime flag and the library status as well
+as the efficiencies.
+
 `golden/standalone_test.dat` is the 49-row output of `run_tmatrix.x test`,
 including the historical table layout and flags. `make smoke` writes its
 candidate only to `/tmp`, compares it byte-for-byte to this table, and removes
 the temporary file. Regenerate this reference only after an explicitly reviewed
 numerical/output-format change.
+
+It was last regenerated when the astrodust wavelength axis was carried from
+0.0912 um (13.6 eV) down to 1.0e-4 um (12398 eV), taking the table from 1129 to
+1762 wavelengths (`data/dielectric/DH21_wave_to_12keV`). The subset takes seven
+samples along each axis, so a longer axis picks different wavelengths — the
+stride moved from 188 to 293 and none of the sampled wavelengths survived. That
+is a change of which points are sampled, not of what the code computes at them:
+the full sweep on the extended axis reproduces the full sweep on the old one
+byte for byte over all 190801 rows at lambda >= 0.0912 um, checked separately by
+building the driver against the old axis and running it. The new subset spans
+1.0e-4 to 3.85e4 um and covers all three regimes more evenly than the old one
+(14 T-matrix / 23 Rayleigh / 12 geometric-optics rows, against 13 / 34 / 2).

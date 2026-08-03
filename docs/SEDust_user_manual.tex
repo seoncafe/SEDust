@@ -93,17 +93,41 @@ working set. Calling \code{build\_*} makes that model active. This is sufficient
 for an RT run that uses a single dust model; to switch models, rebuild.
 
 %====================================================================
-\section{Building the library}
+\section{Building the library}\label{sec:build}
 
-Two archives, built in this order:
+One archive:
 \begin{lstlisting}[style=sh]
-cd SEDust/tmatrix && make libtmatrix.a   # T-matrix, needed by the EUV band
-cd SEDust/sed     && make libsedust.a    # the library archive
+cd SEDust/sed && make libsedust.a         # the library archive
 \end{lstlisting}
-\code{libtmatrix.a} must exist first: the astrodust extreme-ultraviolet band
-(\S\ref{sec:euv}) computes its optics with the T-matrix, so every SEDust target
-that links \code{sed\_astrodust.f90} links it too. The \code{sed} \code{Makefile}
-stops with an instruction rather than a link error when it is missing.
+Nothing in it reaches the T-matrix, so \code{SEDust/tmatrix} need not even be
+built. A model built from this archive computes the astrodust
+extreme-ultraviolet band (\S\ref{sec:euv}) on the volume-equivalent sphere
+(\code{euv\_tmatrix = .false.}) and \emph{refuses} the spheroid
+(\code{euv\_tmatrix = .true.}, the default whenever \code{lam\_min} is given)
+with \code{status = 6}, rather than answering with a different particle behind
+the caller's back.
+
+A host that wants that band on the spheroid of the $Q$ table
+(\S\ref{sec:euv-shape}) builds the T-matrix into the \emph{same} archive, so the
+link line below does not change:
+\begin{lstlisting}[style=sh]
+cd SEDust/tmatrix && make libtmatrix.a            # T-matrix
+cd SEDust/sed     && WITH_TMATRIX=1 make libsedust.a
+\end{lstlisting}
+and names the spheroid once, before the model is built:
+\begin{lstlisting}
+use euv_astrodust_tmatrix, only: use_tmatrix_euv_band_optics
+call use_tmatrix_euv_band_optics()
+\end{lstlisting}
+\code{SEDust/sed/build\_lib.sh} is the same two builds as a standalone script,
+for an RT tree that carries its own copy of \code{sed/src/}; it writes
+\code{sed/lib/} and takes \code{WITH\_TMATRIX=1} the same way.
+
+Of the CLI drivers, \code{main\_astrodust.x} and \code{calc\_kext.x} are built
+against \code{libtmatrix.a} and make that call themselves --- they are the two
+that can be asked for the astrodust EUV band. \code{main\_dl07.x} and
+\code{main\_zubko.x} need no T-matrix: those models' optics reach past the Lyman
+limit on their own.
 
 The compiler is \code{gfortran}. The default flags are
 \code{-O3 -ffree-line-length-none -fopenmp} plus a warning set --- deliberately
@@ -168,7 +192,9 @@ call build_from_files(m, descriptor_path, data_dir, NT, T_lo, T_hi [, status] [,
       behavior exactly} --- the grid, and every number derived from it, is
       unchanged.
 \item \code{astrodust\_index\_path} (optional, astrodust only): the dielectric
-      function that supplies the optics below $0.0912$\um. It must be the file
+      function the model is made of. It is read to decide how far
+      \code{lam\_min} may reach, and it would supply the optics of a band below
+      the $Q$ table if one ever formed. It must be the file
       \code{qtable\_path} was computed from --- same porosity, iron fraction and
       axial ratio --- or the model changes material at the seam. Omitted, it is
       the default that pairs with the shipped $Q$ table:
@@ -187,10 +213,13 @@ tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat
       so a driver that only computes emission still runs.
 \item \code{euv\_tmatrix} (optional, astrodust only, default \code{.true.}):
       how the extended band's optics are computed. \code{.true.} is the
-      T-matrix on the same $b/a = 1.400$ oblate spheroid as the $Q$ table;
-      \code{.false.} substitutes the volume-equivalent-sphere Mie
-      approximation, which is far cheaper and about 2\% low in the
-      geometric-optics limit. See \S\ref{sec:euv-shape}. Ignored when
+      T-matrix on the same $b/a = 1.400$ oblate spheroid as the $Q$ table, and
+      requires a library built with the T-matrix and the one registration call
+      of \S\ref{sec:build} --- without them the build fails with
+      \code{status = 6} instead of substituting a sphere silently.
+      \code{.false.} asks for the volume-equivalent-sphere Mie approximation,
+      which is far cheaper and about 2\% low in the geometric-optics limit, and
+      needs no T-matrix at all. See \S\ref{sec:euv-shape}. Ignored when
       \code{lam\_min} asks for no extension.
 \end{itemize}
 
@@ -209,11 +238,15 @@ builder & default \code{kext\_path} \\
 \caption{Default extinction table of each builder. The EUV product is the
 default wherever the model has one, because its wavelength range \emph{contains}
 the plain grid's: the two are the same size integral on the same optics, the
-extended one merely carried below $0.0912$\um, and their nodes coincide over the
-overlap. One default therefore serves a host that transports ionizing radiation
-and one that does not; it is the \emph{narrower} non-EUV table that has to be
-named explicitly. The Zubko model has no EUV extension and needs none --- its
-own optics table already reaches \SI{1.24}{\kilo\electronvolt}.}
+extended one merely carried further into the ionizing band, and their nodes
+coincide over the overlap. One default therefore serves a host that transports
+ionizing radiation and one that does not; it is the \emph{narrower} non-EUV
+table that has to be named explicitly. Now that the $Q$ table itself reaches
+\SI{12.4}{\kilo\electronvolt}, the astrodust pair is the same curve on the same
+$1762$ wavelengths and the choice no longer matters there; the DL07 pair still
+differs, by the $61$ points its D03 optical constants reach past the table. The
+Zubko model has no EUV extension and needs none --- its own optics table already
+reaches \SI{1.24}{\kilo\electronvolt}.}
 \label{tab:models:kext}
 \end{table}
 
@@ -352,7 +385,11 @@ nonzero value only names the failing stage: the contract is simply
       \code{4} \code{lam\_min} is shorter than that dielectric function's own
       shortest wavelength ($1.00003\times10^{-4}$\,\um), which is refused rather
       than served with a refractive index frozen at the table boundary;
-      \code{5} an explicitly named \code{kext\_path} failed to load.
+      \code{5} an explicitly named \code{kext\_path} failed to load;
+      \code{6} \code{euv\_tmatrix = .true.} but the spheroid optics of that band
+      are not available --- either the library was built without the T-matrix
+      and no \code{euv\_band\_optics\_i} is registered (\S\ref{sec:build}), or
+      the registered one reported that it could not compute the band.
 \item \code{build\_dl07}: \code{1} $Q$-table load failed;
       \code{2} size-distribution load failed;
       \code{4} \code{lam\_min} is shorter than the D03 dielectric functions
@@ -457,8 +494,7 @@ table are physical:
 
 \begin{itemize}
 \item \textbf{astrodust}: $C_{\rm sca}$ and $\langle\cos\theta\rangle$ from the
-      random-orientation T-matrix $Q$ table (and, below $0.0912$\um, from Mie on
-      the same dielectric function).
+      random-orientation T-matrix $Q$ table, at every wavelength of the model.
 \item \textbf{DL07}: Mie on the D03 astrosilicate and graphite dielectric
       functions (\code{q\_silicate\_full} / \code{q\_graphite\_full}), on the
       same random-orientation average ($\tfrac13\,E\!\parallel\!c +
@@ -562,19 +598,74 @@ convention.
 %====================================================================
 \section{The extreme-ultraviolet extension}\label{sec:euv}
 
-The astrodust model's wavelength grid is the T-matrix $Q$ table's, which stops
-at $0.0912$\um\ --- \SI{13.6}{\electronvolt}, the Lyman limit. A host that
-transports ionizing radiation needs shorter wavelengths, so both
-\code{build\_astrodust} and \code{build\_dl07} take an optional \code{lam\_min}
-[\um]:
+The astrodust model's wavelength grid is the T-matrix $Q$ table's, which spans
+$10^{-4}$ to $39810$\um\ --- \SI{12.4}{\kilo\electronvolt} down to
+\SI{0.031}{\electronvolt} --- on $1762$ wavelengths. \textbf{The ionizing band is
+inside the table}, computed the same way as the rest of it, so a host that
+transports ionizing radiation reads it off the table and needs nothing more. In
+particular it does not have to link \code{libtmatrix.a}; \S\ref{sec:euv-shape}
+returns to what that leaves the injected route for.
+
+Below $0.0912$\um\ the table's wavelengths are the DH21 dielectric function's own
+energy nodes rather than a resampling of them. There are 21 absorption edges in
+that band, each tabulated as a step across $\sim10^{-4}$ in relative energy
+($k$ jumps by $+211\%$ at Fe\,K, $+131\%$ at O\,K, $+30\%$ at C\,K), and a
+uniform 200-per-decade axis would average each into a ramp. Reusing the nodes
+keeps every edge an exact step between adjacent grid points, and makes the
+refractive index at each point the tabulated one rather than an interpolate.
+
+One point is deliberately not a dielectric node: $0.0912\,(1-10^{-4})$, just
+below the Lyman limit. It is placed for the \emph{radiation field}, not for the
+grain --- see \S\ref{sec:euv-lyman}.
+
+Both \code{build\_astrodust} and \code{build\_dl07} still take an optional
+\code{lam\_min} [\um] for a host that needs something shorter still:
 \begin{lstlisting}
-call build_astrodust(m, qtab, sizedist, NT, T_lo, T_hi, lam_min=1.001e-4_wp)
+call build_dl07(m, qtab, sizedist, NT, T_lo, T_hi, lam_min=6.21e-5_wp)
 \end{lstlisting}
 Log-spaced points are then prepended from \code{lam\_min} up to the table, at a
-step no coarser than the table's own $\Delta\ln\lambda = 0.01156$ at its
-short-wavelength end, with \code{m\%lam(1)} set to \code{lam\_min} exactly.
-\textbf{Omitting \code{lam\_min} prepends nothing and leaves the model
-bit-identical to before.}
+step no coarser than the table's own $\Delta\ln\lambda = 0.00794$ at its
+short-wavelength end, with \code{m\%lam(1)} set to \code{lam\_min} exactly. The
+request is refused (\code{status = 4}) when it asks for a wavelength the model's
+own dielectric data does not cover, rather than served with a refractive index
+frozen at the table boundary. \textbf{Omitting \code{lam\_min}, or passing one
+the table already covers, prepends nothing.}
+
+For astrodust there is now nothing left to ask for: the $Q$ table already reaches
+the short-wavelength end of the DH21 dielectric function, so every
+\code{lam\_min} either falls inside the table (no band) or below the dielectric
+data (refused). DL07 can still be extended, to $6.205\times10^{-5}$\um, because
+the D03 optical constants reach further than the table does.
+
+\subsection{A step in the field needs a grid point, exactly as a step in the
+material does}\label{sec:euv-lyman}
+
+An interstellar radiation field is exactly zero below the Lyman limit and finite
+above it: \code{J\_Mathis} in \code{sed/src/radfield.f90} opens with
+\code{if (lambda(i) < 0.0912d0) J(i) = 0}, and immediately above the limit
+$J_\lambda = 3069\,\lambda^{3.4172}$ is $0.856$. That is a step discontinuity of
+the \emph{field}.
+
+The DH21 dielectric energy axis has no node between $13.595$ and
+\SI{14.000}{\electronvolt}. Built from those nodes alone, the grid would jump
+from $0.088557$\um\ straight to $0.0912$\um\ --- one cell $2.98\%$ wide, sitting
+across the step. Every wavelength integral in the library is a trapezoid sum, so
+that cell would integrate a ramp rising from zero and count absorption in a band
+where the field carries no photon at all. Measured on the shipped optics, with
+$C_{\rm abs}$ from the $Q$ table itself, it inflates the absorbed power of the
+smallest grains by $1.74\%$ (falling to $0.05\%$ for $a\ge0.3$\um, which take
+little of their heating in the ultraviolet). Small grains are the ones the
+stochastic solver treats, so the error does not stay small: it moved the
+equilibrium/stochastic boundary by twenty radii and shifted the emergent SED by
+up to $13\%$ at the far-infrared peak.
+
+The extra grid point at $0.0912\,(1-10^{-4}) = 9.119088\times10^{-2}$\um\ closes
+that cell, and with it the artifact: $1.74\% \to 0.006\%$. Its refractive index
+is interpolated rather than tabulated, which costs nothing --- the astrodust
+dielectric function is smooth across \SI{13.6}{\electronvolt} and has no edge
+there. The Lyman limit is a property of the illumination, and this is the same
+move the extension already makes 21 times over for the material's own edges:
+resolve a step with a close pair of points.
 
 \subsection{Where the optics come from in the extended band}
 
@@ -613,6 +704,15 @@ bit-identical to before.}
 
 \subsection{The two routes, and what the cheap one costs}\label{sec:euv-shape}
 
+\emph{Read this section as a description of a route that no longer has anything
+to compute for astrodust.} It was written when the $Q$ table stopped at the Lyman
+limit and every ionizing host needed a band solved on the fly. The table now
+covers that band, so the astrodust EUV path is unreachable --- which is the
+point: no host has to link the T-matrix any more. The route is kept because it
+is what would compute a band if a future dielectric function reached further
+than the table built from it, and because the timings below are the measurement
+that justified moving the work into the table.
+
 The $Q$ table is a random-orientation T-matrix solution for an oblate spheroid
 of axial ratio $b/a = 1.4$. \textbf{By default the extended band is the same
 solution}, called directly (\code{spheroid\_q} in
@@ -621,6 +721,14 @@ with the same convergence tolerance and the same regime bounds the table's own
 driver uses: the Rayleigh dipole limit below $x = 2\pi a_{\rm eff}/\lambda =
 0.1$, the T-matrix between $0.1$ and $50$, the geometric-optics limit above
 $50$. Nothing about the particle changes across the seam.
+
+That solution lives in \code{sed/src/euv\_astrodust\_tmatrix.f90}, the one file
+of the library that reaches into \code{libtmatrix.a}, and it is reached through
+a registered procedure rather than a compiled dependency --- which is what lets
+the rest of the library link without the T-matrix at all
+(\S\ref{sec:build}). A build that does not carry it answers
+\code{euv\_tmatrix = .true.} with \code{status = 6}; it never falls back to the
+sphere below, because that is a different particle and the caller has to know.
 
 That is not free. Measured on this machine (\code{gfortran}~13.1, \code{-O3},
 167 radii; the timings are the band alone, as \code{sed\_init} reports them):
@@ -736,11 +844,14 @@ and the default reproduces that exactly, whereas the sphere route steps from
 $0.90$ to $0$ across the seam for $a\gtrsim1$\um.
 
 \paragraph{The shipped extinction table.} \code{data/kext\_astrodust\_MW\_euv.dat}
-is integrated with the default T-matrix route, so the extinction it serves and
-the emission the model computes are one calculation of one particle at every
-wavelength. It was regenerated for that change; the $1129$ rows at
-$\lambda\ge0.0912$\um\ are byte-identical to the sphere-route version, because
-those come from the $Q$ table either way. Below the seam the sphere route was
+now takes every wavelength from the $Q$ table, the band included, so the
+extinction it serves and the emission the model computes are one calculation of
+one particle throughout --- the property the paragraph below was written to
+establish, reached by extending the table rather than by solving a band. The
+comparison it records was made when the band was still computed on the fly:
+against the sphere route, the $1129$ rows at $\lambda\ge0.0912$\um\ were
+byte-identical, because those came from the $Q$ table either way. Below the seam
+the sphere route was
 low in $C_{\rm abs}$ and $K_{\rm abs}$ by up to $3.6\%$, high in $C_{\rm sca}$
 by up to $4.6\%$ and in albedo by up to $5.1\%$, and wrong in $\langle\cos
 \theta\rangle$ by up to a factor of four at the shortest wavelengths, where the
@@ -763,10 +874,15 @@ $\lambda_{\rm hard} = \min\left\{\lambda_i\ :\ J_\lambda(\lambda_i) >
 10^{-12}\,\max_j J_\lambda(\lambda_j)\right\}$,
 \end{center}
 computed by \code{hardest\_photon\_energy} in \code{sed/src/radfield.f90} and
-called from all three places that need it --- \code{sed\_grain\_loop} and
-\code{narrow\_iterative} in \code{sed\_astrodust.f90}, and
-\code{qm\_solve\_grain} in \code{stoch\_qm.f90}. Any units may be passed for
-$J_\lambda$, since only ratios within the array are used.
+called from all four places that need it --- \code{sed\_grain\_loop} and
+\code{narrow\_iterative} in \code{sed\_astrodust.f90}, \code{qm\_solve\_grain}
+in \code{stoch\_qm.f90}, and \code{calc\_P} in \code{p\_sub.f90}. Any units may
+be passed for $J_\lambda$, since only ratios within the array are used.
+
+\code{calc\_P} is the fourth because it does not merely bound a window: it
+integrates the upward transition rates over the photons that drive them, so both
+the cutoff and the limits of that integral are properties of the field.
+\S\ref{sec:euv-ghost} is what it cost to have taken them from the grid instead.
 
 \paragraph{The ceiling is a property of the field, not of the grid.} That
 distinction is the whole point, and a coincidence hides it. A model's wavelength
@@ -778,19 +894,22 @@ transported field occupies:
 \toprule
 model & grid floor & implied photon energy \\
 \midrule
-astrodust & $0.0912$\um\ (T-matrix $Q$ table)        & $13.595\,$eV \\
-DL07      & $0.0912$\um\ (the same table)            & $13.595\,$eV \\
-Zubko     & $1.000\times10^{-3}$\um\ (DustEM tables) & $1239.8\,$eV \\
+astrodust & $1.000\times10^{-4}$\um\ (T-matrix $Q$ table) & $12398\,$eV \\
+DL07      & $1.000\times10^{-4}$\um\ (the same table)     & $12398\,$eV \\
+Zubko     & $1.000\times10^{-3}$\um\ (DustEM tables)      & $1239.8\,$eV \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\noindent For astrodust and DL07 the grid floor \emph{is} the Lyman limit, so
-$13.595\,\mathrm{eV} < 13.6\,\mathrm{eV}$: the maximum returns the constant, and
-grid and field give the same answer whichever one is measured. For Zubko they
-differ by a factor of 91, and the field is the one that is right --- a Mathis
-field carries no photon at all below $0.0912$\um, however far the optics table
-extends.
+\noindent Every shipped model now depends on the distinction: the grid floors
+above sit $912$, $912$ and $91$ times harder than a Mathis field's own, which is
+the Lyman limit, and the field is the one that is right --- it carries no photon
+at all below $0.0912$\um, however far the optics table extends. Before the $Q$
+table was carried into the ionizing band, astrodust and DL07 could not tell the
+two apart: their grid floor \emph{was} the Lyman limit
+($13.595\,\mathrm{eV} < 13.6\,\mathrm{eV}$, so the maximum returned the constant
+whichever was measured), and Zubko was the only model that exercised the
+difference.
 
 \paragraph{Taking it from the grid costs resolution, not physics.}
 \code{umax} sets the upper edge of a \emph{fixed} number of enthalpy bins, so a
@@ -805,6 +924,58 @@ SED bins $-0.9$ to $-1.9\%$, the emission image $1.9\%$ median and $5.4\%$
 maximum, total emitted energy $-0.08\%$. A systematic redistribution at nearly
 conserved energy is what a coarser bin grid produces, and
 \code{docs/EUV\_EXTENSION\_HOST\_REGRESSION.md} records the measurement.
+
+\subsection{The photon that was not there}\label{sec:euv-ghost}
+
+The ceiling above bounds a \emph{window}. \code{calc\_P} does something
+stronger: it integrates the upward transition rates over the photons that drive
+them. Until this release it took the limits of that integral from the grid, and
+the result was not a loss of resolution but a source of energy that does not
+exist.
+
+The highest-bin term is the rate into the top enthalpy bin, driven by every
+photon more energetic than that bin's gap $\Delta H$. Two things went wrong.
+
+\begin{itemize}
+\item \textbf{The integral started at \code{lambda(1)}}, the short end of the
+      optics table, rather than at the shortest wavelength the field occupies.
+      On the grid ending at the Lyman limit the two coincided; carried to
+      $10^{-4}$\um\ they differ by $912$, and a flat 51-point rule left between
+      1 and 8 samples inside the illuminated band.
+\item \textbf{The flux at the gap wavelength was read through a clamping
+      interpolator.} \code{interp1} returns $y(1)$ for any abscissa below its
+      range. The top bin is placed above the single-photon bound by
+      construction, so $hc/\Delta H$ was always shorter than the grid, and the
+      clamp answered every time with $J_\lambda$ at the grid edge instead of
+      zero --- on a grid ending at the Lyman limit, the full Mathis intensity
+      there. \emph{Every top-bin transition was driven by a photon flux the
+      field does not carry.} When $\Delta H$ exceeded the grid's whole range the
+      same clamp made the loop run backwards, subtracting a rate rather than
+      adding none.
+\end{itemize}
+
+Both limits now come from \code{hardest\_photon\_energy}, and the band is
+skipped when $\Delta H$ exceeds the hardest photon. The sample count follows the
+band's width (\code{NWAV\_MIN}, \code{NWAV\_MAX}, \code{DLNWAV\_TARGET} in
+\code{p\_sub.f90}) instead of being fixed, so the step is bounded whatever the
+band. Re-running the old grid with only the ghost removed and then only the
+sampling changed separates the two: the sampling moves nothing at all
+($0.0000\%$), which says the flat 51 points had already converged once the
+limits were right; the ghost carries the entire change.
+
+\textbf{All three shipped models moved}, and Zubko's move has nothing to do with
+the astrodust table --- its grid has always begun at $10^{-3}$\um, so it carried
+the same defect independently. Against the previous products: astrodust up to
+$12.1\%$ locally and $-1.1$ to $+0.9\%$ in integrated power, DL07 $9.7\%$ and
+$-2.8\%$, Zubko $3.0\%$ ($6.0\%$ with \code{euv}). Energy conservation, measured
+as emitted over absorbed power per H, improved from $+0.236\%$ to $-0.057\%$ for
+the astrodust S1 stage and held at $-0.11\%$ for S2.
+
+\medskip
+\noindent\textbf{Every SED this package produced before this fix contains
+photons that were not in the field}, in the top enthalpy bin of every
+stochastically heated grain. Comparisons against those products have to account
+for it.
 
 \paragraph{Why $10^{-12}$ of the peak, and not simply $J_\lambda>0$.} Exact
 zeros must be excluded --- \code{J\_Mathis} returns exactly zero below
@@ -1148,17 +1319,24 @@ models.
 %====================================================================
 \section{Linking into a 3D RT code}
 
-Compile your RT source against \emph{both} archives, with \code{.mod} search
-paths pointing at \code{SEDust/sed/} and \code{SEDust/tmatrix/}:
+Compile your RT source against the one archive, with the \code{.mod} search path
+pointing at \code{SEDust/sed/}:
 \begin{lstlisting}[style=sh]
-gfortran -I<sed> -I<tmatrix> my_rt.f90 \
-         -L<sed> -lsedust -L<tmatrix> -ltmatrix -fopenmp -o my_rt.x
+gfortran -I<sed> my_rt.f90 -L<sed> -lsedust -fopenmp -o my_rt.x
 \end{lstlisting}
-\code{libtmatrix.a} entered the contract when the astrodust EUV band moved to
-the T-matrix (\S\ref{sec:euv-shape}); a host that links \code{-lsedust} alone
-now fails at link time. The archive itself needs no OpenMP runtime --- the
-threading is on the SEDust side --- so \code{-fopenmp} is required only because
-\code{libsedust.a} uses it.
+The line is the same whether or not the T-matrix was built in
+(\S\ref{sec:build}): \code{WITH\_TMATRIX=1} puts the T-matrix objects into
+\code{libsedust.a} itself, so the host never names a second archive. The archive
+needs no OpenMP runtime of its own --- the threading is on the SEDust side ---
+so \code{-fopenmp} is required only because \code{libsedust.a} uses it.
+
+Only the astrodust EUV band (\S\ref{sec:euv-shape}) ever reaches the T-matrix,
+and it reaches it through a procedure the host registers rather than a compiled
+dependency, which is why the plain archive links without one. A host with its
+own spheroid solver can register that instead: \code{sed\_register\_euv\_band\_optics}
+takes any procedure matching the abstract interface \code{euv\_band\_optics\_i}
+(both re-exported by \code{dust\_lib}), and
+\code{sed\_forget\_euv\_band\_optics} undoes it.
 
 A complete minimal example is provided in
 \code{SEDust/sed/rt\_example/use\_dustlib.f90}: it builds a model, computes
@@ -1218,16 +1396,17 @@ refractive index frozen at its table boundary.
 \toprule
 file & rows & $\lambda$ range [\um] & what sets the short-wavelength floor \\
 \midrule
-\code{kext\_astrodust\_MW.dat}     & 1129 & $0.0912$--$39810$ &
+\code{kext\_astrodust\_MW.dat}     & 1762 & $10^{-4}$--$39810$ &
 the T-matrix $Q$-table grid (no extension requested) \\
-\code{kext\_astrodust\_MW\_euv.dat}$^\dagger$ & 1719 & $1.001\times10^{-4}$--$39810$ &
-the DH21 astrodust dielectric function, whose own table stops at
-$1.00003\times10^{-4}$ \\
-\code{kext\_dl07\_MW.dat}          & 1129 & $0.0912$--$39810$ &
+\code{kext\_astrodust\_MW\_euv.dat}$^\dagger$ & 1762 & $10^{-4}$--$39810$ &
+the same grid: the DH21 astrodust dielectric function stops at
+$1.00003\times10^{-4}$, which the table already reaches, so \code{euv} prepends
+nothing \\
+\code{kext\_dl07\_MW.dat}          & 1762 & $10^{-4}$--$39810$ &
 the T-matrix $Q$-table grid (no extension requested) \\
-\code{kext\_dl07\_MW\_euv.dat}$^\dagger$ & 1761 & $6.205\times10^{-5}$--$39810$ &
+\code{kext\_dl07\_MW\_euv.dat}$^\dagger$ & 1823 & $6.205\times10^{-5}$--$39810$ &
 the D03 dielectric functions; the shorter-reaching of astrosilicate and
-graphite stops at $6.1992\times10^{-5}$ \\
+graphite stops at $6.1992\times10^{-5}$, past the table's own end \\
 \code{kext\_zubko\_BARE\_GR\_S.dat}$^\dagger$ & 1201 & $10^{-3}$--$10^{4}$ &
 the ZDA optics table itself; this model has no extension and needs none \\
 \bottomrule
@@ -1237,9 +1416,13 @@ carry the columns of \S\ref{sec:standalone}. $^\dagger$~marks the file its
 builder loads by default (Table~\ref{tab:models:kext}); the others are there for
 a host that asks for them through \code{kext\_path}. A non-EUV product is a row
 subset of its EUV counterpart --- same grid, same numbers, over the overlap.
-\code{kext\_astrodust\_MW.dat} is a tracked regression reference and keeps its
-original narrower field widths; it is reproduced byte for byte by
-\code{./calc\_kext.x astrodust}.}
+\code{kext\_astrodust\_MW.dat} is a tracked regression reference, written through
+its own narrower field widths; it is reproduced byte for byte by
+\code{./calc\_kext.x astrodust}. Its wavelength column carries 8 significant
+digits rather than the 6 it began with: the grid resolves each X-ray absorption
+edge with a pair of points $\sim1.2\times10^{-6}$ apart in relative wavelength,
+which 6 digits round to the same string, and a repeated wavelength makes
+\code{load\_kext\_table} reject the file for not ascending.}
 \label{tab:kext}
 \end{table}
 
