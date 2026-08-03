@@ -4,9 +4,9 @@ module scattering_matrix_oriented
    ! cross sections in driver/tmatrix_oriented.f90.  Two regimes are covered:
    !
    !   - mueller_matrix_fixed_orientation : T-matrix regime (0.1 < x < 50),
-   !     one AMPL (src/ampl_oriented.f) evaluation of the 2x2 complex
-   !     amplitude matrix from the converged T-matrix, then Mishchenko's
-   !     phase-matrix bilinears.
+   !     one AMPL (libtmatrix) evaluation of the 2x2 complex amplitude matrix
+   !     from the converged T-matrix, then Mishchenko's phase-matrix
+   !     bilinears.
    !   - rayleigh_mueller_matrix_oriented : analytic electric-dipole limit
    !     (x << 1), amplitude S_pq = k^2 (e_p^sca . alpha . e_q^inc) with the
    !     spheroid polarizability tensor alpha = diag(alpha_b, alpha_b,
@@ -29,14 +29,17 @@ module scattering_matrix_oriented
    ! (AMPL returns VV, VH, HV, HH, each carrying the dimension of length, so
    ! |S|^2 is an area and Z a differential scattering cross section).  The
    ! 16 phase-matrix elements follow from S by the bilinear combinations of
-   ! Mishchenko (Appl. Opt. 39, 1026, 2000), copied verbatim from
-   ! src/ampld.lp.f (Z11..Z44) in phase_matrix_from_amplitude below.
+   ! Mishchenko (Appl. Opt. 39, 1026, 2000), which the library routine
+   ! phase_matrix_from_amplitude carries out.
    !
-   ! SERIAL, COMMON-BASED.  mueller_matrix_fixed_orientation reads the
-   ! converged T-matrix from COMMON /TMAT/, which a prior TMD_ONE_SCATMAT
-   ! call for the same (a_eff, lam, m, shape) must have left valid (it does,
-   ! via its /TMATK/ restore).  It is therefore not thread-safe and must not
-   ! be called across a fresh T-matrix solve for a different size.
+   ! WORKSPACE CONTRACT.  mueller_matrix_fixed_orientation reads the converged
+   ! T-matrix held in the caller's libtmatrix workspace, which a prior
+   ! tmatrix_eval_scattering_matrix call on that same workspace for the same
+   ! (a_eff, lam, m, shape) must have left valid; `sm` is the scatmat that call
+   ! returned.  Evaluating another particle on that workspace replaces the
+   ! stored T-matrix, and AMPL then reports the retired `sm` instead of reading
+   ! the wrong particle.  It only reads the workspace and keeps its own scratch
+   ! in local storage, so concurrent calls on one workspace are safe.
    !
    ! SYMMETRIES (verified numerically in driver/compare_scatmat_aligned.f90)
    !   - phi mirror: Z(theta_i; theta_s, 360 - phi) equals Z(theta_i;
@@ -65,8 +68,9 @@ module scattering_matrix_oriented
    !     (180 - theta_s, phi), the improper reflection flipping the handedness
    !     (V, U) off-diagonal blocks.
 
-   use, intrinsic :: iso_fortran_env, only: real64
-   use constants, only: wp
+   use, intrinsic :: iso_fortran_env, only: real64, error_unit
+   use tmatrix_api, only: wp, tmatrix_workspace_t, tmatrix_scatmat_t, ampl, &
+                          phase_matrix_from_amplitude
    use asymptotic_optics, only: spheroid_dipole_polarizability
    implicit none
    private
@@ -74,31 +78,38 @@ module scattering_matrix_oriented
 
 contains
 
-   subroutine mueller_matrix_fixed_orientation(nmax_tm, lam, theta_i, theta_s, phi, z)
+   subroutine mueller_matrix_fixed_orientation(work, sm, theta_i, theta_s, phi, z)
       ! Fixed-orientation Mueller matrix in the T-matrix regime, from the
-      ! converged T-matrix left in COMMON /TMAT/ by TMD_ONE_SCATMAT.
+      ! converged T-matrix left in `work` by tmatrix_eval_scattering_matrix.
       !
       ! INPUT
-      !   nmax_tm  multipole truncation of the stored T-matrix (the value
-      !            TMD_ONE_SCATMAT returned for this a_eff, lam, m, shape)
-      !   lam      wavelength [microns], the same value passed to the solve
+      !   work     libtmatrix workspace holding that T-matrix (read only)
+      !   sm       the scatmat tmatrix_eval_scattering_matrix returned for this
+      !            a_eff, lam, m, shape.  It identifies the stored T-matrix and
+      !            supplies its multipole truncation; the wavelength comes from
+      !            the workspace, so neither can be given a stale value here.
       !   theta_i  incidence polar angle from the axis [deg], in [0,180]
       !   theta_s  scattering polar angle [deg], in [0,180]
       !   phi      scattering azimuth relative to the incidence plane [deg],
       !            in [0,360]
       ! OUTPUT
       !   z(4,4)   Mueller matrix [um^2 sr^-1] in the meridional (v,h) basis
-      integer,  intent(in)  :: nmax_tm
-      real(wp), intent(in)  :: lam, theta_i, theta_s, phi
+      type(tmatrix_workspace_t), intent(in) :: work
+      type(tmatrix_scatmat_t),   intent(in) :: sm
+      real(wp), intent(in)  :: theta_i, theta_s, phi
       real(wp), intent(out) :: z(4,4)
 
       complex(wp) :: vv, vh, hv, hh
-      external :: ampl
+      integer     :: ierr_a
 
       ! Grain axis along z: ALPHA = 0, BETA = 0.  Incidence at (theta_i, 0),
       ! scattering at (theta_s, phi).
-      call ampl(nmax_tm, lam, theta_i, theta_s, 0.0_wp, phi, &
-                0.0_wp, 0.0_wp, vv, vh, hv, hh)
+      call ampl(work, sm, theta_i, theta_s, 0.0_wp, phi, &
+                0.0_wp, 0.0_wp, vv, vh, hv, hh, ierr_a)
+      if (ierr_a /= 0) then
+         write(error_unit,'(a,i0)') ' ERROR: libtmatrix ampl returned ierr = ', ierr_a
+         error stop 2
+      end if
       call phase_matrix_from_amplitude(vv, vh, hv, hh, z)
    end subroutine mueller_matrix_fixed_orientation
 
@@ -174,41 +185,5 @@ contains
       s = alpha_b * (e_sca(1)*e_inc(1) + e_sca(2)*e_inc(2)) &
         + alpha_a *  e_sca(3)*e_inc(3)
    end function dipole_bilinear
-
-
-   subroutine phase_matrix_from_amplitude(s11, s12, s21, s22, z)
-      ! Mueller (phase) matrix Z from the 2x2 complex amplitude matrix
-      ! S = [[S11,S12],[S21,S22]] = [[VV,VH],[HV,HH]].  The 16 bilinear
-      ! combinations are copied verbatim from Mishchenko's src/ampld.lp.f
-      ! (its Z11..Z44, Eqs. (13)-(29) of Appl. Opt. 39, 1026, 2000); the real
-      ! part is the physical phase-matrix element.
-      complex(wp), intent(in)  :: s11, s12, s21, s22
-      real(wp),    intent(out) :: z(4,4)
-      complex(wp), parameter :: CI = (0.0_wp, 1.0_wp)
-
-      z(1,1) = 0.5_wp*real( s11*conjg(s11)+s12*conjg(s12) &
-                           +s21*conjg(s21)+s22*conjg(s22), kind=wp)
-      z(1,2) = 0.5_wp*real( s11*conjg(s11)-s12*conjg(s12) &
-                           +s21*conjg(s21)-s22*conjg(s22), kind=wp)
-      z(1,3) = real(-s11*conjg(s12)-s22*conjg(s21), kind=wp)
-      z(1,4) = real(CI*(s11*conjg(s12)-s22*conjg(s21)), kind=wp)
-
-      z(2,1) = 0.5_wp*real( s11*conjg(s11)+s12*conjg(s12) &
-                           -s21*conjg(s21)-s22*conjg(s22), kind=wp)
-      z(2,2) = 0.5_wp*real( s11*conjg(s11)-s12*conjg(s12) &
-                           -s21*conjg(s21)+s22*conjg(s22), kind=wp)
-      z(2,3) = real(-s11*conjg(s12)+s22*conjg(s21), kind=wp)
-      z(2,4) = real(CI*(s11*conjg(s12)+s22*conjg(s21)), kind=wp)
-
-      z(3,1) = real(-s11*conjg(s21)-s22*conjg(s12), kind=wp)
-      z(3,2) = real(-s11*conjg(s21)+s22*conjg(s12), kind=wp)
-      z(3,3) = real( s11*conjg(s22)+s12*conjg(s21), kind=wp)
-      z(3,4) = real(-CI*(s11*conjg(s22)+s21*conjg(s12)), kind=wp)
-
-      z(4,1) = real(CI*(s21*conjg(s11)+s22*conjg(s12)), kind=wp)
-      z(4,2) = real(CI*(s21*conjg(s11)-s22*conjg(s12)), kind=wp)
-      z(4,3) = real(-CI*(s22*conjg(s11)-s12*conjg(s21)), kind=wp)
-      z(4,4) = real( s22*conjg(s11)-s12*conjg(s21), kind=wp)
-   end subroutine phase_matrix_from_amplitude
 
 end module scattering_matrix_oriented

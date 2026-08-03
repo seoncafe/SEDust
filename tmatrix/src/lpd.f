@@ -1126,10 +1126,10 @@ C     ILAENV = 0
 *
 *  XERBLA  is an error handler for the LAPACK routines.
 *  It is called by an LAPACK routine if an input parameter has an
-*  invalid value.  A message is printed and execution stops.
+*  invalid value.  This implementation returns to its caller; the
+*  libtmatrix wrapper propagates the LAPACK INFO value as an API status.
 *
-*  Installers may consider modifying the STOP statement in order to
-*  call system-specific exception-handling facilities.
+*  The library must not terminate or write to the host process's output.
 *
 *  Arguments
 *  =========
@@ -1145,12 +1145,8 @@ C     ILAENV = 0
 *
 *     .. Executable Statements ..
 *
-      WRITE( *, FMT = 9999 )SRNAME, INFO
-*
-      STOP
-*
- 9999 FORMAT( ' ** On entry to ', A6, ' parameter number ', I2, ' had ',
-     $      'an illegal value' )
+*     ZGETRF/ZGETRI return INFO to TT, which propagates it to libtmatrix.
+      RETURN
 *
 *     End of XERBLA
 *

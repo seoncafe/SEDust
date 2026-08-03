@@ -50,7 +50,11 @@ program euv_polarized_optics
    !   NDGS      Gauss-quadrature multiplier (default 2, the production value)
 
    use, intrinsic :: iso_fortran_env, only: int64, error_unit
-   use constants,          only: wp
+   use tmatrix_api,        only: wp, tmatrix_options_t, tmatrix_result_t, &
+                                 tmatrix_scatmat_t, tmatrix_workspace_t, &
+                                 tmatrix_workspace_init, tmatrix_workspace_finalize, &
+                                 tmatrix_eval_scattering_matrix, ampl
+   use tmatrix_status,     only: TMATRIX_SUCCESS, TMATRIX_ERR_NUMERICAL_NONFINITE
    use read_index,         only: load_index, interp_m
    use asymptotic_optics,  only: rayleigh_limit, geometric_optics_limit
    use tmatrix_oriented,   only: tmatrix_oriented_cross
@@ -71,7 +75,7 @@ program euv_polarized_optics
 
    character(len=512) :: nodefile, outfile, arg
    real(wp), allocatable :: lam_in(:), a_in(:)
-   integer  :: nnode, i, u, uo, ios
+   integer  :: nnode, i, uo, ios
    logical  :: do_sca
    real(wp) :: xtm_hi, ddelt
    integer  :: ndgs
@@ -86,7 +90,12 @@ program euv_polarized_optics
    integer  :: ierr
    integer(int64) :: c0, c1, crate
    real(wp) :: dt
-   character(len=512) :: line
+
+   ! One workspace for the whole node list: each solve is serial and the two
+   ! forward AMPL evaluations read the T-matrix it left behind.
+   type(tmatrix_workspace_t) :: work
+   integer  :: tm_status
+   character(len=160) :: tm_message
 
    ! ---- command line ------------------------------------------------------
    if (command_argument_count() < 2) then
@@ -129,6 +138,12 @@ program euv_polarized_optics
       end if
    end if
 
+   call tmatrix_workspace_init(work, tm_status, tm_message)
+   if (tm_status /= TMATRIX_SUCCESS) then
+      write(error_unit,'(a,a)') ' ERROR: libtmatrix: ', trim(tm_message)
+      stop 2
+   end if
+
    call read_nodes(trim(nodefile), lam_in, a_in, nnode)
    call load_index(F_INDEX)
    call system_clock(count_rate=crate)
@@ -159,10 +174,10 @@ program euv_polarized_optics
       if (x >= XTM_LO .and. x <= xtm_hi) then
          call system_clock(c0)
          if (do_sca) then
-            call tmatrix_oriented_cross(a, lam, m, EPS_BA, NP_OBL, ddelt, ndgs, &
+            call tmatrix_oriented_cross(work, a, lam, m, EPS_BA, NP_OBL, ddelt, ndgs, &
                                         qe_t, qs_t, qa_t, ierr, qre_ori=qre_t)
          else
-            call forward_amplitude_extinction(a, lam, m, EPS_BA, NP_OBL, ddelt, ndgs, &
+            call forward_amplitude_extinction(work, a, lam, m, EPS_BA, NP_OBL, ddelt, ndgs, &
                                               qe_t, qre_t, ierr)
          end if
          call system_clock(c1)
@@ -189,6 +204,7 @@ program euv_polarized_optics
          ' ierr=', ierr, '  (', dt, ' s)'
    end do
    close(uo)
+   call tmatrix_workspace_finalize(work)
    write(*,'(a,a)') ' wrote ', trim(outfile)
 
 contains
@@ -214,7 +230,7 @@ contains
    end subroutine write_header
 
 
-   subroutine forward_amplitude_extinction(a_eff, lambda, m_ref, eps_ba, np, ddelt_in, &
+   subroutine forward_amplitude_extinction(wk, a_eff, lambda, m_ref, eps_ba, np, ddelt_in, &
                                            ndgs_in, qext_ori, qre_ori, ierr)
       ! Orientation-resolved extinction and its real-part (birefringence) twin
       ! from the forward-scattering amplitude alone, via the optical theorem
@@ -223,37 +239,54 @@ contains
       ! phase-retardation (birefringence) response.  Two AMPL evaluations, no
       ! scattering-sphere integral, so the cost is the T-matrix solve alone.
       ! Same geometry and jori mapping as tmatrix_oriented_cross.
+      type(tmatrix_workspace_t), intent(inout) :: wk
       real(wp),    intent(in)  :: a_eff, lambda, eps_ba, ddelt_in
       complex(wp), intent(in)  :: m_ref
       integer,     intent(in)  :: np, ndgs_in
       real(wp),    intent(out) :: qext_ori(3), qre_ori(3)
       integer,     intent(out) :: ierr
 
-      integer, parameter :: NPL = 201
-      real(wp) :: mrr, mri, qext, qsca, walb_l, asymm_l
-      real(wp) :: al1(NPL), al2(NPL), al3(NPL), al4(NPL), be1(NPL), be2(NPL)
-      integer  :: lmax, nmax_tm
+      real(wp) :: mrr, mri
+      integer  :: ierr_a
       complex(wp) :: vv, vh, hv, hh
       real(wp) :: cext_fac, area
-      external :: tmd_one_scatmat, ampl
+      type(tmatrix_options_t) :: opts
+      type(tmatrix_result_t)  :: res
+      type(tmatrix_scatmat_t) :: sm
 
       qext_ori = 0.0_wp;  qre_ori = 0.0_wp
       mrr = real(m_ref, kind=wp)
       mri = abs(aimag(m_ref))
-      call tmd_one_scatmat(a_eff, lambda, mrr, mri, eps_ba, np, ddelt_in, ndgs_in, &
-                           qext, qsca, walb_l, asymm_l, &
-                           al1, al2, al3, al4, be1, be2, lmax, ierr, nmax_tm)
+      opts%aspect_ratio = eps_ba
+      opts%tolerance    = ddelt_in
+      opts%shape        = np
+      opts%ndgs         = ndgs_in
+      call tmatrix_eval_scattering_matrix(wk, a_eff, lambda, mrr, mri, opts, res, sm)
+      if (res%status /= TMATRIX_SUCCESS .and. res%legacy_ierr == 0 .and. &
+          res%status /= TMATRIX_ERR_NUMERICAL_NONFINITE) then
+         write(error_unit,'(a,a)') ' ERROR: libtmatrix: ', trim(res%message)
+         stop 2
+      end if
+      ierr = res%legacy_ierr
       if (ierr /= 0) return
 
       cext_fac = 2.0_wp * lambda
       area     = PI * a_eff * a_eff
 
-      call ampl(nmax_tm, lambda, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
-                0.0_wp, 0.0_wp, vv, vh, hv, hh)
+      call ampl(wk, sm, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
+                0.0_wp, 0.0_wp, vv, vh, hv, hh, ierr_a)
+      if (ierr_a /= 0) then
+         write(error_unit,'(a,i0)') ' ERROR: libtmatrix ampl returned ierr = ', ierr_a
+         stop 2
+      end if
       qext_ori(1) = cext_fac * aimag(vv) / area
       qre_ori(1)  = cext_fac * real(vv, kind=wp) / area
-      call ampl(nmax_tm, lambda, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
-                0.0_wp, 90.0_wp, vv, vh, hv, hh)
+      call ampl(wk, sm, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
+                0.0_wp, 90.0_wp, vv, vh, hv, hh, ierr_a)
+      if (ierr_a /= 0) then
+         write(error_unit,'(a,i0)') ' ERROR: libtmatrix ampl returned ierr = ', ierr_a
+         stop 2
+      end if
       qext_ori(2) = cext_fac * aimag(vv) / area
       qext_ori(3) = cext_fac * aimag(hh) / area
       qre_ori(2)  = cext_fac * real(vv, kind=wp) / area

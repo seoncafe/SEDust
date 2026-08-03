@@ -23,6 +23,28 @@ bands (0.36, 0.44, 0.55, 0.64, 0.79 um), ~8 min at 32 threads, file 138 MB
 The full account is in `docs/sedust_polarization_implementation.tex`
 (Section "Aligned-grain scattering matrix and the extinction matrix").
 
+**Engine status (2026 August 3).** The T-matrix engine underneath this work has since
+been rebuilt as a modern-Fortran library; the products are unchanged (byte for byte),
+but the routine names and the state ownership described below are not current.
+`TMD_ONE_SCATMAT` is now `tmatrix_eval_scattering_matrix(work, ..., result, scatmat)`
+and `AMPL` is `ampl(work, scatmat, tl, tl1, pl, pl1, alpha, beta, vv, vh, hv, hh,
+ierr)`, in `tmatrix/src/tmatrix_api.f90` and
+`tmatrix/src/fixed_orientation_amplitude.f90`; `MATR` and `HOVENR` are
+`scatmat_from_moments` and `vdm_hovenier_test` in
+`tmatrix/src/scattering_matrix_expansion.f90`. `src/ampl_oriented.f` and `tmd_one.f`
+are deleted; Mishchenko's unmodified sources are kept as non-compiled provenance in
+`tmatrix/reference/upstream/`. The library has no `COMMON`, `EQUIVALENCE` or mutable
+`SAVE`: the converged T-matrix is held in `work%full_tstore`, `GSP` writes separate
+arrays and no longer destroys it, so the `/TMATK/` restore this plan was written
+around is gone; `nmax` and the wavelength reach the amplitude call through `scatmat%nmax_tm` and
+the workspace instead of the argument list, and a generation tag on both makes a stale
+`ampl` call return `ierr = 4` rather than a wrong amplitude. Evaluation is one active
+caller for each workspace, different workspaces may run at the same time, and `ampl`
+takes the workspace `intent(in)`, so several threads may read one workspace at once.
+The full mapping is in `tmatrix_orientation_resolved_plan.md`. What follows is the plan
+as it stood in July 2026, corrected only where it asserts something about the code that
+is no longer true.
+
 ## 1. Motivation
 
 Seon (2018, ApJ 862, 87) modeled the optical polarization of edge-on galaxies with
@@ -42,10 +64,13 @@ SEDust v1.20 supplies, for the astrodust spheroid,
 
 What is missing is the fixed-orientation Mueller matrix Z as a function of both the
 incidence direction relative to the grain axis and the scattering direction. This
-plan adds it. The building blocks already exist: `AMPL` (src/ampl_oriented.f) returns
-the 2x2 complex amplitude matrix for arbitrary incidence angles, scattering angles,
-and grain Euler angles, reading the converged T-matrix from COMMON /TMAT/, which
-`TMD_ONE_SCATMAT` leaves valid (the /TMATK/ restore).
+plan adds it. The building blocks already exist: the fixed-orientation amplitude
+routine (`AMPL`, then in `src/ampl_oriented.f`; now `ampl` in
+`src/fixed_orientation_amplitude.f90`) returns the 2x2 complex amplitude matrix for
+arbitrary incidence angles, scattering angles, and grain Euler angles, reading the
+converged T-matrix that the scattering-matrix evaluation leaves valid — through
+`COMMON /TMAT/` and the `/TMATK/` restore when this was written, from the caller-owned
+workspace now.
 
 ## 2. Physics
 
@@ -65,7 +90,7 @@ axis, i.e. the magnetic field direction).
 
 The phase matrix follows from the amplitude matrix S = [[S11,S12],[S21,S22]] =
 [[VV,VH],[HV,HH]] by the standard bilinear combinations (Mishchenko, Travis & Lacis
-2002, Eqs. 2.106-2.121). AMPL returns amplitudes carrying the dimension of length,
+2002, Eqs. 2.106-2.121). `ampl` returns amplitudes carrying the dimension of length,
 so |S|^2 is an area, and Z is a differential scattering cross section.
 
 ### Symmetries (storage reduction and checks)
@@ -89,7 +114,7 @@ so |S|^2 is an area, and Z is a differential scattering cross section.
   spheroid polarizability tensor (alpha_a, alpha_b of asymptotic_optics.f90).
   The scattered amplitude is S proportional to k^2 (n-hat x (n-hat x alpha E)); all
   16 elements follow in closed form.
-- 0.1 <= x <= 50: T-matrix via TMD_ONE_SCATMAT + AMPL.
+- 0.1 <= x <= 50: T-matrix via `tmatrix_eval_scattering_matrix` + `ampl`.
 - x > 50: not implemented. For the optical bands shipped (0.36-0.79 um) this regime
   is reached only by grains carrying a fraction ~1e-14 of the scattering weight;
   the driver skips such bins and reports the skipped weight so the omission is
@@ -111,9 +136,10 @@ The driver therefore writes two products per band:
    accumulated with weight n(a) (1 - f_align(a)) instead of n(a), same 6-element
    format and normalization as the existing scatmat file.
 
-One TMD_ONE_SCATMAT call per (band, size) serves both: the GSP expansion
-coefficients feed the unaligned accumulation, and the /TMAT/ left valid by the
-/TMATK/ restore feeds the AMPL loop.
+One `tmatrix_eval_scattering_matrix` call for each (band, size) serves both: the GSP
+expansion coefficients feed the unaligned accumulation, and the T-matrix left valid in
+the workspace feeds the `ampl` loop (`GSP` no longer overwrites it, so the `/TMATK/`
+restore this plan was written around is gone).
 
 f_align defaults to the HD23 power-law fit (`falign_hd23` in sed/src/q_table_jori.f90,
 reused directly). A regenerated run can substitute a different profile; the run
@@ -146,7 +172,7 @@ the size integral in f_align, without approximating the physics:
 ## 3. Products
 
 - `tmatrix/driver/scattering_matrix_oriented.f90` — module with
-  `mueller_matrix_fixed_orientation` (T-matrix regime; AMPL + bilinears) and
+  `mueller_matrix_fixed_orientation` (T-matrix regime; `ampl` + bilinears) and
   `rayleigh_mueller_matrix_oriented` (analytic dipole limit).
 - `tmatrix/driver/run_scatmat_aligned.f90` -> `run_scatmat_aligned.x` — size-
   integrated production driver; CLI like run_scatmat (wavelengths, `test`, default
@@ -281,7 +307,8 @@ B. **Optical theorem wiring.** (4 pi / k) Im S11(forward) and Im S22(forward) at
    computes them — validates the Euler-angle/geometry parameterization.
 C. **Random-orientation average.** Averaging Z over grain orientations (Gauss
    quadrature in cos beta, uniform alpha) at fixed scattering geometry must
-   reproduce the GSP-expansion F(Theta) of TMD_ONE_SCATMAT for the same size.
+   reproduce the GSP-expansion F(Theta) of the scattering-matrix evaluation for the
+   same size.
    This is the strongest end-to-end check of the bilinear construction.
 D. **Rayleigh limit.** The analytic dipole matrix against the T-matrix matrix at
    x near 0.1 (continuity), and against closed-form Rayleigh expressions at
@@ -303,9 +330,9 @@ F. **Size-integrated closure (production table).** Header C_sca_al(theta_i = 0, 
 
 ## 7. Cost estimate
 
-Per (band, size) in the T-matrix regime: one TMD_ONE_SCATMAT (seconds at most) plus
-~127k AMPL evaluations (tens of microseconds each) — minutes per size at the largest
-x. With ~100 populated sizes per band and 5 bands, a few hours serial; the driver
+For each (band, size) in the T-matrix regime: one scattering-matrix solve (seconds at
+most) plus ~127k amplitude evaluations (tens of microseconds each) — minutes per size
+at the largest x. With ~100 populated sizes in a band and 5 bands, a few hours serial; the driver
 prints progress and the bands can run as separate processes.
 
 ## 8. Wavelength coverage, as built

@@ -27,7 +27,7 @@ module asymptotic_optics
    ! sweep, so those calls are unaffected.
 
    use, intrinsic :: iso_fortran_env, only: real64
-   use constants, only: wp
+   use tmatrix_kinds, only: wp
    implicit none
    private
    public :: rayleigh_limit, geometric_optics_limit

@@ -51,9 +51,10 @@ module aligned_population_optics
    !                    C_h(theta_i) = C(E perp a),
    !                  built from rayleigh_limit's oriented C_ext(jori) and
    !                  their birefringence twin qre_ori.
-   !   0.1 <= x <= 50 one TMD_ONE_SCATMAT solve serves all products: its GSP
-   !                  coefficients feed F_tot/F_ref, the /TMAT/ it leaves valid
-   !                  feeds the AMPL Z loop, and its forward amplitudes give K.
+   !   0.1 <= x <= 50 one tmatrix_eval_scattering_matrix solve serves all
+   !                  products: its GSP coefficients feed F_tot/F_ref, the
+   !                  converged T-matrix it leaves in the workspace feeds the
+   !                  AMPL Z loop, and its forward amplitudes give K.
    !   x > 50         no oriented matrix exists (geometric optics).  The bin is
    !                  omitted from the aligned products and enters F_tot as its
    !                  random-orientation geometric-optics matrix (so it is
@@ -64,14 +65,18 @@ module aligned_population_optics
    ! the Rayleigh path (fully aligned + random), x >= 1 to geometric optics
    ! (F_tot only, tallied in skipped_weight).
    !
-   ! THREADING.  The only parallel region is the per-size Z-node loop in
-   ! oriented_mueller_grid.  AMPL and VIGAMPL (src/ampl_oriented.f) only READ
-   ! COMMON /TMAT/ and write local automatic arrays, so distinct nodes are
-   ! independent; each grid slot is written once, making the result identical
-   ! for any thread count.  The TMD_ONE_SCATMAT solve stays serial.
+   ! THREADING.  The only parallel region is the Z-node loop of one size in
+   ! oriented_mueller_grid.  AMPL and VIGAMPL only READ the workspace and write
+   ! local automatic arrays, so distinct nodes are independent and one shared
+   ! workspace serves the whole region; each grid slot is written once, making
+   ! the result identical for any thread count.  The T-matrix solve, which
+   ! writes the workspace, stays serial.
 
-   use, intrinsic :: iso_fortran_env, only: real64, int64
-   use constants, only: wp
+   use, intrinsic :: iso_fortran_env, only: real64, int64, error_unit
+   use tmatrix_api, only: wp, tmatrix_options_t, tmatrix_result_t, &
+                          tmatrix_scatmat_t, tmatrix_workspace_t, &
+                          tmatrix_eval_scattering_matrix, ampl
+   use tmatrix_status, only: TMATRIX_SUCCESS, TMATRIX_ERR_NUMERICAL_NONFINITE
    use asymptotic_optics, only: rayleigh_limit, geometric_optics_limit
    use scattering_matrix_oriented, only: mueller_matrix_fixed_orientation, &
                                          rayleigh_mueller_matrix_oriented
@@ -85,7 +90,7 @@ module aligned_population_optics
 
 contains
 
-   subroutine accumulate_aligned_population(lam, nr, ki, eps_ba, np, ddelt, ndgs, &
+   subroutine accumulate_aligned_population(work, lam, nr, ki, eps_ba, np, ddelt, ndgs, &
                        x_small, x_large, a_arr, dn_arr, f_arr, ti, ts, ph, &
                        z_al, cext_al, cpol_al, cbir_al, csca_al_grid, &
                        sacc, sref, lmax_acc, &
@@ -97,6 +102,7 @@ contains
       ! bin-integrated).
       !
       ! INPUT
+      !   work             libtmatrix workspace, already initialized
       !   lam, nr, ki      wavelength [um] and refractive index at lam
       !   eps_ba           axis ratio b/a (Mishchenko; > 1 oblate)
       !   np, ddelt, ndgs  T-matrix shape flag, tolerance, quadrature multiplier
@@ -122,6 +128,7 @@ contains
       !   n_small, n_tmat, n_skip, n_fail   regime counts
       !   t_tmat, t_node   optional wall seconds spent in T-matrix solves and in
       !                    the Z-node loop; used by the driver's run-time estimate
+      type(tmatrix_workspace_t), intent(inout) :: work
       real(wp), intent(in)  :: lam, nr, ki, eps_ba, ddelt, x_small, x_large
       integer,  intent(in)  :: np, ndgs
       real(wp), intent(in)  :: a_arr(:), dn_arr(:), f_arr(:)
@@ -135,14 +142,16 @@ contains
       real(wp), intent(out), optional :: t_tmat, t_node
 
       integer  :: nsz, nti, nts, nph, npl
-      integer  :: ia, lmax, ierr, nmax_tm
+      integer  :: ia, lmax, ierr
       real(wp) :: a, area, x, f, dn, qext, qsca, walb, asymm, csca, cext
       real(wp) :: qeo(3), qro(3)
       real(wp), allocatable :: al1(:), al2(:), al3(:), al4(:), be1(:), be2(:)
       real(wp), allocatable :: z_grid(:,:,:,:,:)
       real(wp) :: t_tm, t_nd
       integer(int64) :: c0, c1, crate
-      external :: tmd_one_scatmat
+      type(tmatrix_options_t) :: opts
+      type(tmatrix_result_t)  :: res
+      type(tmatrix_scatmat_t) :: sm
 
       nsz = size(a_arr);  nti = size(ti);  nts = size(ts);  nph = size(ph)
       npl = size(sacc, 1)
@@ -162,6 +171,11 @@ contains
       allocate(z_grid(4,4,nti,nts,nph))
       call system_clock(count_rate=crate)
 
+      opts%aspect_ratio = eps_ba
+      opts%tolerance    = ddelt
+      opts%shape        = np
+      opts%ndgs         = ndgs
+
       do ia = 1, nsz
          if (dn_arr(ia) <= 0.0_wp) cycle
          a    = a_arr(ia)
@@ -175,7 +189,8 @@ contains
             call rayleigh_limit(a, lam, nr, ki, eps_ba, qext, qsca, walb, asymm, &
                                 al1, al2, al3, al4, be1, be2, lmax, &
                                 qext_ori=qeo, qre_ori=qro)
-            call add_aligned_size(a, lam, nr, ki, eps_ba, .true., 0, dn, f, area, &
+            call add_aligned_size(work, a, lam, nr, ki, eps_ba, .true., tmatrix_scatmat_t(), &
+                                  dn, f, area, &
                                   qext, qsca, qeo, qro, al1, al2, al3, al4, be1, be2, lmax, &
                                   ti, ts, ph, z_grid, z_al, cext_al, cpol_al, cbir_al, &
                                   sacc, sref, lmax_acc, csca_tot, csca_ref, cext_tot, &
@@ -185,14 +200,23 @@ contains
          else if (x <= x_large) then
             ! --- T-matrix: one solve leaves /TMAT/ valid for the AMPL loop ---
             call system_clock(c0)
-            call tmd_one_scatmat(a, lam, nr, ki, eps_ba, np, ddelt, ndgs, &
-                                 qext, qsca, walb, asymm, &
-                                 al1, al2, al3, al4, be1, be2, lmax, ierr, nmax_tm)
+            call tmatrix_eval_scattering_matrix(work, a, lam, nr, ki, opts, res, sm)
             call system_clock(c1)
             t_tm = t_tm + real(c1 - c0, wp) / real(crate, wp)
+            if (res%status /= TMATRIX_SUCCESS .and. res%legacy_ierr == 0 .and. &
+                res%status /= TMATRIX_ERR_NUMERICAL_NONFINITE) then
+               write(error_unit,'(a,a)') ' ERROR: libtmatrix: ', trim(res%message)
+               stop 2
+            end if
+            qext = res%qext;  qsca = res%qsca;  walb = res%albedo;  asymm = res%asymmetry
+            ierr = res%legacy_ierr
+            lmax = sm%lmax
+            al1(1:npl) = sm%al1(1:npl);  al2(1:npl) = sm%al2(1:npl)
+            al3(1:npl) = sm%al3(1:npl);  al4(1:npl) = sm%al4(1:npl)
+            be1(1:npl) = sm%be1(1:npl);  be2(1:npl) = sm%be2(1:npl)
 
             if (ierr == 0) then
-               call add_aligned_size(a, lam, nr, ki, eps_ba, .false., nmax_tm, dn, f, area, &
+               call add_aligned_size(work, a, lam, nr, ki, eps_ba, .false., sm, dn, f, area, &
                                      qext, qsca, qeo, qro, al1, al2, al3, al4, be1, be2, lmax, &
                                      ti, ts, ph, z_grid, z_al, cext_al, cpol_al, cbir_al, &
                                      sacc, sref, lmax_acc, csca_tot, csca_ref, cext_tot, &
@@ -203,7 +227,8 @@ contains
                call rayleigh_limit(a, lam, nr, ki, eps_ba, qext, qsca, walb, asymm, &
                                    al1, al2, al3, al4, be1, be2, lmax, &
                                    qext_ori=qeo, qre_ori=qro)
-               call add_aligned_size(a, lam, nr, ki, eps_ba, .true., 0, dn, f, area, &
+               call add_aligned_size(work, a, lam, nr, ki, eps_ba, .true., tmatrix_scatmat_t(), &
+                                     dn, f, area, &
                                      qext, qsca, qeo, qro, al1, al2, al3, al4, be1, be2, lmax, &
                                      ti, ts, ph, z_grid, z_al, cext_al, cpol_al, cbir_al, &
                                      sacc, sref, lmax_acc, csca_tot, csca_ref, cext_tot, &
@@ -241,7 +266,7 @@ contains
    end subroutine accumulate_aligned_population
 
 
-   subroutine add_aligned_size(a, lam, nr, ki, eps_ba, is_rayleigh, nmax_tm, &
+   subroutine add_aligned_size(work, a, lam, nr, ki, eps_ba, is_rayleigh, sm, &
                                dn, f, area, qext, qsca, qeo, qro, &
                                al1, al2, al3, al4, be1, be2, lmax, ti, ts, ph, &
                                z_grid, z_al, cext_al, cpol_al, cbir_al, &
@@ -252,11 +277,14 @@ contains
       ! forward-amplitude K elements, and the aligned phase matrix Z_al.  For a
       ! Rayleigh size qeo/qro carry the oriented C_ext/birefringence twins used
       ! by the sin^2 dipole law; for a T-matrix size K comes from AMPL forward
-      ! amplitudes and qeo/qro are ignored.
+      ! amplitudes and qeo/qro are ignored.  `sm` is the scatmat identifying
+      ! the stored T-matrix; a Rayleigh size has none and passes a default one.
+      type(tmatrix_workspace_t), intent(in) :: work
+      type(tmatrix_scatmat_t),   intent(in) :: sm
       real(wp), intent(in)    :: a, lam, nr, ki, eps_ba, dn, f, area, qext, qsca
       real(wp), intent(in)    :: qeo(3), qro(3)
       logical,  intent(in)    :: is_rayleigh
-      integer,  intent(in)    :: nmax_tm, lmax
+      integer,  intent(in)    :: lmax
       real(wp), intent(in)    :: al1(:), al2(:), al3(:), al4(:), be1(:), be2(:)
       real(wp), intent(in)    :: ti(:), ts(:), ph(:)
       real(wp), intent(inout) :: z_grid(:,:,:,:,:)
@@ -267,11 +295,10 @@ contains
       real(wp), intent(inout) :: csca_tot, csca_ref, cext_tot, cext_ref, t_nd
       integer(int64), intent(in) :: crate
 
-      integer  :: it, i, j, is, ip
+      integer  :: it, i, j, is, ip, ierr_a
       real(wp) :: csca, cext, cv, ch, rv, rh, s2, c2
       integer(int64) :: c0, c1
       complex(wp) :: vv, vh, hv, hh
-      external :: ampl
 
       csca = qsca * area;  cext = qext * area
 
@@ -295,8 +322,12 @@ contains
          else
             ! Optical theorem on the forward amplitude, C = (4 pi / k) S =
             ! 2 lambda S; birefringence twin from the real part.
-            call ampl(nmax_tm, lam, ti(it), ti(it), 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
-                      vv, vh, hv, hh)
+            call ampl(work, sm, ti(it), ti(it), 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
+                      vv, vh, hv, hh, ierr_a)
+            if (ierr_a /= 0) then
+               write(error_unit,'(a,i0)') ' ERROR: libtmatrix ampl returned ierr = ', ierr_a
+               stop 2
+            end if
             cv = 2.0_wp * lam * aimag(vv);  ch = 2.0_wp * lam * aimag(hh)
             rv = 2.0_wp * lam * real(vv, wp);  rh = 2.0_wp * lam * real(hh, wp)
          end if
@@ -307,7 +338,7 @@ contains
 
       ! Aligned phase matrix on the (theta_i, theta_s, phi) grid.
       call system_clock(c0)
-      call oriented_mueller_grid(is_rayleigh, nmax_tm, a, lam, nr, ki, eps_ba, &
+      call oriented_mueller_grid(work, is_rayleigh, sm, a, lam, nr, ki, eps_ba, &
                                  ti, ts, ph, z_grid)
       call system_clock(c1)
       t_nd = t_nd + real(c1 - c0, wp) / real(crate, wp)
@@ -325,17 +356,21 @@ contains
    end subroutine add_aligned_size
 
 
-   subroutine oriented_mueller_grid(is_rayleigh, nmax_tm, a_eff, lam, nr, ki, eps_ba, &
+   subroutine oriented_mueller_grid(work, is_rayleigh, sm, a_eff, lam, nr, ki, eps_ba, &
                                     ti, ts, ph, z_grid)
       ! Fixed-orientation Mueller matrix at every (theta_i, theta_s, phi) node
       ! for ONE size, in um^2 sr^-1.  T-matrix regime reads the converged
-      ! T-matrix from COMMON /TMAT/ (valid from a prior TMD_ONE_SCATMAT for this
-      ! size) through AMPL; Rayleigh regime uses the analytic dipole matrix.
+      ! T-matrix held in `work` (valid from a prior
+      ! tmatrix_eval_scattering_matrix for this size, whose scatmat is `sm`)
+      ! through AMPL; Rayleigh regime uses the analytic dipole matrix and
+      ! ignores `sm`.
       !
-      ! The node loop only reads shared state and writes each grid slot once, so
-      ! it is parallelized with OpenMP and is identical for any thread count.
+      ! The node loop only reads shared state -- including the workspace, which
+      ! AMPL never writes -- and writes each grid slot once, so it is
+      ! parallelized with OpenMP and is identical for any thread count.
+      type(tmatrix_workspace_t), intent(in) :: work
+      type(tmatrix_scatmat_t),   intent(in) :: sm
       logical,  intent(in)  :: is_rayleigh
-      integer,  intent(in)  :: nmax_tm
       real(wp), intent(in)  :: a_eff, lam, nr, ki, eps_ba
       real(wp), intent(in)  :: ti(:), ts(:), ph(:)
       real(wp), intent(out) :: z_grid(:,:,:,:,:)
@@ -351,7 +386,7 @@ contains
                   call rayleigh_mueller_matrix_oriented(a_eff, lam, nr, ki, eps_ba, &
                                      ti(it), ts(is), ph(ip), ztmp)
                else
-                  call mueller_matrix_fixed_orientation(nmax_tm, lam, &
+                  call mueller_matrix_fixed_orientation(work, sm, &
                                      ti(it), ts(is), ph(ip), ztmp)
                end if
                z_grid(:,:,it,is,ip) = ztmp
@@ -405,7 +440,8 @@ contains
 
    subroutine add_random_coeffs(s, w, al1, al2, al3, al4, be1, be2, lmax, lmax_acc)
       ! Accumulate one size's GSP coefficients into the six-column store s with
-      ! weight w, as tmd.lp.f averages over its size quadrature (weight =
+      ! weight w, as reference/upstream/tmd.lp.f averages over its size
+      ! quadrature (weight =
       ! bin population times C_sca).  Columns are alpha1..4, beta1, beta2.
       real(wp), intent(inout) :: s(:,:)
       real(wp), intent(in)    :: w

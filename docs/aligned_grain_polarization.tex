@@ -813,9 +813,10 @@ records what was actually done.}
 SEDust was in better shape than expected. The polarized cross-section
 table \code{q\_DH21Ad} was already present with all three orientation
 blocks (\S\ref{sec:optics}), and its correctness has been verified
-against the HD23 release. The \code{tmatrix/} directory now links both
-\code{tmd\_one.f}, the random-orientation average driver, and
-\code{ampl\_oriented.f}, Mishchenko's fixed-orientation amplitude routine,
+against the HD23 release. The \code{tmatrix/} library now provides both the
+random-orientation solve (\code{tmatrix\_eval}, and
+\code{tmatrix\_eval\_scattering\_matrix} when the angular expansion is wanted)
+and Mishchenko's fixed-orientation amplitude routine \code{AMPL},
 so SEDust can also regenerate the orientation-resolved cross sections from the
 dielectric function itself; the default polarized optics still read the release
 table, but they no longer have to. A T-matrix run is therefore useful not only
@@ -1276,7 +1277,7 @@ $Z(\lambda,\theta)$, aligned orientation &
   SEDust & \textbf{done} &
   Now built: the full fixed-orientation Mueller matrix
   $Z(\theta_i;\theta_s,\phi)$ is formed at all scattering angles from
-  \code{ampl\_oriented.f} and size-integrated over the aligned population,
+  \code{AMPL} and size-integrated over the aligned population,
   in five optical bands (\S\ref{sec:alignedscat}). Aligned spheroids scatter
   anisotropically with respect to $\mathbf{B}$, which spherical Mie cannot
   represent. \\
@@ -1298,13 +1299,20 @@ Averaging convention &
 \end{table}
 
 \paragraph{Scattering matrix, random orientation (available).} This item
-is done. The T-matrix driver in the tree, \code{tmatrix/src/tmd\_one.f},
-was originally derived from Mishchenko's \code{tmd.lp.f} by wrapping the
-implicit main program as a subroutine, and in the process the final
-\code{MATR} call was removed and the angular expansion coefficients were
-dropped from the returned quantities. The \code{MATR} routine itself
-remained in the file, and the call has since been restored through the
-entry point \code{TMD\_ONE\_SCATMAT}.
+is done. The T-matrix driver in the tree was originally derived from
+Mishchenko's \code{tmd.lp.f} by wrapping the implicit main program as a
+subroutine, and in the process the final \code{MATR} call was removed and the
+angular expansion coefficients were dropped from the returned quantities. The
+\code{MATR} routine itself remained in the file, and the call was later
+restored. That f77 driver has since been rewritten as the modern-Fortran
+library in \code{tmatrix/src/}: the entry point that returns the expansion is
+\code{tmatrix\_eval\_scattering\_matrix}, which fills a
+\code{tmatrix\_scatmat\_t} (\code{al1}$\ldots$\code{al4}, \code{be1},
+\code{be2}, \code{lmax}, \code{nmax\_tm}), and \code{MATR} itself is
+\code{SCATMAT\_FROM\_MOMENTS} in module \code{scattering\_matrix\_expansion}.
+Mishchenko's unmodified sources are kept under
+\code{tmatrix/reference/upstream/} so that every migrated routine stays
+checkable line by line against them; nothing there is compiled.
 
 \code{tmatrix/driver/run\_scatmat.f90} uses it to accumulate the
 single-size matrices over the HD23 astrodust size distribution with
@@ -1354,8 +1362,9 @@ only in the optical. This item does not become easier at a single
 wavelength and keeps its priority.
 
 \paragraph{Scattering matrix, aligned orientation (built).} The full
-orientation-dependent amplitude matrix is evaluated by \code{AMPL}, in the build
-as \code{ampl\_oriented.f}. Retaining it at all scattering angles and assembling
+orientation-dependent amplitude matrix is evaluated by \code{AMPL}, in
+\code{tmatrix/src/fixed\_orientation\_amplitude.f90}. Retaining it at all
+scattering angles and assembling
 the sixteen Mueller elements --- the step that was missing --- is now done, and
 the result is size-integrated over the aligned population into the phase matrix
 $Z_{\rm al}(\theta_i;\theta_s,\phi)$ and the extinction matrix $K(\theta_i)$. The

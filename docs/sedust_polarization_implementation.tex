@@ -628,8 +628,11 @@ node from first principles; it is the shared core the table generator loops
 over, and it also serves an arbitrary $(a,\lambda)$ or a shape or porosity for
 which no table exists. It must not be called from inside a loop over
 radiative-transfer cells: each call is a full T-matrix solve plus an angular
-integral, and the Mishchenko routines carry their state in \code{COMMON} blocks
-and are not thread-safe.
+integral, and it works through an initialized T-matrix workspace of 80\,MiB.
+Thread safety is no longer the objection --- the library holds every working
+array in a caller-owned \code{tmatrix\_workspace\_t}, with no \code{COMMON}, no
+\code{EQUIVALENCE} and no mutable \code{SAVE} (\S\ref{sec:aligned:gen}) --- the
+cost is.
 
 \subsection{Rayleigh regime, $x<0.1$}
 
@@ -653,8 +656,10 @@ through optional arguments, leaving its averaged outputs untouched.
 The T-matrix $\mathbf{T}$ is a property of the particle alone --- size, shape,
 refractive index --- independent of orientation and of the incidence and
 scattering directions. SEDust solves it once for each wavelength and radius with
-Mishchenko's \code{tmd\_one\_scatmat}. Two orientation-resolved quantities are
-then read off the same $\mathbf{T}$.
+\code{tmatrix\_eval\_scattering\_matrix}, the library entry point that descends
+from Mishchenko's random-orientation solver; the converged $\mathbf{T}$ stays in
+the caller's workspace and the returned \code{tmatrix\_scatmat\_t} identifies it.
+Two orientation-resolved quantities are then read off the same $\mathbf{T}$.
 
 \paragraph{Extinction, from the optical theorem.} Mishchenko's \code{AMPL}
 evaluates the fixed-orientation amplitude matrix
@@ -678,14 +683,34 @@ is a trigonometric polynomial of degree ${\sim}2N_{\max}$ in $\cos\theta$ and in
 $\phi$, so Gauss--Legendre nodes in $\cos\theta$ ($N_{\max}+2$ of them) and a
 uniform azimuth grid ($2N_{\max}+2$ points) integrate it to machine precision.
 
-\paragraph{An engine subtlety.} Mishchenko's random-orientation expansion
-\code{GSP} reuses the \code{/TMAT/} storage as scratch through an
-\code{EQUIVALENCE} and so destroys the T-matrix it reads. The amplitude
-evaluation needs that same T-matrix afterward, so \code{tmd\_one\_scatmat} keeps
-an intact copy in a second common block and restores \code{/TMAT/} after
-\code{GSP}. Without this the oriented cross sections came out as garbage
-(negative $C_{\rm ext}$). This corrects a premise stated in the planning note,
-that the converged T-matrix simply remains available after the solve.
+\paragraph{An engine subtlety, and how it was retired.} In Mishchenko's f77
+sources the random-orientation expansion \code{GSP} reuses the \code{/TMAT/}
+storage as scratch through an \code{EQUIVALENCE} and so destroys the T-matrix it
+reads. The amplitude evaluation needs that same T-matrix afterward, so the f77
+driver kept an intact copy in a second common block and restored \code{/TMAT/}
+after \code{GSP}. Without that restore the oriented cross sections came out as
+garbage (negative $C_{\rm ext}$), which corrected a premise stated in the
+planning note, that the converged T-matrix simply remains available after the
+solve. The library removes the overlay rather than repairing it: the workspace
+carries the T-matrix (\code{full\_tstore}) and the expansion scratch
+(\code{full\_gsp\_*}) as separate components, the expansion routine
+(\code{GSP\_FULL\_DIRECT}) only reads the former, and it therefore survives the
+solve intact with nothing to restore.
+The planning note's premise holds again, now by construction; the episode is
+kept on the record because the failure it caused was silent.
+
+\paragraph{Reusing a workspace is checked, not trusted.} A workspace holds one
+T-matrix at a time, so an amplitude evaluation made against a \code{scatmat}
+older than the T-matrix now in the workspace would silently answer for the wrong
+particle. The workspace carries a generation counter \code{tm\_tag} that advances
+on every evaluation, successful or failed, and
+\code{tmatrix\_eval\_scattering\_matrix} copies it into
+\code{scatmat\%state\_tag}; \code{AMPL} compares the two and refuses with
+\code{IERR = 4} when they differ. The remaining codes are \code{0} success,
+\code{1} an angular argument outside its range, \code{2} no converged T-matrix in
+the workspace, \code{3} a truncation order outside the stored block. Nothing here
+is a convenience: each code replaces a case that used to be undefined behavior or
+a \code{STOP} inside a library.
 
 \subsection{Geometric-optics regime, $x>50$}
 
@@ -806,10 +831,14 @@ a valid product to read directly but cannot be interpolated.
 \paragraph{Processes, not threads.} \code{ja=JA1:JA2} restricts one invocation to
 radii \code{JA1..JA2} of the 169-point size axis so that several \emph{processes}
 share one wavelength, and \code{lammerge} puts the column slices back side by
-side. Threads cannot be used: Mishchenko's solver hands the converged T-matrix to
-\code{AMPL} through \code{COMMON /TMAT/} and keeps its working storage in further
-\code{COMMON} blocks (two of them blank), so the core is not re-entrant. Separate
-processes each get their own copy, and a merged file has been checked byte for
+side. This was once forced by the engine: the f77 solver handed the converged
+T-matrix to \code{AMPL} through \code{COMMON /TMAT/} and kept its working storage
+in further \code{COMMON} blocks, two of them blank, so the core was not
+re-entrant. That constraint is gone --- the library owns no shared state and
+distinct workspaces may be evaluated concurrently
+(\S\ref{sec:aligned:gen}) --- but the driver keeps the process windows, which are
+already measured and cost nothing to run. Separate processes each get their own
+copy, and a merged file has been checked byte for
 byte against a single-process one. Measured: three wavelengths (0.0124, 0.0602 and
 0.0912\um) over 57 processes of three radii each took 9\,m\,22\,s of wall time for
 34\,m\,48\,s of processor time. The speedup is 3.7 rather than 57 because the cost
@@ -955,15 +984,20 @@ fixed-orientation Mueller matrix $Z$ of the DH21 oblate spheroid ($b/a=1.4$) for
 one incidence direction. Two regimes, one output convention.
 
 \paragraph{T-matrix regime, one \code{AMPL} call.} With the T-matrix already
-converged and left in \code{COMMON /TMAT/} by \code{TMD\_ONE\_SCATMAT} --- the
-same restore of \S\ref{sec:firstprinciples} that made the oriented cross sections
+converged and held in the workspace by
+\code{tmatrix\_eval\_scattering\_matrix} --- the storage separation of
+\S\ref{sec:firstprinciples} that made the oriented cross sections
 possible --- a single call to Mishchenko's \code{AMPL} evaluates the $2\times2$
 complex amplitude matrix $\mathbf{S}=[[S_{vv},S_{vh}],[S_{hv},S_{hh}]]$ for the
-chosen incidence and scattering angles. The 16 phase-matrix elements then follow
+chosen incidence and scattering angles; the multipole truncation order and the
+wavelength come from the returned \code{scatmat} and from the workspace, never
+from the caller. The 16 phase-matrix elements then follow
 from the standard bilinears in $\mathbf{S}$, copied \emph{verbatim} from
-Mishchenko's \code{src/ampld.lp.f} (its \code{Z11}$\ldots$\code{Z44}, Eqs.\
+Mishchenko's \code{reference/upstream/ampld.lp.f} (its
+\code{Z11}$\ldots$\code{Z44}, Eqs.\
 (13)--(29) of Appl.\ Opt.\ \textbf{39}, 1026, 2000) so the phase matrix can be
-checked line by line against the source. Copying rather than rederiving is
+checked line by line against the source --- which is why that unmodified file is
+kept in the tree even though nothing compiles it. Copying rather than rederiving is
 deliberate: the bilinears carry sign and conjugation conventions that are easy to
 transcribe wrongly, and the whole point of anchor~C below is that this transcription
 is exact.
@@ -1034,9 +1068,10 @@ production file is written from, so a passing anchor certifies the shipped path
 and not a parallel one.
 
 \paragraph{One solve, three products.} For each (band, size) in the T-matrix
-regime a single \code{TMD\_ONE\_SCATMAT} solve serves everything: its \code{GSP}
-expansion coefficients feed the random-orientation accumulation (the $F$ block
-below), the \code{/TMAT/} it leaves valid feeds the \code{AMPL} sweep over the
+regime a single \code{tmatrix\_eval\_scattering\_matrix} solve serves everything:
+the expansion coefficients it returns in the \code{scatmat} feed the
+random-orientation accumulation (the $F$ block below), the T-matrix it leaves in
+the workspace feeds the \code{AMPL} sweep over the
 $Z$ nodes, and its forward amplitudes give the extinction-matrix elements. No
 quantity is recomputed.
 
@@ -1051,20 +1086,38 @@ omitted fraction is at most $3.1\times10^{-15}$ (at $0.36\um$) and exactly zero 
 $0.64$ and $0.79\um$. The omission is thus provably negligible rather than
 assumed so.
 
-\paragraph{An OpenMP lesson: \code{-frecursive} for the amplitude routine.} The
+\paragraph{The threading contract: one active caller for each workspace.} The
 only parallel region is the loop over $Z$ nodes inside one size. \code{AMPL} and
-\code{VIGAMPL} only \emph{read} \code{COMMON /TMAT/} and otherwise write local
-automatic arrays, so distinct nodes are independent and each grid slot is written
-once --- which is why a 1-thread and an $N$-thread run are bitwise identical. The
-subtlety is in the build: \code{ampl\_oriented.f} is compiled \code{-frecursive}
-so its large local arrays become thread-private on the stack, while the serial
-T-matrix core (\code{tmd\_one.f}, \code{lpd.f}) keeps its static locals under the
-base flags. Compiling the amplitude routine with static locals would have shared
-those arrays across threads and silently corrupted the matrices; the Makefile
-therefore compiles that one file with the OpenMP-safe flags and the core without
-them. This is the implementation lesson worth carrying forward: thread-safety of a
-COMMON-based Mishchenko routine is decided by the compile flags of each file, not
-by a source edit.
+\code{VIGAMPL} take the workspace \code{intent(in)}: they read the stored T-matrix
+and otherwise write local automatic arrays, so distinct nodes are independent and
+each grid slot is written once --- which is why a 1-thread and an $N$-thread run
+are bitwise identical. What this rests on is no longer a compile flag but the
+shape of the library. There is no \code{COMMON}, no \code{EQUIVALENCE} and no
+mutable \code{SAVE} anywhere in it, and every working array lives in the
+caller-owned \code{tmatrix\_workspace\_t}, so the contract fits in one line:
+\emph{one active caller for each workspace, and distinct workspaces may be used
+concurrently}. Reading is the exemption this loop depends on --- an amplitude
+evaluation only reads, so several threads may evaluate against a single workspace
+at once, and that is exactly what happens here: the T-matrix is solved once,
+serially, and only the scattering directions are swept in parallel. Giving each
+thread a workspace of its own would not be the safer choice but the wrong one, a
+fresh workspace holding no T-matrix and the evaluation returning \code{IERR = 2}.
+
+The whole library is compiled \code{-frecursive}, so large locals stay on the
+caller's stack. One file, \code{tmatrix\_core.f90}, additionally carries
+\code{-fno-inline}, and that flag has nothing to do with threads: inlining moves
+where the compiler contracts multiply-add pairs, which moves the last bits of the
+T-matrix convergence test, and without it 2 of the 6258 rows of the shipped
+astrodust table shift by ${\sim}10^{-6}$. Lifting the largest scratch arrays out
+of the call chain and into the workspace also brought the stack requirement of the
+deepest path down from about 3.1\,MB to about 190\,kB; what now scales with the
+thread count is the workspace itself, 83\,926\,096 bytes (80.04\,MiB) each.
+
+The lesson worth carrying forward is the reverse of the one this paragraph used to
+record. Deciding thread-safety file by file through compile flags holds only as
+long as someone remembers which file is which. Removing the shared state and
+handing the storage to the caller makes the contract a property of the source
+instead, and one sentence long.
 
 \subsection{Products and the $\eta$ contract}\label{sec:aligned:products}
 
@@ -1382,7 +1435,8 @@ These are limits of the published optics, not of the code.
 release table stores $Q_{\rm ext}$, $Q_{\rm abs}$ and $Q_{\rm sca}$ only, no phase
 retardation, so from it $C_{\rm circ}=0$. The first-principles route of
 \S\ref{sec:firstprinciples} already evaluates the fixed-orientation amplitude
-matrix (Mishchenko's \code{AMPL}, in \code{tmatrix/src/ampl\_oriented.f}) and used
+matrix (Mishchenko's \code{AMPL}, in
+\code{tmatrix/src/fixed\_orientation\_amplitude.f90}) and used
 only its imaginary forward part, for extinction. Keeping the real part as well
 costs nothing --- it comes from the same amplitude call --- and gives the
 birefringence, the phase retardation that couples $U$ and $V$. It is stored as an
@@ -1405,7 +1459,7 @@ integrated $Q_{\rm sca}$ with no angular information, so scattering by an aligne
 spheroid could not be modeled from it. It is now modeled from first principles:
 the fixed-orientation Mueller matrix $Z(\theta_i;\theta_s,\phi)$ of the aligned
 astrodust spheroid is built from the same fixed-orientation amplitude
-(\code{ampl\_oriented.f}) used above for extinction, size-integrated over the
+(\code{AMPL}) used above for extinction, size-integrated over the
 astrodust distribution with the alignment weight, and paired with the
 $4\times4$ extinction matrix $K(\theta_i)$ from the forward amplitudes. It is
 written for five optical bands by \code{run\_scatmat\_aligned.x} and served to a
@@ -1417,9 +1471,12 @@ what computing a different band involves.
 bands.} This is a different object from the previous paragraph and should not be
 confused with it. Dropping the alignment, a randomly oriented spheroid with a
 plane of symmetry has six independent scattering-matrix elements rather than
-sixteen, and those \emph{are} computed in the tree: \code{tmatrix/driver/run\_scatmat.f90} restores Mishchenko's \code{MATR} expansion, accumulates
-the single-size matrices over the HD23 size distribution with $C_{\rm sca}\,{\rm
-d}n/n_{\rm H}$ weighting, and writes
+sixteen, and those \emph{are} computed in the tree:
+\code{tmatrix/driver/run\_scatmat.f90} accumulates the single-size expansion
+coefficients over the HD23 size distribution with $C_{\rm sca}\,{\rm
+d}n/n_{\rm H}$ weighting, expands them onto the scattering-angle grid with
+\code{SCATMAT\_FROM\_MOMENTS} (Mishchenko's \code{MATR}, in module
+\code{scattering\_matrix\_expansion}), and writes
 \code{tmatrix/output/scatmat\_astrodust\_P0.20\_Fe0.00\_1.400.dat}: one block per
 wavelength, 181 rows at $\theta = 0, 1, \ldots, 180^\circ$, with columns
 $F_{11}, F_{22}, F_{33}, F_{44}, F_{12}, F_{34}$. It answers what an unaligned

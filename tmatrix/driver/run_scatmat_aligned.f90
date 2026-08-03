@@ -27,7 +27,12 @@ program run_scatmat_aligned
    !   output/scatmat_aligned_astrodust_P0.20_Fe0.00_1.400.test.dat   (test)
 
    use, intrinsic :: iso_fortran_env, only: real64, error_unit
-   use constants,     only: wp
+   use tmatrix_api,   only: wp, tmatrix_options_t, tmatrix_result_t, &
+                            tmatrix_scatmat_t, tmatrix_workspace_t, &
+                            tmatrix_workspace_init, tmatrix_workspace_finalize, &
+                            tmatrix_eval_scattering_matrix
+   use tmatrix_status, only: TMATRIX_SUCCESS
+   use scattering_matrix_expansion, only: scatmat_from_moments
    use read_index,    only: load_index, interp_m
    use size_dist_mod, only: load_size_dist, n_size, a_dist, dn_ad
    use q_table_jori_mod, only: falign_hd23, A_ALIGN, ALPHA_ALIGN, FMAX_ALIGN
@@ -42,10 +47,9 @@ program run_scatmat_aligned
    character(len=*), parameter :: f_stem  = &
       'output/scatmat_aligned_astrodust_P0.20_Fe0.00_1.400'
 
-   ! NPL must match the PARAMETER of the same name in src/tmd.par.f
-   ! (NPL = 2*NPN1 + 1 = 201); repeated here because the fixed-form include
-   ! cannot be consumed by free-form Fortran.  A run-time guard in the
-   ! accumulation catches a mismatch through the GSP truncation order.
+   ! NPL is the expansion length libtmatrix returns, tmatrix_expansion_size
+   ! (= 2*NPN1 + 1 = 201).  A run-time guard in the accumulation catches a
+   ! mismatch through the GSP truncation order.
    integer, parameter :: NPL = 201
    integer, parameter :: NF  = 181            ! scattering-angle rows in F block
 
@@ -86,12 +90,27 @@ program run_scatmat_aligned
    integer  :: lmax_acc, n_small, n_tmat, n_skip, n_fail
    integer  :: iw, u_out, ia, c
 
-   external :: scatmat_from_moments
+   ! One workspace for the whole run.  The T-matrix solve inside the
+   ! accumulation is serial; the OpenMP Z-node loop only reads the converged
+   ! T-matrix that solve left in this workspace, so the threads share it.
+   type(tmatrix_workspace_t) :: work
+   integer  :: tm_status
+   character(len=160) :: tm_message
 
    call parse_cli(wl_req, nwl, f_out, test_mode, use_profile, prof_file)
 
+   call tmatrix_workspace_init(work, tm_status, tm_message)
+   if (tm_status /= TMATRIX_SUCCESS) then
+      write(error_unit,'(a,a)') ' ERROR: libtmatrix: ', trim(tm_message)
+      stop 2
+   end if
+
    call load_index(f_index)
    call load_size_dist(f_sdist)
+   ! n_prof is read only inside the same use_profile branch that fills it; the
+   ! zero keeps that plain to a reader (and to the compiler) when no profile
+   ! file was given.
+   n_prof = 0
    if (use_profile) call read_profile(prof_file, prof_a, prof_f, n_prof)
 
    ! Alignment fraction per size bin: the HD23 power law, or a tabulated
@@ -122,7 +141,7 @@ program run_scatmat_aligned
 
    do iw = 1, nwl
       call interp_m(wl_req(iw), nr, ki)
-      call accumulate_aligned_population(wl_req(iw), nr, ki, EPS_BA, NP_OBL, DDELT, &
+      call accumulate_aligned_population(work, wl_req(iw), nr, ki, EPS_BA, NP_OBL, DDELT, &
               NDGS, X_SMALL, X_LARGE, a_dist, dn_ad, f_al, ti, ts, ph, &
               z_al, cext_al, cpol_al, cbir_al, csca_al_grid, sacc, sref, lmax_acc, &
               csca_tot, csca_ref, cext_tot, cext_ref, skipped_weight, &
@@ -165,6 +184,8 @@ program run_scatmat_aligned
 
    if (test_mode) call test_diagnostics(t_tmat, t_node)
 
+   call tmatrix_workspace_finalize(work)
+
 contains
 
    ! ==================================================================
@@ -178,7 +199,9 @@ contains
       real(wp), parameter :: BANDS(5) = (/ 0.36_wp, 0.44_wp, 0.55_wp, 0.64_wp, 0.79_wp /)
       integer  :: narg, nkeep, k, ios
       character(len=256) :: a1
-      character(len=64), allocatable :: keep(:)
+      ! Same length as a1, so a long argument is carried through intact
+      ! instead of being silently cut.
+      character(len=256), allocatable :: keep(:)
 
       narg = command_argument_count()
       testm = .false.;  useprof = .false.;  proffile = ''
@@ -429,15 +452,15 @@ contains
    ! ==================================================================
    subroutine test_diagnostics(t_tm, t_nd)
       real(wp), intent(in) :: t_tm, t_nd
-      integer  :: ia_ref, nmax_tm, ierr, lmax, nthreads
+      integer  :: ia_ref, nthreads
       real(wp) :: a, lam, nr_, ki_, x, dnbest
-      real(wp) :: qext, qsca, walb, asymm
-      real(wp) :: a1(NPL), a2(NPL), a3(NPL), a4(NPL), b1(NPL), b2(NPL)
       real(wp), allocatable :: zg1(:,:,:,:,:), zgn(:,:,:,:,:)
       real(wp) :: dmax
       integer  :: nti_p, nts_p, nph_p
       real(wp) :: nodes_prod, nodes_test, t_full
-      external :: tmd_one_scatmat
+      type(tmatrix_options_t) :: tm_options
+      type(tmatrix_result_t)  :: tm_result
+      type(tmatrix_scatmat_t) :: tm_scatmat
 
       lam = wl_req(1)
       nthreads = 1
@@ -459,19 +482,26 @@ contains
       if (ia_ref > 0) then
          a = a_dist(ia_ref)
          call interp_m(lam, nr_, ki_)
-         call tmd_one_scatmat(a, lam, nr_, ki_, EPS_BA, NP_OBL, DDELT, NDGS, &
-                              qext, qsca, walb, asymm, a1, a2, a3, a4, b1, b2, &
-                              lmax, ierr, nmax_tm)
+         tm_options%aspect_ratio = EPS_BA
+         tm_options%tolerance    = DDELT
+         tm_options%shape        = NP_OBL
+         tm_options%ndgs         = NDGS
+         call tmatrix_eval_scattering_matrix(work, a, lam, nr_, ki_, tm_options, &
+                                             tm_result, tm_scatmat)
          allocate(zg1(4,4,nti,nts,nph), zgn(4,4,nti,nts,nph))
          !$ call omp_set_num_threads(1)
-         call oriented_mueller_grid(.false., nmax_tm, a, lam, nr_, ki_, EPS_BA, &
+         call oriented_mueller_grid(work, .false., tm_scatmat, a, lam, nr_, ki_, EPS_BA, &
                                     ti, ts, ph, zg1)
          !$ call omp_set_num_threads(nthreads)
-         call oriented_mueller_grid(.false., nmax_tm, a, lam, nr_, ki_, EPS_BA, &
+         call oriented_mueller_grid(work, .false., tm_scatmat, a, lam, nr_, ki_, EPS_BA, &
                                     ti, ts, ph, zgn)
          dmax = maxval(abs(zg1 - zgn))
          write(*,'(a,f6.4,a,f6.3,a,i0)') '   OpenMP identity size a=', a, &
             ' um  x=', 2.0_wp*PI*a/lam, '  threads=', nthreads
+         ! Exact-zero test on purpose: this check asks whether the threaded and
+         ! the serial Z grids agree to the last bit, so any tolerance would
+         ! defeat its purpose.  This is the -Wcompare-reals warning this file
+         ! deliberately keeps.
          if (dmax == 0.0_wp) then
             write(*,'(a,es12.4,a)') '   max |Z(1 thread) - Z(N threads)| = ', dmax, &
                '   (bitwise identical)'

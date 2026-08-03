@@ -5,8 +5,9 @@ program run_scatmat
    ! For each requested wavelength this loops over the HD23 astrodust size
    ! distribution, obtains the six generalized-spherical-function expansion
    ! coefficients of the single-size random-orientation scattering matrix
-   ! from TMD_ONE_SCATMAT, accumulates them with C_sca * dn/nH weighting exactly
-   ! as Mishchenko's tmd.lp.f does over its own size quadrature, normalizes,
+   ! from tmatrix_eval_scattering_matrix, accumulates them with C_sca * dn/nH weighting exactly
+   ! as Mishchenko's tmd.lp.f (reference/upstream/) does over its own size
+   ! quadrature, normalizes,
    ! and expands the result onto a scattering-angle grid.
    !
    ! Randomly oriented particles with a plane of symmetry have only six
@@ -34,7 +35,12 @@ program run_scatmat
    ! run_tmatrix.x; the two executables are independent.
 
    use, intrinsic :: iso_fortran_env, only: real64, error_unit
-   use constants,    only: wp
+   use tmatrix_api,  only: wp, tmatrix_options_t, tmatrix_result_t, &
+                           tmatrix_scatmat_t, tmatrix_workspace_t, &
+                           tmatrix_workspace_init, tmatrix_workspace_finalize, &
+                           tmatrix_eval_scattering_matrix
+   use tmatrix_status, only: TMATRIX_SUCCESS, TMATRIX_ERR_NUMERICAL_NONFINITE
+   use scattering_matrix_expansion, only: scatmat_from_moments, vdm_hovenier_test
    use read_index,   only: load_index, interp_m
    use asymptotic_optics, only: rayleigh_limit, geometric_optics_limit
    use size_dist_mod, only: load_size_dist, n_size, a_dist, dn_ad
@@ -47,10 +53,9 @@ program run_scatmat
    character(len=*), parameter :: f_stem  = &
       'output/scatmat_astrodust_P0.20_Fe0.00_1.400'
 
-   ! NPL must match the PARAMETER of the same name in src/tmd.par.f
-   ! (NPL = 2*NPN1 + 1 = 201).  The fixed-form include file cannot be
-   ! consumed by free-form Fortran, so the value is repeated here; a
-   ! run-time guard below catches a mismatch via LMAX overflow.
+   ! NPL is the expansion length libtmatrix returns, tmatrix_expansion_size
+   ! (= 2*NPN1 + 1 = 201).  A run-time guard below catches a mismatch via LMAX
+   ! overflow.
    integer, parameter :: NPL = 201
 
    integer,  parameter :: NW_GRID = 1129        ! DH21 wavelength grid size
@@ -76,12 +81,29 @@ program run_scatmat
    real(wp) :: nr, ki, x, qext, qsca, walb, asymm, csca, cext
    real(wp) :: csca_tot, cext_tot, wgi, g_ref, g_coeff, alb_tot
    real(wp) :: f11_int
-   integer  :: lmax, lmax_acc, l1m, ierr_t, kontr, lviol, nmax_tm
+   integer  :: lmax, lmax_acc, l1m, ierr_t, kontr, lviol
    integer  :: i, ia, iw, nwl, u_out, n_small, n_large, n_fail
    character(len=256) :: f_out
    character(len=64)  :: arg
 
+   type(tmatrix_workspace_t) :: work
+   type(tmatrix_options_t)   :: tm_options
+   type(tmatrix_result_t)    :: tm_result
+   type(tmatrix_scatmat_t)   :: tm_scatmat
+   integer  :: tm_status
+   character(len=160) :: tm_message
+
    call wavelength_list_from_cli(wl_req, nwl, f_out)
+
+   tm_options%aspect_ratio = EPS_BA
+   tm_options%tolerance    = DDELT
+   tm_options%shape        = NP_OBL
+   tm_options%ndgs         = NDGS
+   call tmatrix_workspace_init(work, tm_status, tm_message)
+   if (tm_status /= TMATRIX_SUCCESS) then
+      write(error_unit,'(a,a)') ' ERROR: libtmatrix: ', trim(tm_message)
+      stop 2
+   end if
 
    call load_index(f_index)
    call load_size_dist(f_sdist)
@@ -119,9 +141,19 @@ program run_scatmat
                                   al1, al2, al3, al4, be1, be2, lmax)
             n_large = n_large + 1
          else
-            call tmd_one_scatmat(a_dist(ia), wl_req(iw), nr, ki, EPS_BA, NP_OBL, &
-                            DDELT, NDGS, qext, qsca, walb, asymm, &
-                            al1, al2, al3, al4, be1, be2, lmax, ierr_t, nmax_tm)
+            call tmatrix_eval_scattering_matrix(work, a_dist(ia), wl_req(iw), nr, ki, &
+                            tm_options, tm_result, tm_scatmat)
+            if (tm_result%status /= TMATRIX_SUCCESS .and. tm_result%legacy_ierr == 0 .and. &
+                tm_result%status /= TMATRIX_ERR_NUMERICAL_NONFINITE) then
+               write(error_unit,'(a,a)') ' ERROR: libtmatrix: ', trim(tm_result%message)
+               stop 2
+            end if
+            qext = tm_result%qext;  qsca = tm_result%qsca
+            walb = tm_result%albedo;  asymm = tm_result%asymmetry
+            ierr_t = tm_result%legacy_ierr
+            lmax = tm_scatmat%lmax
+            al1 = tm_scatmat%al1;  al2 = tm_scatmat%al2;  al3 = tm_scatmat%al3
+            al4 = tm_scatmat%al4;  be1 = tm_scatmat%be1;  be2 = tm_scatmat%be2
             if (ierr_t /= 0) then
                ! Same redirection rule as run_tmatrix.x: take the result
                ! from whichever asymptotic limit x is closer to.
@@ -142,7 +174,8 @@ program run_scatmat
          csca = qsca * PI * a_dist(ia)**2
          cext = qext * PI * a_dist(ia)**2
 
-         ! Accumulation follows tmd.lp.f lines 660-690: the expansion
+         ! Accumulation follows reference/upstream/tmd.lp.f lines 660-690:
+         ! the expansion
          ! coefficients are averaged with weight (bin population) x C_sca,
          ! because each grain contributes to the emergent scattered
          ! radiation in proportion to how much it scatters.  dn_ad is
@@ -152,8 +185,9 @@ program run_scatmat
          l1m = lmax + 1
          if (l1m > NPL) then
             ! Guards the NPL value repeated above against a change to
-            ! src/tmd.par.f: TMD_ONE_SCATMAT can never return LMAX+1
-            ! beyond its own NPL, so this can only fire on a mismatch.
+            ! libtmatrix: tmatrix_eval_scattering_matrix can never return
+            ! LMAX+1 beyond tmatrix_expansion_size, so this can only fire on
+            ! a mismatch.
             write(error_unit,'(a,i0,a,i0)') &
                ' ERROR: LMAX+1 = ', l1m, ' exceeds NPL = ', NPL
             stop 1
@@ -214,6 +248,7 @@ program run_scatmat
    end do
 
    close(u_out)
+   call tmatrix_workspace_finalize(work)
    write(*,'(a,a)') ' wrote ', trim(f_out)
 
 contains

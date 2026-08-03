@@ -1540,7 +1540,9 @@ there. They exist because \textbf{the library reads tables and never runs the
 T-matrix at run time} --- not to keep the code small, but because convergence
 cannot be certified above $x\simeq55$ (below), and a silently wrong value is
 worse than an absent one. A revision of the T-matrix core is planned, so read
-this as the current policy rather than a permanent one.
+this as the current policy rather than a permanent one. The core has since been
+rewritten as a re-entrant modern-Fortran library, but that change was structural
+and its output byte-identical; the convergence ceiling it was about is untouched.
 
 Polarized \emph{transfer} at every wavelength is rarely wanted; the five optical
 bands that ship cover the usual case. What matters is that any other wavelength
@@ -1556,10 +1558,14 @@ which is exactly what \code{qpol\_euv\_path} and \code{qpol\_euv\_wave\_path}
 take. Because \code{build\_Cpol} interpolates in $\log\lambda$, the pair needs
 \textbf{at least two wavelengths}.
 
-\code{ja=JA1:JA2} splits the 169 radii across \emph{processes}, not threads:
-Mishchenko's solver hands the converged T-matrix to \code{AMPL} through
-\code{COMMON /TMAT/} and keeps further working storage in COMMON blocks, two of
-them blank, so the core is not re-entrant. Measured on this machine: 9m22s of
+\code{ja=JA1:JA2} splits the 169 radii across \emph{processes}, not threads. That
+was once an engine constraint: the f77 solver handed the converged T-matrix to
+\code{AMPL} through \code{COMMON /TMAT/} and kept further working storage in
+COMMON blocks, two of them blank, so the core was not re-entrant. None of that
+state is left --- every working array is in a caller-owned
+\code{tmatrix\_workspace\_t}, one active caller for each workspace, and distinct
+workspaces may be evaluated concurrently --- but \code{run\_q\_jori.x} keeps the
+process windows, which are already measured. Measured on this machine: 9m22s of
 wall time for 34m48s of processor time, 57 processes over three wavelengths.
 
 \paragraph{Convergence is certified, not assumed.} In \code{lam},

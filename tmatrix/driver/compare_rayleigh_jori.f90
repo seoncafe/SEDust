@@ -21,7 +21,7 @@ program compare_rayleigh_jori
    ! that property in this regime.
 
    use, intrinsic :: iso_fortran_env, only: real64, error_unit
-   use constants,       only: wp
+   use tmatrix_kinds,   only: wp
    use read_index,      only: load_index, interp_m
    use asymptotic_optics, only: rayleigh_limit
    implicit none

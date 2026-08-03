@@ -350,11 +350,13 @@ cd tmatrix
 This writes a `....TAG.dat` + `....TAG.wave` pair, handed to `build_astrodust`
 through `qpol_euv_path` and `qpol_euv_wave_path`. The reader interpolates in
 log(lambda), so **at least two wavelengths** are needed to fill a band. `ja=`
-splits the 169 radii over separate *processes* (Mishchenko's solver keeps state in
-COMMON and is not re-entrant, so threads cannot be used); measured, three
-wavelengths over 57 processes took 9m22s wall for 34m48s of processor time. The
-`euv` keyword selects a wavelength *axis file* and cannot be combined with
-`lam` / `lamfile` / `lammerge`.
+splits the 169 radii over separate *processes*; measured, three wavelengths over 57
+processes took 9m22s wall for 34m48s of processor time. That split dates from the
+earlier engine, which kept its state in `COMMON` and could not be entered twice at
+once; the T-matrix library no longer works that way (§6), so a thread-parallel
+generator is now possible, and what limits it is the 80.04 MiB a workspace occupies,
+not re-entrancy. The `euv` keyword selects a wavelength *axis file* and cannot be
+combined with `lam` / `lamfile` / `lammerge`.
 
 ---
 
@@ -383,8 +385,18 @@ wavelengths over 57 processes took 9m22s wall for 34m48s of processor time. The
   inside a transport loop — Mishchenko's own `IERR` can report success on a node
   that is 50% wrong — and a silently wrong optic is worse than a missing one.
   Tables are generated offline, where a failing node can be rejected and the
-  rejection counted in the file header. This is the current policy, not a
-  permanent decision: the T-matrix core is expected to be revised.
+  rejection counted in the file header.
+- **The T-matrix engine itself is thread-safe; that is not why the tables
+  exist.** As of 2026 August 3 the engine is a modern-Fortran library with no
+  `COMMON`, no `EQUIVALENCE` and no mutable `SAVE`: all state lives in a
+  caller-owned workspace. The contract is **one active caller for each workspace,
+  and different workspaces may be used at the same time**; the fixed-orientation
+  amplitude call `ampl` takes its workspace `intent(in)` and only reads the stored
+  T-matrix, so **several threads may read one workspace concurrently**. A
+  workspace is 83,926,096 byte (80.04 MiB), so a solver thread costs that much
+  memory — which, rather than re-entrancy, is what a MoCafe design would have to
+  budget for if it ever solved T-matrices in-line. It still should not: the
+  certification argument above is unaffected by the rebuild.
 
 ---
 

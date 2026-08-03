@@ -159,20 +159,37 @@ PAH uses the DL07 cross sections (Sect.~\ref{sec:pah}). The
 present section is the astrodust track. The PAH track lives in
 Sect.~\ref{sec:pah}.
 
-\subsection{T-matrix wrapper and parallel sweep}
+\subsection{T-matrix engine and parallel sweep}
 
-We use the Mishchenko et al.\ (1996) random-orientation T-matrix code
-(\texttt{tmd.lp.f}) wrapped as a callable subroutine
+We use the Mishchenko et al.\ (1996) random-orientation T-matrix code. It
+entered the tree as \texttt{tmd.lp.f} wrapped as a callable subroutine
 \texttt{TMD\_ONE(AXI, LAM, MRR, MRI, EPS, NP, DDELT, NDGS,
-QEXT, QSCA, WALB, ASYMM, IERR)}. The wrapper is a mechanical
-conversion of the original main program: inline test-case inputs become
-arguments, the size-distribution loop is removed (one $a$ per call),
-file I/O is dropped, and \texttt{STOP} statements are replaced with
+QEXT, QSCA, WALB, ASYMM, IERR)}, a mechanical
+conversion of the original main program: inline test-case inputs became
+arguments, the size-distribution loop was removed (one $a$ per call),
+file I/O was dropped, and \texttt{STOP} statements were replaced with
 \texttt{IERR}~/~\texttt{RETURN}. A critical footgun: the original main
 mutates the input \texttt{DDELT} (\texttt{DDELT~=~0.1*DDELT}); when
 called from F90 with a \texttt{parameter} constant, the write traps as
-SIGBUS on a read-only page. The wrapper copies to a local
+SIGBUS on a read-only page. The wrapper copied to a local
 \texttt{DDELT\_LOC} before mutating.
+
+That f77 driver has since been rewritten as a modern-Fortran library under
+\texttt{tmatrix/src/}, and the entry point is now
+\texttt{tmatrix\_eval(work, a\_um, lambda\_um, nr, ki, options,
+result)}. The only fixed-form file left is \texttt{lpd.f}, the linear-algebra
+routines the solver calls. The library holds no \texttt{COMMON}, no
+\texttt{EQUIVALENCE} and no mutable \texttt{SAVE}: every working array lives in
+a caller-owned \texttt{tmatrix\_workspace\_t}, one active caller for each
+workspace, and distinct workspaces may be evaluated concurrently. The
+convergence tolerance is a component of an \texttt{intent(in)}
+\texttt{tmatrix\_options\_t}, so the \texttt{DDELT} hazard above cannot recur.
+Mishchenko's unmodified sources (\texttt{tmd.lp.f}, \texttt{tmd.par.f},
+\texttt{ampld.lp.f}, \texttt{ampld.par.f}) are kept under
+\texttt{tmatrix/reference/upstream/} so that each migrated routine stays
+checkable line by line against its original; nothing there is compiled. The
+transition is numerically inert: the $Q$ tables it produces are byte-identical
+across it.
 
 Convergence-failure fallbacks are implemented for $x = 2\pi a/\lambda
 < 0.1$ (small-$x$ spheroidal Rayleigh polarizability ported from

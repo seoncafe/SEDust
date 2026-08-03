@@ -30,7 +30,9 @@ program compare_tmatrix_abs
    ! stride (printed in the report), never silently capped.
 
    use, intrinsic :: iso_fortran_env, only: real64, error_unit
-   use constants,        only: wp
+   use tmatrix_api,      only: wp, tmatrix_workspace_t, tmatrix_workspace_init, &
+                               tmatrix_workspace_finalize
+   use tmatrix_status,   only: TMATRIX_SUCCESS
    use read_index,       only: load_index, interp_m
    use asymptotic_optics, only: rayleigh_limit
    use tmatrix_oriented, only: tmatrix_oriented_cross
@@ -68,6 +70,18 @@ program compare_tmatrix_abs
    integer  :: jw, ja, jo, ierr, n_win, n_solved, n_fail, n_pol, n_ran, n_viol
    real(wp) :: t0, t1
 
+   ! One workspace for this program: the T-matrix solves below are serial and
+   ! each AMPL evaluation reads the T-matrix the preceding solve left in it.
+   type(tmatrix_workspace_t) :: work
+   integer :: tm_status
+   character(len=160) :: tm_message
+
+   call tmatrix_workspace_init(work, tm_status, tm_message)
+   if (tm_status /= TMATRIX_SUCCESS) then
+      write(error_unit,'(a,a)') ' ERROR: libtmatrix: ', trim(tm_message)
+      stop 2
+   end if
+
    call cpu_time(t0)
 
    call read_one_col(f_aeff, NA, a_eff)
@@ -98,7 +112,7 @@ program compare_tmatrix_abs
          n_win = n_win + 1
 
          m = cmplx(nr_cache(jw), ki_cache(jw), kind=wp)
-         call tmatrix_oriented_cross(a_eff(ja), lambda(jw), m, EPS_BA, NP_OBL, &
+         call tmatrix_oriented_cross(work, a_eff(ja), lambda(jw), m, EPS_BA, NP_OBL, &
                                      DDELT, NDGS, qext, qsca, qabs, ierr)
          if (ierr /= 0) then
             n_fail = n_fail + 1
@@ -175,6 +189,8 @@ program compare_tmatrix_abs
    write(*,'(a,f8.1,a)') ' wall (cpu) time : ', t1 - t0, ' s'
    write(*,'(a)') '======================================================================'
 
+   call tmatrix_workspace_finalize(work)
+
 contains
 
    subroutine anchor_rayleigh_overlap()
@@ -201,7 +217,7 @@ contains
             if (xx < 0.08_wp .or. xx > 0.10_wp) cycle
             mm = cmplx(nr_cache(jwl), ki_cache(jwl), kind=wp)
 
-            call tmatrix_oriented_cross(a_eff(jr), lambda(jwl), mm, EPS_BA, &
+            call tmatrix_oriented_cross(work, a_eff(jr), lambda(jwl), mm, EPS_BA, &
                                         NP_OBL, DDELT, NDGS, qe_t, qs_t, qa_t, kerr)
             if (kerr /= 0) cycle
 
@@ -255,10 +271,10 @@ contains
       do k = 1, 3
          call nearest_node(x_targets(k), jwl, jr, xx)
          mm = cmplx(nr_cache(jwl), ki_cache(jwl), kind=wp)
-         call tmatrix_oriented_cross(a_eff(jr), lambda(jwl), mm, EPS_BA, NP_OBL, &
+         call tmatrix_oriented_cross(work, a_eff(jr), lambda(jwl), mm, EPS_BA, NP_OBL, &
                                      DDELT, NDGS, qe1, qs1, qa1, kerr, qmult=1)
          if (kerr /= 0) cycle
-         call tmatrix_oriented_cross(a_eff(jr), lambda(jwl), mm, EPS_BA, NP_OBL, &
+         call tmatrix_oriented_cross(work, a_eff(jr), lambda(jwl), mm, EPS_BA, NP_OBL, &
                                      DDELT, NDGS, qe2, qs2, qa2, kerr, qmult=2)
          if (kerr /= 0) cycle
          rdmax = 0.0_wp

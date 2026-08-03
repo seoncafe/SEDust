@@ -64,11 +64,13 @@ program run_q_jori
    !
    ! ja=JA1:JA2 restricts one invocation to the radii JA1..JA2 of the 169-point
    ! DH21_aeff axis, so several PROCESSES can share one wavelength; `lammerge`
-   ! then assembles their files.  Threads cannot: Mishchenko's solver hands the
-   ! converged T-matrix to AMPL through COMMON /TMAT/ and keeps its working
-   ! storage in further COMMON blocks (~39 MB), two of them blank, so the core
-   ! is not re-entrant.  Separate processes each get their own copy.  A worked
-   ! example on 72 cores, 3 radii per process:
+   ! then assembles their files.  This program keeps ONE libtmatrix workspace
+   ! and sweeps it serially: a workspace is ~80 MiB and admits one active
+   ! evaluation, and each solve here is immediately followed by the AMPL
+   ! evaluations that read the T-matrix it left there.  Threading the sweep
+   ! would mean one workspace for each thread; separate processes get the same
+   ! effect with no change to this file.  A worked example on 72 cores, 3 radii
+   ! per process:
    !
    !   for k in $(seq 0 56); do
    !     lo=$((k*3+1)); hi=$((lo+2)); [ $hi -gt 169 ] && hi=169
@@ -132,7 +134,9 @@ program run_q_jori
 
    use, intrinsic :: iso_fortran_env, only: real64, int64, error_unit
    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-   use constants, only: wp
+   use tmatrix_api, only: wp, tmatrix_workspace_t, tmatrix_workspace_init, &
+                          tmatrix_workspace_finalize
+   use tmatrix_status, only: TMATRIX_SUCCESS
    use read_index, only: load_index, interp_m
    use tmatrix_oriented, only: oriented_cross_sections, tmatrix_oriented_cross
    use asymptotic_optics, only: geometric_optics_limit
@@ -217,6 +221,12 @@ program run_q_jori
    character(len=256) :: lam_stem      ! output stem of a named-wavelength run
    character(len=64)  :: arg, arg2, arg3
    integer  :: ios, jw
+
+   ! One workspace for the whole run: every T-matrix solve here is serial, and
+   ! the AMPL evaluations that follow a solve read the T-matrix it left behind.
+   type(tmatrix_workspace_t) :: work
+   integer  :: tm_status
+   character(len=160) :: tm_message
 
    ! ---- CLI ---------------------------------------------------------------
    ! An optional leading `euv` switches the wavelength axis; the mode word and
@@ -318,6 +328,12 @@ program run_q_jori
       stop 0
    end if
 
+   call tmatrix_workspace_init(work, tm_status, tm_message)
+   if (tm_status /= TMATRIX_SUCCESS) then
+      write(*,'(a,a)') ' ERROR: libtmatrix: ', trim(tm_message)
+      stop 2
+   end if
+
    call read_one_col(f_aeff, NA, a_eff)
    if (mode /= MODE_LAM) then
       allocate(lambda(nw))
@@ -356,6 +372,8 @@ program run_q_jori
    case default
       call sweep_and_write(1, nw, trim(f_out_full_use))
    end select
+
+   call tmatrix_workspace_finalize(work)
 
 contains
 
@@ -400,7 +418,7 @@ contains
                n_try = n_try + 1
                if (.not. kept) n_rej = n_rej + 1
             else
-               call oriented_cross_sections(a_eff(ja), lambda(jjw), m_cache(jjw), &
+               call oriented_cross_sections(work, a_eff(ja), lambda(jjw), m_cache(jjw), &
                         EPS_BA, NP_OBL, DDELT, NDGS, qext_ori, qabs_ori, qsca_ori, flag, &
                         qre_ori=qre_ori)
             end if
@@ -477,10 +495,10 @@ contains
       integer  :: ierr1, ierr2, j
 
       kept = .false.
-      call tmatrix_oriented_cross(a_um, lam_um, m_ref, EPS_BA, NP_OBL, DDELT, NDGS, &
+      call tmatrix_oriented_cross(work, a_um, lam_um, m_ref, EPS_BA, NP_OBL, DDELT, NDGS, &
                                   qe1, qs1, qa1, ierr1, qre_ori=qr1)
       if (ierr1 == 0) then
-         call tmatrix_oriented_cross(a_um, lam_um, m_ref, EPS_BA, NP_OBL, &
+         call tmatrix_oriented_cross(work, a_um, lam_um, m_ref, EPS_BA, NP_OBL, &
                                      DDELT_CHK, NDGS_CHK, qe2, qs2, qa2, ierr2, &
                                      qre_ori=qr2)
          if (ierr2 == 0) then
@@ -641,7 +659,7 @@ contains
                         qext_ori, qabs_ori, qsca_ori, qre_ori, kept)
                flag = 0;  if (.not. kept) flag = 20
             else
-               call oriented_cross_sections(a_eff(ja), lambda(jjw), m_cache(jjw), &
+               call oriented_cross_sections(work, a_eff(ja), lambda(jjw), m_cache(jjw), &
                         EPS_BA, NP_OBL, DDELT, NDGS, qext_ori, qabs_ori, qsca_ori, flag)
             end if
             call system_clock(c1)

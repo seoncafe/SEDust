@@ -2,10 +2,10 @@ module tmatrix_oriented
    ! Orientation-resolved extinction cross section of an axially symmetric
    ! spheroid in the T-matrix regime (0.1 < x < 50, x = 2 pi a_eff / lambda).
    !
-   ! The random-orientation solver TMD_ONE_SCATMAT (src/tmd_one.f) leaves the
-   ! converged T-matrix in COMMON /TMAT/ and returns its multipole truncation
-   ! order NMAX_TM.  Mishchenko's fixed-orientation amplitude routine AMPL
-   ! (src/ampl_oriented.f) reads that same common block and returns the 2x2
+   ! The random-orientation solver tmatrix_eval_scattering_matrix (libtmatrix)
+   ! leaves the converged T-matrix in the caller's workspace and returns the
+   ! scatmat that identifies it.  Mishchenko's fixed-orientation amplitude
+   ! routine AMPL reads that same workspace and returns the 2x2
    ! amplitude matrix (VV, VH, HV, HH) for a chosen incidence/scattering
    ! geometry and particle orientation.  Evaluated in the forward direction
    ! (scattering direction = incidence direction), the co-polar diagonal
@@ -58,8 +58,11 @@ module tmatrix_oriented
    ! NMAX+2 and a uniform grid in PL1 over [0,2pi) with N_phi = 2*NMAX+2
    ! integrate it essentially exactly.
 
-   use, intrinsic :: iso_fortran_env, only: real64
-   use constants, only: wp
+   use, intrinsic :: iso_fortran_env, only: real64, error_unit
+   use tmatrix_api, only: wp, tmatrix_options_t, tmatrix_result_t, &
+                          tmatrix_scatmat_t, tmatrix_workspace_t, &
+                          tmatrix_eval_scattering_matrix, ampl, gauss
+   use tmatrix_status, only: TMATRIX_SUCCESS, TMATRIX_ERR_NUMERICAL_NONFINITE
    use asymptotic_optics, only: rayleigh_limit, geometric_optics_limit
    implicit none
    private
@@ -74,7 +77,7 @@ module tmatrix_oriented
 
 contains
 
-   subroutine oriented_cross_sections(a_eff, lam, m, eps_ba, np, ddelt, ndgs, &
+   subroutine oriented_cross_sections(work, a_eff, lam, m, eps_ba, np, ddelt, ndgs, &
                                       qext_ori, qabs_ori, qsca_ori, flag, qre_ori)
       ! First-principles direct computation of the orientation-resolved optics
       ! Q_ext, Q_abs, Q_sca (jori = 1, 2, 3) of one astrodust spheroid at one
@@ -102,12 +105,15 @@ contains
       ! precomputed table.
       !
       ! It MUST NOT be called inside a radiative-transfer loop over grid cells:
-      ! each call is a full T-matrix solve plus an angular integral, and the
-      ! Mishchenko engine keeps its state in COMMON blocks that are not
-      ! thread-safe.  The production hot path reads the precomputed table
-      ! through sed/src/q_table_jori.f90 and interpolates.
+      ! each call is a full T-matrix solve plus an angular integral.  The
+      ! production hot path reads the precomputed table through
+      ! sed/src/q_table_jori.f90 and interpolates.
       !
       ! INPUT
+      !   work        libtmatrix workspace, already initialized.  It holds the
+      !               converged T-matrix on return and admits one active
+      !               evaluation at a time, so concurrent callers need one
+      !               workspace each.
       !   a_eff, lam  equivalent-volume-sphere radius and wavelength [microns]
       !   m           complex refractive index (Im >= 0 for absorption)
       !   eps_ba      aspect ratio b/a (Mishchenko convention; > 1 oblate)
@@ -127,6 +133,7 @@ contains
       !               gives Q_ext.  0.5*(qre(3)-qre(2)) is the birefringence
       !               (U<->V phase retardation), the real-part analog of the
       !               polarized extinction 0.5*(qext(3)-qext(2)).
+      type(tmatrix_workspace_t), intent(inout) :: work
       real(wp),    intent(in)  :: a_eff, lam, eps_ba, ddelt
       complex(wp), intent(in)  :: m
       integer,     intent(in)  :: np, ndgs
@@ -154,7 +161,7 @@ contains
                              qre_ori=qre_ori)
          flag = 20
       else
-         call tmatrix_oriented_cross(a_eff, lam, m, eps_ba, np, ddelt, ndgs, &
+         call tmatrix_oriented_cross(work, a_eff, lam, m, eps_ba, np, ddelt, ndgs, &
                                      qext_ori, qsca_ori, qabs_ori, ierr, qre_ori=qre_ori)
          if (ierr /= 0) then
             if (x < 1.0_wp) then
@@ -174,9 +181,10 @@ contains
       end if
    end subroutine oriented_cross_sections
 
-   subroutine tmatrix_oriented_ext(a_eff, lam, m, eps_ba, np, ddelt, ndgs, &
+   subroutine tmatrix_oriented_ext(work, a_eff, lam, m, eps_ba, np, ddelt, ndgs, &
                                    qext_ori, ierr)
       ! INPUT
+      !   work    libtmatrix workspace, already initialized
       !   a_eff   equivalent-volume-sphere radius [microns]
       !   lam     wavelength [microns]
       !   m       complex refractive index (Im >= 0 for absorption)
@@ -187,32 +195,39 @@ contains
       ! OUTPUT
       !   qext_ori(3)  orientation-resolved Q_ext = C_ext/(pi a_eff^2),
       !                indexed by jori = 1,2,3
-      !   ierr         status from TMD_ONE_SCATMAT (0 = converged); on a
-      !                nonzero return qext_ori is left at 0
+      !   ierr         Mishchenko status from the T-matrix solve (0 =
+      !                converged); on a nonzero return qext_ori is left at 0
+      type(tmatrix_workspace_t), intent(inout) :: work
       real(wp),    intent(in)  :: a_eff, lam, eps_ba, ddelt
       complex(wp), intent(in)  :: m
       integer,     intent(in)  :: np, ndgs
       real(wp),    intent(out) :: qext_ori(3)
       integer,     intent(out) :: ierr
 
-      integer, parameter :: NPL = 201            ! matches tmd.par.f (NPN2+1)
       real(wp), parameter :: PI = acos(-1.0_wp)
       real(wp) :: mrr, mri
-      real(wp) :: qext, qsca, walb, asymm
-      real(wp) :: al1(NPL), al2(NPL), al3(NPL), al4(NPL), be1(NPL), be2(NPL)
-      integer  :: lmax, nmax_tm
+      integer  :: ierr_a
       complex(wp) :: vv, vh, hv, hh
       real(wp) :: cext_fac, cext, area
-
-      external :: tmd_one_scatmat, ampl
+      type(tmatrix_options_t) :: opts
+      type(tmatrix_result_t)  :: res
+      type(tmatrix_scatmat_t) :: sm
 
       qext_ori = 0.0_wp
       mrr = real(m, kind=wp)
       mri = abs(aimag(m))
 
-      call tmd_one_scatmat(a_eff, lam, mrr, mri, eps_ba, np, ddelt, ndgs, &
-                           qext, qsca, walb, asymm, &
-                           al1, al2, al3, al4, be1, be2, lmax, ierr, nmax_tm)
+      opts%aspect_ratio = eps_ba
+      opts%tolerance    = ddelt
+      opts%shape        = np
+      opts%ndgs         = ndgs
+      call tmatrix_eval_scattering_matrix(work, a_eff, lam, mrr, mri, opts, res, sm)
+      if (res%status /= TMATRIX_SUCCESS .and. res%legacy_ierr == 0 .and. &
+          res%status /= TMATRIX_ERR_NUMERICAL_NONFINITE) then
+         write(error_unit,'(a,a)') ' ERROR: libtmatrix: ', trim(res%message)
+         stop 2
+      end if
+      ierr = res%legacy_ierr
       if (ierr /= 0) return
 
       ! Optical-theorem prefactor 4 pi / k = 2 * lambda.
@@ -220,15 +235,23 @@ contains
       area     = PI * a_eff * a_eff
 
       ! jori=1: k || a  (BETA = 0).  E transverse to the axis; VV = HH.
-      call ampl(nmax_tm, lam, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
-                0.0_wp, 0.0_wp, vv, vh, hv, hh)
+      call ampl(work, sm, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
+                0.0_wp, 0.0_wp, vv, vh, hv, hh, ierr_a)
+      if (ierr_a /= 0) then
+         write(error_unit,'(a,i0)') ' ERROR: libtmatrix ampl returned ierr = ', ierr_a
+         stop 2
+      end if
       cext = cext_fac * aimag(vv)
       qext_ori(1) = cext / area
 
       ! jori=2: k perp a, E || a  (BETA = 90, ALPHA = 0).  V polarization
       ! (theta-hat = x) has E along the axis; C_ext from VV.
-      call ampl(nmax_tm, lam, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
-                0.0_wp, 90.0_wp, vv, vh, hv, hh)
+      call ampl(work, sm, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
+                0.0_wp, 90.0_wp, vv, vh, hv, hh, ierr_a)
+      if (ierr_a /= 0) then
+         write(error_unit,'(a,i0)') ' ERROR: libtmatrix ampl returned ierr = ', ierr_a
+         stop 2
+      end if
       cext = cext_fac * aimag(vv)
       qext_ori(2) = cext / area
 
@@ -239,7 +262,7 @@ contains
    end subroutine tmatrix_oriented_ext
 
 
-   subroutine tmatrix_oriented_cross(a_eff, lam, m, eps_ba, np, ddelt, ndgs, &
+   subroutine tmatrix_oriented_cross(work, a_eff, lam, m, eps_ba, np, ddelt, ndgs, &
                                      qext_ori, qsca_ori, qabs_ori, ierr, qre_ori, qmult)
       ! Orientation-resolved extinction, scattering, and absorption cross
       ! sections in the T-matrix regime.  One T-matrix solve is shared: the
@@ -249,6 +272,8 @@ contains
       ! difference C_abs = C_ext - C_sca.
       !
       ! INPUT
+      !   work        libtmatrix workspace, already initialized; holds the
+      !               converged T-matrix on return
       !   a_eff, lam  equivalent-volume-sphere radius and wavelength [microns]
       !   m           complex refractive index (Im >= 0 for absorption)
       !   eps_ba      aspect ratio b/a (Mishchenko convention; > 1 oblate)
@@ -260,13 +285,14 @@ contains
       !               scattering integral is resolved (qmult = 2 doubles both)
       ! OUTPUT
       !   qext_ori(3), qsca_ori(3), qabs_ori(3)  Q = C/(pi a_eff^2), jori index
-      !   ierr        status from TMD_ONE_SCATMAT (0 = converged); on nonzero
-      !               return all arrays are left at 0
+      !   ierr        Mishchenko status from the T-matrix solve (0 = converged);
+      !               on nonzero return all arrays are left at 0
       !   qre_ori(3)  optional birefringence twin of qext_ori: the REAL part of
       !               the SAME forward amplitude used for extinction, with the
       !               same optical-theorem prefactor cext_fac = 4 pi / k.  No
       !               extra AMPL call -- it reads real() of the vv/hh already
       !               evaluated for qext_ori.
+      type(tmatrix_workspace_t), intent(inout) :: work
       real(wp),    intent(in)  :: a_eff, lam, eps_ba, ddelt
       complex(wp), intent(in)  :: m
       integer,     intent(in)  :: np, ndgs
@@ -275,17 +301,15 @@ contains
       real(wp),    intent(out), optional :: qre_ori(3)
       integer,     intent(in), optional :: qmult
 
-      integer, parameter :: NPL = 201            ! matches tmd.par.f (NPN2+1)
       real(wp), parameter :: PI = acos(-1.0_wp)
       real(wp) :: mrr, mri
-      real(wp) :: qext, qsca, walb, asymm
-      real(wp) :: al1(NPL), al2(NPL), al3(NPL), al4(NPL), be1(NPL), be2(NPL)
-      integer  :: lmax, nmax_tm, mult
+      integer  :: mult, ierr_a
       complex(wp) :: vv, vh, hv, hh
       real(wp) :: cext_fac, area
       real(wp) :: csca_v0, csca_h0, csca_v90, csca_h90
-
-      external :: tmd_one_scatmat, ampl
+      type(tmatrix_options_t) :: opts
+      type(tmatrix_result_t)  :: res
+      type(tmatrix_scatmat_t) :: sm
 
       qext_ori = 0.0_wp;  qsca_ori = 0.0_wp;  qabs_ori = 0.0_wp
       if (present(qre_ori)) qre_ori = 0.0_wp
@@ -295,9 +319,17 @@ contains
       mrr = real(m, kind=wp)
       mri = abs(aimag(m))
 
-      call tmd_one_scatmat(a_eff, lam, mrr, mri, eps_ba, np, ddelt, ndgs, &
-                           qext, qsca, walb, asymm, &
-                           al1, al2, al3, al4, be1, be2, lmax, ierr, nmax_tm)
+      opts%aspect_ratio = eps_ba
+      opts%tolerance    = ddelt
+      opts%shape        = np
+      opts%ndgs         = ndgs
+      call tmatrix_eval_scattering_matrix(work, a_eff, lam, mrr, mri, opts, res, sm)
+      if (res%status /= TMATRIX_SUCCESS .and. res%legacy_ierr == 0 .and. &
+          res%status /= TMATRIX_ERR_NUMERICAL_NONFINITE) then
+         write(error_unit,'(a,a)') ' ERROR: libtmatrix: ', trim(res%message)
+         stop 2
+      end if
+      ierr = res%legacy_ierr
       if (ierr /= 0) return
 
       cext_fac = 2.0_wp * lam                    ! optical-theorem 4 pi / k
@@ -306,12 +338,20 @@ contains
       ! Extinction: forward-amplitude optical theorem, per jori.  The real part
       ! of the same forward amplitude gives the birefringence twin qre_ori,
       ! read off here with no extra AMPL call.
-      call ampl(nmax_tm, lam, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
-                0.0_wp, 0.0_wp, vv, vh, hv, hh)
+      call ampl(work, sm, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
+                0.0_wp, 0.0_wp, vv, vh, hv, hh, ierr_a)
+      if (ierr_a /= 0) then
+         write(error_unit,'(a,i0)') ' ERROR: libtmatrix ampl returned ierr = ', ierr_a
+         stop 2
+      end if
       qext_ori(1) = cext_fac * aimag(vv) / area
       if (present(qre_ori)) qre_ori(1) = cext_fac * real(vv, kind=wp) / area
-      call ampl(nmax_tm, lam, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
-                0.0_wp, 90.0_wp, vv, vh, hv, hh)
+      call ampl(work, sm, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
+                0.0_wp, 90.0_wp, vv, vh, hv, hh, ierr_a)
+      if (ierr_a /= 0) then
+         write(error_unit,'(a,i0)') ' ERROR: libtmatrix ampl returned ierr = ', ierr_a
+         stop 2
+      end if
       qext_ori(2) = cext_fac * aimag(vv) / area
       qext_ori(3) = cext_fac * aimag(hh) / area
       if (present(qre_ori)) then
@@ -321,8 +361,8 @@ contains
 
       ! Scattering: integrate the fixed-orientation phase matrix.  BETA = 0
       ! gives jori=1 (V incidence); BETA = 90 gives jori=2 (V) and jori=3 (H).
-      call scatter_sphere_integral(nmax_tm, lam, 0.0_wp,  mult, csca_v0,  csca_h0)
-      call scatter_sphere_integral(nmax_tm, lam, 90.0_wp, mult, csca_v90, csca_h90)
+      call scatter_sphere_integral(work, sm, 0.0_wp,  mult, csca_v0,  csca_h0)
+      call scatter_sphere_integral(work, sm, 90.0_wp, mult, csca_v90, csca_h90)
       qsca_ori(1) = csca_v0  / area
       qsca_ori(2) = csca_v90 / area
       qsca_ori(3) = csca_h90 / area
@@ -331,7 +371,7 @@ contains
    end subroutine tmatrix_oriented_cross
 
 
-   subroutine scatter_sphere_integral(nmax_tm, lam, beta, mult, csca_v, csca_h)
+   subroutine scatter_sphere_integral(work, sm, beta, mult, csca_v, csca_h)
       ! Integrate the fixed-orientation differential scattering cross section
       ! over the full scattering sphere, at incidence along +z (TL = 0,
       ! PL = 0) and particle orientation (ALPHA = 0, BETA).  Returns
@@ -344,25 +384,27 @@ contains
       ! factor is absorbed by the change of variable), and a uniform grid in
       ! PL1 over [0,2pi) with N_phi = mult*(2*NMAX+2) points, weight
       ! 2*pi/N_phi.  mult = 1 is the resolved default; mult = 2 is used only
-      ! to confirm convergence.
-      integer,  intent(in)  :: nmax_tm, mult
-      real(wp), intent(in)  :: lam, beta
+      ! to confirm convergence.  `sm` identifies the T-matrix held in `work`;
+      ! NMAX and the wavelength come from it and from the workspace.
+      type(tmatrix_workspace_t), intent(in) :: work
+      type(tmatrix_scatmat_t),   intent(in) :: sm
+      integer,  intent(in)  :: mult
+      real(wp), intent(in)  :: beta
       real(wp), intent(out) :: csca_v, csca_h
 
       real(wp), parameter :: PI = acos(-1.0_wp)
       real(wp), parameter :: RAD2DEG = 180.0_wp / acos(-1.0_wp)
-      integer  :: n_theta, n_phi, it, ip
+      integer  :: n_theta, n_phi, it, ip, ierr_a
       real(wp), allocatable :: xg(:), wg(:)
       real(wp) :: wphi, tl1_deg, pl1_deg, wt
       complex(wp) :: vv, vh, hv, hh
 
-      external :: ampl, gauss
-
-      n_theta = mult * (nmax_tm + 2)
-      n_phi   = mult * (2*nmax_tm + 2)
+      n_theta = mult * (sm%nmax_tm + 2)
+      n_phi   = mult * (2*sm%nmax_tm + 2)
       allocate(xg(n_theta), wg(n_theta))
       ! GAUSS(N, IND1=0, IND2=0, Z, W): Gauss-Legendre nodes on [-1,1] with
-      ! weights summing to 2 (src/tmd_one.f); IND2=0 keeps it silent.
+      ! weights summing to 2.  Taken from tmatrix_api, so these are the same
+      ! nodes the T-matrix core integrates on.
       call gauss(n_theta, 0, 0, xg, wg)
       wphi = 2.0_wp * PI / real(n_phi, kind=wp)
 
@@ -372,8 +414,12 @@ contains
          tl1_deg = acos(xg(it)) * RAD2DEG          ! [0,180]
          do ip = 1, n_phi
             pl1_deg = real(ip-1, kind=wp) * 360.0_wp / real(n_phi, kind=wp)  ! [0,360)
-            call ampl(nmax_tm, lam, 0.0_wp, tl1_deg, 0.0_wp, pl1_deg, &
-                      0.0_wp, beta, vv, vh, hv, hh)
+            call ampl(work, sm, 0.0_wp, tl1_deg, 0.0_wp, pl1_deg, &
+                      0.0_wp, beta, vv, vh, hv, hh, ierr_a)
+            if (ierr_a /= 0) then
+               write(error_unit,'(a,i0)') ' ERROR: libtmatrix ampl returned ierr = ', ierr_a
+               stop 2
+            end if
             wt = wg(it) * wphi
             csca_v = csca_v + wt * (abs(vv)**2 + abs(hv)**2)
             csca_h = csca_h + wt * (abs(hh)**2 + abs(vh)**2)

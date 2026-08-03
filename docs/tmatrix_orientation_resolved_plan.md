@@ -12,6 +12,50 @@ model, and the full-grid table is generated and shipped. The as-built account, w
 validation numbers, is in `sedust_polarization_implementation.pdf` §7. This document is kept
 for the reasoning and the staging it records.
 
+**Engine status (2026 August 3).** The T-matrix engine this plan calls has since been
+rebuilt as a modern-Fortran library. The numbers are unchanged — every product reproduces
+byte for byte — but the file layout, the entry-point names, and the ownership of state are
+no longer what Sections 3 and 9 describe. The library lives in `tmatrix/src/`:
+`tmatrix_kinds.f90`, `tmatrix_status.f90`, `tmatrix_types.f90`, `tmatrix_core.f90`,
+`tmatrix_full_direct_bridge.f90`, `fixed_orientation_amplitude.f90`,
+`scattering_matrix_expansion.f90`, `tmatrix_api.f90`, and `lpd.f` (the only fixed-form
+file, LAPACK/BLAS). Mishchenko's unmodified sources are kept as non-compiled provenance in
+`tmatrix/reference/upstream/`; `tmd_one.f` and `ampl_oriented.f` are gone. The astrodust
+policy stays outside the library, in `driver/read_index.f90`, `driver/asymptotic_optics.f90`
+and the regime selection in `driver/spheroid_optics.f90`. Entry points map as
+
+| this plan | now |
+|---|---|
+| `TMD_ONE` | `tmatrix_eval(work, a_um, lambda_um, nr, ki, options, result)` |
+| `TMD_ONE_SCATMAT` | `tmatrix_eval_scattering_matrix(work, ..., result, scatmat)`, `scatmat` of type `tmatrix_scatmat_t` (`al1..al4, be1, be2, lmax, nmax_tm`) |
+| `AMPL(NMAX, DLAM, ...)` | `ampl(work, scatmat, tl, tl1, pl, pl1, alpha, beta, vv, vh, hv, hh, ierr)` — `nmax` and the wavelength come from `scatmat%nmax_tm` and the workspace, not from the argument list |
+| `MATR` | `scatmat_from_moments` (module `scattering_matrix_expansion`; returns arrays instead of printing) |
+| `HOVENR` | `vdm_hovenier_test` (same module, returns a status) |
+
+No `COMMON`, `EQUIVALENCE` or mutable `SAVE` remains in the library. The converged
+T-matrix lives in `work%full_tstore(NPN6,NPN4,NPN4,8)`, fourth index 1-4 for
+`Re T11,T12,T21,T22` and 5-8 for the imaginary parts, element for element the old
+`COMMON /TMAT/ RT11..IT22`; `GSP` writes its own arrays (`full_gsp_*`) and so no longer
+overwrites it, which retires the save-and-restore described in Section 3.2. Evaluation is
+one active caller for each workspace, and different workspaces may be used at the same
+time; `ampl` takes its workspace `intent(in)` and only reads the stored T-matrix, so
+several threads may read one workspace concurrently. A workspace is 83,926,096 byte
+(80.04 MiB), which is what a thread costs. Misuse is caught rather than silently wrong: the
+workspace carries a generation counter `tm_tag`, incremented on every evaluation whether it
+succeeds or fails, `tmatrix_eval_scattering_matrix` copies it into `scatmat%state_tag`, and
+`ampl` returns `ierr = 4` when the two disagree (`ierr`: 0 success, 1 angle out of range,
+2 no valid T-matrix, 3 `nmax_tm` out of range, 4 generation mismatch).
+
+Three capabilities of Mishchenko's original are absent from the library — polydisperse size
+integration (`DISTRB`/`POWER`), the equal-surface-area radius conversion `RAT /= 1`
+(`SAREA`/`SAREAC`/`SURFCH`), and the droplet shape `NP = -3` (`RSP4`/`DROP`). None of them
+was lost in this conversion; all three were already missing from the earlier f77 wrapper, so
+nothing in this plan used them.
+
+What follows is the plan as it stood in July 2026. It is corrected only where it asserts
+something about the code that is no longer true; the reasoning, the staging, and the
+anticipated file list are left as written.
+
 **Scope note.** The orientation-resolved Q table covered here is one stage toward the
 actual goal: computing the polarized radiative transfer of Seon (2018, ApJ 862, 87) —
 dust scattering plus dichroic extinction by aligned grains — with properly derived
@@ -109,15 +153,17 @@ grows with x.
 
 ### 3.2 T-matrix regime, 0.1 < x < 50
 
-The T-matrix is solved inside every `TMD_ONE_SCATMAT` call (`tmatrix/src/tmd_one.f`).
-Mishchenko's fixed-orientation amplitude routine `AMPL` (`tmatrix/src/ampld.lp.f:535`), with
-its helper `VIGAMPL` (`:822`), reads the converged T-matrix from `COMMON /TMAT/` but is not
-currently in the build. One caution learned while implementing this (Stage B): the
-random-orientation expansion `GSP`, called at the end of `TMD_ONE_SCATMAT`, reuses the
-`/TMAT/` storage as scratch through an EQUIVALENCE and so destroys the T-matrix it reads. The
-block therefore does not hold the converged T-matrix on return unless it is saved before
-`GSP` and restored after; the implementation keeps an intact copy in a second common block
-for exactly this reason. The work is:
+The T-matrix is solved inside every scattering-matrix call. When this was written that call
+was `TMD_ONE_SCATMAT` in `tmatrix/src/tmd_one.f`, and Mishchenko's fixed-orientation
+amplitude routine `AMPL` with its helper `VIGAMPL` sat unbuilt in `tmatrix/src/ampld.lp.f`,
+reading the converged T-matrix out of `COMMON /TMAT/`. One caution learned while
+implementing this (Stage B): the random-orientation expansion `GSP`, called at the end of
+`TMD_ONE_SCATMAT`, reused the `/TMAT/` storage as scratch through an `EQUIVALENCE` and so
+destroyed the T-matrix it read. The block therefore did not hold the converged T-matrix on
+return unless it was saved before `GSP` and restored after, and the implementation kept an
+intact copy in a second common block for exactly this reason. Neither the overlay nor the
+restore exists any more: the library keeps the T-matrix in `work%full_tstore` and gives
+`GSP` its own arrays (see the engine status above). The work is:
 
 1. Add `AMPL` and `VIGAMPL` to the build (`tmatrix/Makefile:46`, `SRC_TM`), or fold them
    into `tmd_one.f`. Keep the Mishchenko routine names unchanged so they stay checkable
@@ -166,7 +212,7 @@ Four layers, ordered so that the ones that do not rely on trusting the HD23 file
 
 1. **Internal consistency, and a measurement of the three-point average error.** Compare
    the new `(Q(1) + Q(2) + Q(3)) / 3` against the existing `q_astrodust` table, whose
-   random average is the exact continuous orientation average from `tmd_one`. The
+   random average is the exact continuous orientation average the engine computes. The
    difference is the error of the three-point average that the HD23 table uses; the comment
    at `sed/src/sed_astrodust.f90:1587` refers to exactly this approximation. In the Rayleigh
    regime the two must agree to rounding.
@@ -250,12 +296,17 @@ for several. The pair is handed to `sed_init` / `build_astrodust` through
 `qpol_euv_path` and `qpol_euv_wave_path`. The reader interpolates in log(lambda),
 so at least two wavelengths are needed to fill a band.
 
-`ja=JA1:JA2` splits the 169 radii over separate **processes**, not threads:
-Mishchenko's solver passes the converged T-matrix to `AMPL` through `COMMON /TMAT/`
-and keeps further working storage in COMMON (two blocks blank), so the core is not
-re-entrant. Measured: three wavelengths (0.0124, 0.0602, 0.0912 um) over 57
-processes took 9m22s wall for 34m48s of processor time — a speedup of 3.7, not 57,
-because the few radii just below the x = 60 ceiling carry nearly all the cost.
+`ja=JA1:JA2` splits the 169 radii over separate **processes**, not threads. The
+reason at the time was the engine: Mishchenko's solver passed the converged T-matrix
+to `AMPL` through `COMMON /TMAT/` and kept further working storage in COMMON (two
+blocks blank), so the core was not re-entrant. That obstacle is gone — the library
+holds all of it in a caller-owned workspace, one active caller for each workspace and
+different workspaces concurrently — but a workspace costs 80.04 MiB, so memory, not
+re-entrancy, now sets how many may run at once; the driver still splits over
+processes. Measured before the library conversion: three wavelengths (0.0124, 0.0602,
+0.0912 um) over 57 processes took 9m22s wall for 34m48s of processor time — a speedup
+of 3.7, not 57, because the few radii just below the x = 60 ceiling carry nearly all
+the cost.
 
 `euv` selects a wavelength *axis file* and therefore cannot be combined with
 `lam` / `lamfile` / `lammerge`, which carry their own axis; the driver rejects the
@@ -324,5 +375,6 @@ limit obtains it from the opaque-grain Fresnel surface integral.
 No T-matrix is solved at run time. The reason is not code size but that convergence
 cannot be certified at x >~ 55 from inside a transport loop (§9.3), and a silently
 wrong optic is worse than a missing one. Tables are generated offline, where a node
-can be rejected and the rejection counted in the file header. This is the current
-policy, not a permanent decision: the T-matrix core is expected to be revised.
+can be rejected and the rejection counted in the file header. The core has since been
+rebuilt as a library (see the engine status above); that changed the code structure,
+not this reason, so the policy stands.

@@ -19,7 +19,9 @@ program compare_tmatrix_jori
    ! silently capped.
 
    use, intrinsic :: iso_fortran_env, only: real64, error_unit
-   use constants,        only: wp
+   use tmatrix_api,      only: wp, tmatrix_workspace_t, tmatrix_workspace_init, &
+                               tmatrix_workspace_finalize
+   use tmatrix_status,   only: TMATRIX_SUCCESS
    use read_index,       only: load_index, interp_m
    use tmatrix_oriented, only: tmatrix_oriented_ext
    implicit none
@@ -51,6 +53,18 @@ program compare_tmatrix_jori
    real(wp) :: x, qpol_ours, qran_ours, qpol_hd, qran_hd, floor_pol
    integer  :: jw, ja, ierr, n_win, n_solved, n_fail, n_pol, n_ran
 
+   ! One workspace for this program: the T-matrix solves below are serial and
+   ! each AMPL evaluation reads the T-matrix the preceding solve left in it.
+   type(tmatrix_workspace_t) :: work
+   integer :: tm_status
+   character(len=160) :: tm_message
+
+   call tmatrix_workspace_init(work, tm_status, tm_message)
+   if (tm_status /= TMATRIX_SUCCESS) then
+      write(error_unit,'(a,a)') ' ERROR: libtmatrix: ', trim(tm_message)
+      stop 2
+   end if
+
    call read_one_col(f_aeff, NA, a_eff)
    call read_one_col(f_wave, NW, lambda)
    call load_index(f_index)
@@ -71,7 +85,7 @@ program compare_tmatrix_jori
          n_win = n_win + 1
 
          m = cmplx(nr_cache(jw), ki_cache(jw), kind=wp)
-         call tmatrix_oriented_ext(a_eff(ja), lambda(jw), m, EPS_BA, NP_OBL, &
+         call tmatrix_oriented_ext(work, a_eff(ja), lambda(jw), m, EPS_BA, NP_OBL, &
                                    DDELT, NDGS, qt, ierr)
          if (ierr /= 0) then
             n_fail = n_fail + 1
@@ -120,6 +134,8 @@ program compare_tmatrix_jori
    write(*,'(a,es12.4)') '   median |ours/HD23 - 1| : ', median(dev_pol, n_pol)
    write(*,'(a,es12.4)') '   max    |ours/HD23 - 1| : ', maxval_n(dev_pol, n_pol)
    write(*,'(a)') '======================================================================'
+
+   call tmatrix_workspace_finalize(work)
 
 contains
 

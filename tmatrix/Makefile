@@ -1,48 +1,66 @@
-# SEDust -- T-matrix optical properties of randomly oriented oblate spheroids.
+# SEDust -- T-matrix optical properties of astrodust spheroids, random and
+# fixed orientation.
 #
-# Two executables share the same T-matrix core:
-#   run_tmatrix.x   cross-section table (Q_ext, Q_abs, Q_sca, albedo, g)
-#   run_scatmat.x   size-integrated scattering (Mueller) matrix
+# `libtmatrix.a` is the reusable T-matrix library: caller-owned workspace, no
+# COMMON, no SEDust dependency, and no size-parameter regime selection.  Its
+# sources in src/ are kept byte-identical to SEDust_v1.00/tmatrix/src/, and the
+# unmodified Mishchenko standalone sources they were migrated from are kept,
+# uncompiled, in reference/upstream/.
 #
-# Common sources:
-#   src/tmd_one.f                 TMD_ONE / TMD_ONE_SCATMAT wrappers plus the
-#                                 Mishchenko inner subroutines
-#   src/lpd.f                     LAPACK routines
-#   ../sed/src/constants.f90      working precision
-#   driver/read_index.f90         dielectric-function reader
-#   driver/asymptotic_optics.f90  Rayleigh and geometric-optics limits
+# driver/ owns everything the library deliberately does not:
+#   spheroid_optics.f90         size-parameter regime selection (Rayleigh
+#                               dipole / T-matrix / geometric optics), the IERR
+#                               redirection, and the flag convention
+#   asymptotic_optics.f90       the two closed-form limits, orientation-resolved
+#   tmatrix_oriented.f90        orientation-resolved Q_ext/Q_sca/Q_abs from the
+#                               forward amplitude and the scattering-sphere
+#                               integral
+#   scattering_matrix_oriented.f90  fixed-orientation Mueller matrix
+#   aligned_population_optics.f90   size-integrated aligned-population products
+#   read_index.f90              dielectric-function reader
+#
+# Executables:
+#   run_tmatrix.x            random-orientation cross-section table
+#   run_scatmat.x            size-integrated random-orientation Mueller matrix
+#   run_q_jori.x             orientation-resolved Q table (polarization channel)
+#   run_scatmat_aligned.x    size-integrated aligned Mueller matrix (OpenMP)
+#   compare_*.x              verification drivers
+#   euv_polarized_optics.x   orientation-resolved optics shortward of 0.0912 um
 #
 # Run:
-#   make                     # build both executables
+#   make                     # run_tmatrix.x run_scatmat.x run_q_jori.x
+#   make all-compare         # every verification driver
 #   ./run_tmatrix.x test     # 49-point sanity sweep (~seconds)
 #   ./run_tmatrix.x          # full 169 x 1129 = 191k sweep (1-10 hours)
 #   ./run_scatmat.x test     # 3-wavelength scattering-matrix smoke test
-#   ./run_scatmat.x 0.55     # scattering matrix at one wavelength
 #   make clean
 #
-# The full sweep writes output/q_astrodust_P0.20_Fe0.00_1.400.dat, which the
-# SED solver reads.  That table ships with SEDust, so regenerating it is
-# optional -- and `make cleanall` deliberately does NOT delete it.
+# The full sweeps write output/q_astrodust_*.dat, which the SED solver reads.
+# Those tables ship with SEDust, so regenerating them is optional -- and
+# `make cleanall` deliberately does NOT delete them.
 
 FC = gfortran
+OMPFLAGS ?= -fopenmp
+BUILD ?= release
 
-# Notes on flags:
-#  -fmax-stack-var-size=65536: arrays > 64 KB go to heap, not stack.  Without
-#    this the Mishchenko COMMON storage (>16 MB) can overflow the stack.
-FFLAGS = -O2 -ffixed-line-length-none -ffree-line-length-none -w \
-         -fmax-stack-var-size=65536
-# debug build: replace with -O0 -g -fcheck=all -fbacktrace -Wall
+WARNFLAGS = -Wall -Wextra -Wimplicit-interface -Wsurprising
+LEGACY_BASE = -ffixed-line-length-none -fmax-stack-var-size=65536
+MODERN_BASE = -ffree-line-length-none
 
-# OpenMP flag set for the aligned scattering-matrix products.  It omits
-# -fmax-stack-var-size so the -frecursive implied by -fopenmp takes effect:
-# the AMPL work arrays must be thread-private automatic locals in the parallel
-# Z-node loop.  The serial T-matrix core (src/tmd_one.f, src/lpd.f) keeps the
-# base FFLAGS (static large locals) and is compiled separately below.
-FFLAGS_OMP = -O2 -ffixed-line-length-none -ffree-line-length-none -w -fopenmp
+ifeq ($(BUILD),debug)
+  LEGACY_FFLAGS = -O0 -g -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow $(LEGACY_BASE)
+  MODERN_FFLAGS = -O0 -g -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow $(MODERN_BASE) $(WARNFLAGS)
+else
+  # The one remaining fixed-form source (LAPACK) carries pervasive historical
+  # diagnostics.  Keep them isolated; library, driver, and programs always
+  # compile with warnings enabled.
+  LEGACY_FFLAGS = -O2 $(LEGACY_BASE) -w
+  MODERN_FFLAGS = -O2 $(MODERN_BASE) $(WARNFLAGS)
+endif
 
 # macOS needs an explicit 64 MB main-thread stack: its 8 MB default is too
-# small for Mishchenko's local arrays and ulimit -s cannot raise it.  GNU ld
-# on Linux neither accepts -stack_size nor needs it.
+# small for the local arrays and ulimit -s cannot raise it.  GNU ld on Linux
+# neither accepts -stack_size nor needs it.
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
   LDFLAGS = -Wl,-stack_size,0x4000000
@@ -50,163 +68,209 @@ else
   LDFLAGS =
 endif
 
-SRC_TM   = src/tmd_one.f src/lpd.f src/ampl_oriented.f
-SRC_COMM = ../sed/src/constants.f90 \
-           driver/read_index.f90 driver/asymptotic_optics.f90
-SRC_Q    = $(SRC_COMM) driver/run_tmatrix.f90
-SRC_QJ   = $(SRC_COMM) driver/tmatrix_oriented.f90 driver/run_q_jori.f90
-SRC_SM   = $(SRC_COMM) ../sed/src/size_dist.f90 driver/run_scatmat.f90
-SRC_CMP  = $(SRC_COMM) driver/compare_rayleigh_jori.f90
-SRC_CMP2 = $(SRC_COMM) driver/tmatrix_oriented.f90 \
-           driver/compare_tmatrix_jori.f90
-SRC_CMP3 = $(SRC_COMM) driver/tmatrix_oriented.f90 \
-           driver/compare_tmatrix_abs.f90
-SRC_CMP4 = $(SRC_COMM) driver/tmatrix_oriented.f90 \
-           driver/compare_go_jori.f90
-SRC_CMP5 = $(SRC_COMM) driver/tmatrix_oriented.f90 \
-           driver/compare_birefringence.f90
+# ---------------------------------------------------------------------------
+# libtmatrix.a -- identical sources and identical flags to SEDust_v1.00.
+# ---------------------------------------------------------------------------
+PRODUCTION_OBJ = tmatrix_kinds.o tmatrix_status.o tmatrix_types.o tmatrix_core.o \
+                 tmatrix_full_direct_bridge.o fixed_orientation_amplitude.o \
+                 fixed_orientation_phase_matrix.o scattering_matrix_expansion.o \
+                 tmatrix_api.o lpd.o
+
+tmatrix_kinds.o: src/tmatrix_kinds.f90
+	$(FC) $(MODERN_FFLAGS) -c -o $@ $<
+tmatrix_status.o: src/tmatrix_status.f90
+	$(FC) $(MODERN_FFLAGS) -c -o $@ $<
+tmatrix_types.o: src/tmatrix_types.f90 tmatrix_kinds.o
+	$(FC) $(MODERN_FFLAGS) -I. -c -o $@ $<
+tmatrix_core.o: src/tmatrix_core.f90 tmatrix_kinds.o tmatrix_types.o
+	# -frecursive keeps every migrated helper reentrant.  -fno-inline is kept
+	# because inlining changes where the compiler contracts multiply-add pairs,
+	# which moves the last bits of the T-matrix convergence test.
+	$(FC) $(MODERN_FFLAGS) -frecursive -fno-inline -I. -c -o $@ $<
+tmatrix_full_direct_bridge.o: src/tmatrix_full_direct_bridge.f90 tmatrix_kinds.o tmatrix_types.o tmatrix_core.o
+	$(FC) $(MODERN_FFLAGS) -frecursive -I. -c -o $@ $<
+fixed_orientation_amplitude.o: src/fixed_orientation_amplitude.f90 tmatrix_kinds.o tmatrix_types.o
+	# AMPL's CAL(NPN4,NPN4) and the four VIGAMPL work vectors are automatic
+	# locals.  -frecursive keeps them on the caller's stack so concurrent
+	# callers sharing one workspace do not share them.
+	$(FC) $(MODERN_FFLAGS) -frecursive -I. -c -o $@ $<
+fixed_orientation_phase_matrix.o: src/fixed_orientation_phase_matrix.f90 tmatrix_kinds.o
+	# Called from the OpenMP node loop of aligned_population_optics, so keep
+	# it reentrant like the amplitude routine that feeds it.
+	$(FC) $(MODERN_FFLAGS) -frecursive -I. -c -o $@ $<
+scattering_matrix_expansion.o: src/scattering_matrix_expansion.f90 tmatrix_kinds.o tmatrix_types.o
+	$(FC) $(MODERN_FFLAGS) -frecursive -I. -c -o $@ $<
+tmatrix_api.o: src/tmatrix_api.f90 tmatrix_kinds.o tmatrix_status.o tmatrix_types.o tmatrix_core.o tmatrix_full_direct_bridge.o fixed_orientation_amplitude.o fixed_orientation_phase_matrix.o
+	$(FC) $(MODERN_FFLAGS) -frecursive -I. -c -o $@ $<
+lpd.o: src/lpd.f
+	$(FC) $(LEGACY_FFLAGS) -frecursive -c -o $@ $<
+
+libtmatrix.a: $(PRODUCTION_OBJ)
+	ar rcs $@ $^
+	@echo 'Built library archive: ./libtmatrix.a'
+
+# ---------------------------------------------------------------------------
+# driver layer.  Everything is compiled -frecursive: the Mueller-matrix and
+# dipole routines are called from the OpenMP node loop of
+# aligned_population_optics, so their locals must live on the calling thread's
+# stack.
+# ---------------------------------------------------------------------------
+DRIVER_FFLAGS = $(MODERN_FFLAGS) -frecursive
+
+read_index.o: driver/read_index.f90
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+asymptotic_optics.o: driver/asymptotic_optics.f90 tmatrix_kinds.o
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+spheroid_optics.o: driver/spheroid_optics.f90 tmatrix_kinds.o tmatrix_status.o tmatrix_api.o asymptotic_optics.o
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+tmatrix_oriented.o: driver/tmatrix_oriented.f90 tmatrix_api.o tmatrix_status.o asymptotic_optics.o
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+scattering_matrix_oriented.o: driver/scattering_matrix_oriented.f90 tmatrix_api.o asymptotic_optics.o
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+aligned_population_optics.o: driver/aligned_population_optics.f90 tmatrix_api.o tmatrix_status.o asymptotic_optics.o scattering_matrix_oriented.o
+	# The Z-node loop of one size is the only parallel region in this tree.
+	$(FC) $(DRIVER_FFLAGS) $(OMPFLAGS) -I. -c -o $@ $<
+
+# Readers shared with the SED solver.  size_dist.f90 and q_table_jori.f90 fix
+# their own working precision and pull in nothing else.
+size_dist.o: ../sed/src/size_dist.f90
+	$(FC) $(DRIVER_FFLAGS) -c -o $@ $<
+q_table_jori.o: ../sed/src/q_table_jori.f90
+	$(FC) $(DRIVER_FFLAGS) -c -o $@ $<
+# ../sed/src/mie.f90 takes its working precision from ../sed/src/constants.f90.
+# That module is compiled for euv_polarized_optics.x alone, which is the only
+# target needing the Mie comparison; nothing else in this directory reads it.
+constants.o: ../sed/src/constants.f90
+	$(FC) $(DRIVER_FFLAGS) -c -o $@ $<
+mie.o: ../sed/src/mie.f90 constants.o
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+
+# ---------------------------------------------------------------------------
+# executables
+# ---------------------------------------------------------------------------
+OBJ_BASE     = read_index.o asymptotic_optics.o
+OBJ_ORIENTED = $(OBJ_BASE) tmatrix_oriented.o
+OBJ_ALIGNED  = $(OBJ_ORIENTED) scattering_matrix_oriented.o size_dist.o \
+               q_table_jori.o aligned_population_optics.o
 
 all: run_tmatrix.x run_scatmat.x run_q_jori.x
 
-# Each executable is compiled in its own directory so that the two builds do
-# not fight over .mod files of the shared modules.
-run_tmatrix.x: $(SRC_TM) $(SRC_Q)
-	@mkdir -p build/q
-	$(FC) $(FFLAGS) -Isrc -Jbuild/q $^ $(LDFLAGS) -o $@
+all-compare: compare_rayleigh_jori.x compare_tmatrix_jori.x compare_tmatrix_abs.x \
+             compare_go_jori.x compare_birefringence.x compare_scatmat_aligned.x
+
+run_tmatrix.o: driver/run_tmatrix.f90 tmatrix_api.o tmatrix_status.o read_index.o spheroid_optics.o
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+run_tmatrix.x: libtmatrix.a $(OBJ_BASE) spheroid_optics.o run_tmatrix.o
+	$(FC) $(OBJ_BASE) spheroid_optics.o run_tmatrix.o -L. -ltmatrix $(LDFLAGS) -o $@
 	@echo
 	@echo 'Built: ./run_tmatrix.x'
 	@echo 'Smoke test:  ./run_tmatrix.x test'
 	@echo 'Full sweep:  ./run_tmatrix.x'
 
-run_scatmat.x: $(SRC_TM) $(SRC_SM)
-	@mkdir -p build/sm
-	$(FC) $(FFLAGS) -Isrc -Jbuild/sm $^ $(LDFLAGS) -o $@
+run_scatmat.o: driver/run_scatmat.f90 tmatrix_api.o tmatrix_status.o scattering_matrix_expansion.o read_index.o asymptotic_optics.o size_dist.o
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+run_scatmat.x: libtmatrix.a $(OBJ_BASE) size_dist.o run_scatmat.o
+	$(FC) $(OBJ_BASE) size_dist.o run_scatmat.o -L. -ltmatrix $(LDFLAGS) -o $@
 	@echo
 	@echo 'Built: ./run_scatmat.x'
 	@echo 'Smoke test:  ./run_scatmat.x test'
 
 # Orientation-resolved Q table for the polarization channel: sweeps the DH21
 # grid through oriented_cross_sections and writes the file q_table_jori.f90
-# reads.  Shares the T-matrix core and the asymptotic limits with the two
-# executables above.
-run_q_jori.x: $(SRC_TM) $(SRC_QJ)
-	@mkdir -p build/qj
-	$(FC) $(FFLAGS) -Isrc -Jbuild/qj $^ $(LDFLAGS) -o $@
+# reads.
+run_q_jori.o: driver/run_q_jori.f90 tmatrix_api.o tmatrix_status.o read_index.o tmatrix_oriented.o asymptotic_optics.o
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+run_q_jori.x: libtmatrix.a $(OBJ_ORIENTED) run_q_jori.o
+	$(FC) $(OBJ_ORIENTED) run_q_jori.o -L. -ltmatrix $(LDFLAGS) -o $@
 	@echo
 	@echo 'Built: ./run_q_jori.x'
 	@echo 'Smoke test:  ./run_q_jori.x test'
 	@echo 'Full sweep:  ./run_q_jori.x'
 
-# Stage-A check: oriented Rayleigh Q_abs vs the HD23 orientation-resolved
-# table over the small-x subset.  No T-matrix core is needed.
-compare_rayleigh_jori.x: $(SRC_CMP)
-	@mkdir -p build/cmp
-	$(FC) $(FFLAGS) -Isrc -Jbuild/cmp $^ $(LDFLAGS) -o $@
-	@echo
-	@echo 'Built: ./compare_rayleigh_jori.x'
-	@echo 'Run:   ./compare_rayleigh_jori.x'
-
-# Stage-B check: oriented T-matrix Q_ext vs the HD23 orientation-resolved
-# table over the 0.1 < x < 50 subset.  Uses the T-matrix core plus the
-# fixed-orientation amplitude routine AMPL (src/ampl_oriented.f).
-compare_tmatrix_jori.x: $(SRC_TM) $(SRC_CMP2)
-	@mkdir -p build/cmp2
-	$(FC) $(FFLAGS) -Isrc -Jbuild/cmp2 $^ $(LDFLAGS) -o $@
-	@echo
-	@echo 'Built: ./compare_tmatrix_jori.x'
-	@echo 'Run:   ./compare_tmatrix_jori.x'
-
-# Stage-C check: oriented T-matrix Q_abs (= Q_ext - Q_sca, with Q_sca from
-# the fixed-orientation phase-matrix integral) vs the HD23 orientation-
-# resolved table over the 0.1 < x < 50 subset.  Uses the T-matrix core plus
-# the fixed-orientation amplitude routine AMPL (src/ampl_oriented.f).
-compare_tmatrix_abs.x: $(SRC_TM) $(SRC_CMP3)
-	@mkdir -p build/cmp3
-	$(FC) $(FFLAGS) -Isrc -Jbuild/cmp3 $^ $(LDFLAGS) -o $@
-	@echo
-	@echo 'Built: ./compare_tmatrix_abs.x'
-	@echo 'Run:   ./compare_tmatrix_abs.x'
-
-# Geometric-optics check: oriented Q_ext (projected-area extinction paradox)
-# and Q_abs (opaque-grain Fresnel surface integral) vs the HD23 orientation-
-# resolved table over the x > 50 subset, plus the continuity checks across
-# x = 50 that use the T-matrix core (src/ampl_oriented.f).
-compare_go_jori.x: $(SRC_TM) $(SRC_CMP4)
-	@mkdir -p build/cmp4
-	$(FC) $(FFLAGS) -Isrc -Jbuild/cmp4 $^ $(LDFLAGS) -o $@
-	@echo
-	@echo 'Built: ./compare_go_jori.x'
-	@echo 'Run:   ./compare_go_jori.x'
-
-# Birefringence certification: the real part of the forward-amplitude
-# difference (circular-polarization optic) reconstructed from the T-matrix,
-# checked internally against the imaginary part by Kramers-Kronig, plus the
-# Rayleigh-analytic, continuity, and stored-precision anchors.
-compare_birefringence.x: $(SRC_TM) $(SRC_CMP5)
-	@mkdir -p build/cmp5
-	$(FC) $(FFLAGS) -Isrc -Jbuild/cmp5 $^ $(LDFLAGS) -o $@
-	@echo
-	@echo 'Built: ./compare_birefringence.x'
-	@echo 'Run:   ./compare_birefringence.x'
-
-# Orientation-resolved optics shortward of the Q table's 0.0912 um end, at
-# arbitrary (lambda, a_eff) nodes: the Rayleigh dipole limit, the T-matrix with
-# its status IERR reported per node, and the geometric-optics limit side by
-# side, plus the volume-equivalent Mie sphere.  Locates the size-parameter
-# range over which each description is trustworthy -- which is what sets the
-# certification ceiling used by run_q_jori.x's `euv` mode.
-SRC_EUVOPT = $(SRC_COMM) ../sed/src/mie.f90 driver/tmatrix_oriented.f90 \
-             driver/euv_polarized_optics.f90
-
-euv_polarized_optics.x: $(SRC_TM) $(SRC_EUVOPT)
-	@mkdir -p build/euv
-	$(FC) $(FFLAGS) -Isrc -Jbuild/euv $^ $(LDFLAGS) -o $@
-	@echo
-	@echo 'Built: ./euv_polarized_optics.x'
-	@echo 'Run:   ./euv_polarized_optics.x NODEFILE OUTFILE [sca|nosca] [XTM_HI]'
-
 # Size-integrated fixed-orientation (aligned) scattering matrix.  The Z-node
-# loop is parallelized with OpenMP, so AMPL is compiled -frecursive (thread-
-# private locals) while the serial T-matrix core keeps the base flags.
-SRC_APO = ../sed/src/constants.f90 driver/read_index.f90 \
-          driver/asymptotic_optics.f90 ../sed/src/size_dist.f90 \
-          ../sed/src/q_table_jori.f90 driver/scattering_matrix_oriented.f90 \
-          driver/aligned_population_optics.f90
-
-run_scatmat_aligned.x: driver/run_scatmat_aligned.f90 $(SRC_APO) $(SRC_TM)
-	@mkdir -p build/sma
-	$(FC) $(FFLAGS_OMP) -Isrc -Jbuild/sma -c src/ampl_oriented.f -o build/sma/ampl_oriented.o
-	$(FC) $(FFLAGS)     -Isrc -Jbuild/sma -c src/tmd_one.f       -o build/sma/tmd_one.o
-	$(FC) $(FFLAGS)     -Isrc -Jbuild/sma -c src/lpd.f           -o build/sma/lpd.o
-	$(FC) $(FFLAGS_OMP) -Isrc -Jbuild/sma $(SRC_APO) driver/run_scatmat_aligned.f90 \
-	      build/sma/ampl_oriented.o build/sma/tmd_one.o build/sma/lpd.o $(LDFLAGS) -o $@
+# loop is parallelized with OpenMP; the threads share one workspace, which AMPL
+# only reads.
+run_scatmat_aligned.o: driver/run_scatmat_aligned.f90 tmatrix_api.o tmatrix_status.o scattering_matrix_expansion.o read_index.o size_dist.o q_table_jori.o aligned_population_optics.o
+	$(FC) $(DRIVER_FFLAGS) $(OMPFLAGS) -I. -c -o $@ $<
+run_scatmat_aligned.x: libtmatrix.a $(OBJ_ALIGNED) run_scatmat_aligned.o
+	$(FC) $(OMPFLAGS) $(OBJ_ALIGNED) run_scatmat_aligned.o -L. -ltmatrix $(LDFLAGS) -o $@
 	@echo
 	@echo 'Built: ./run_scatmat_aligned.x'
 	@echo 'Smoke test:  ./run_scatmat_aligned.x test'
 
-# Fixed-orientation scattering-matrix engine and aligned population: closure,
-# optical theorem, random-orientation average, Rayleigh limit, symmetry
-# (A-E), size-integrated closure vs the jori table (F), and the Rayleigh K
-# sin^2 law (G).  Anchor F calls the size-integrated accumulation, so this is
-# built with the same OpenMP-safe per-file flags as run_scatmat_aligned.x.
-SRC_CMPA = ../sed/src/constants.f90 driver/read_index.f90 \
-           driver/asymptotic_optics.f90 driver/tmatrix_oriented.f90 \
-           driver/scattering_matrix_oriented.f90 ../sed/src/size_dist.f90 \
-           ../sed/src/q_table_jori.f90 driver/aligned_population_optics.f90
+# Stage-A check: oriented Rayleigh Q_abs vs the HD23 orientation-resolved
+# table over the small-x subset.  No T-matrix solve is needed.
+compare_rayleigh_jori.o: driver/compare_rayleigh_jori.f90 tmatrix_kinds.o read_index.o asymptotic_optics.o
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+compare_rayleigh_jori.x: libtmatrix.a $(OBJ_BASE) compare_rayleigh_jori.o
+	$(FC) $(OBJ_BASE) compare_rayleigh_jori.o -L. -ltmatrix $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./compare_rayleigh_jori.x'
 
-compare_scatmat_aligned.x: driver/compare_scatmat_aligned.f90 $(SRC_CMPA) $(SRC_TM)
-	@mkdir -p build/cmp6
-	$(FC) $(FFLAGS_OMP) -Isrc -Jbuild/cmp6 -c src/ampl_oriented.f -o build/cmp6/ampl_oriented.o
-	$(FC) $(FFLAGS)     -Isrc -Jbuild/cmp6 -c src/tmd_one.f       -o build/cmp6/tmd_one.o
-	$(FC) $(FFLAGS)     -Isrc -Jbuild/cmp6 -c src/lpd.f           -o build/cmp6/lpd.o
-	$(FC) $(FFLAGS_OMP) -Isrc -Jbuild/cmp6 $(SRC_CMPA) driver/compare_scatmat_aligned.f90 \
-	      build/cmp6/ampl_oriented.o build/cmp6/tmd_one.o build/cmp6/lpd.o $(LDFLAGS) -o $@
+# Stage-B check: oriented T-matrix Q_ext vs the HD23 orientation-resolved
+# table over the 0.1 < x < 50 subset.
+compare_tmatrix_jori.o: driver/compare_tmatrix_jori.f90 tmatrix_api.o tmatrix_status.o read_index.o tmatrix_oriented.o
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+compare_tmatrix_jori.x: libtmatrix.a $(OBJ_ORIENTED) compare_tmatrix_jori.o
+	$(FC) $(OBJ_ORIENTED) compare_tmatrix_jori.o -L. -ltmatrix $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./compare_tmatrix_jori.x'
+
+# Stage-C check: oriented T-matrix Q_abs (= Q_ext - Q_sca, with Q_sca from the
+# fixed-orientation phase-matrix integral) vs the HD23 table.
+compare_tmatrix_abs.o: driver/compare_tmatrix_abs.f90 tmatrix_api.o tmatrix_status.o read_index.o asymptotic_optics.o tmatrix_oriented.o
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+compare_tmatrix_abs.x: libtmatrix.a $(OBJ_ORIENTED) compare_tmatrix_abs.o
+	$(FC) $(OBJ_ORIENTED) compare_tmatrix_abs.o -L. -ltmatrix $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./compare_tmatrix_abs.x'
+
+# Geometric-optics check: oriented Q_ext (projected-area extinction paradox)
+# and Q_abs (opaque-grain Fresnel surface integral) vs the HD23 table over the
+# x > 50 subset, plus the continuity checks across x = 50.
+compare_go_jori.o: driver/compare_go_jori.f90 tmatrix_api.o tmatrix_status.o read_index.o asymptotic_optics.o tmatrix_oriented.o
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+compare_go_jori.x: libtmatrix.a $(OBJ_ORIENTED) compare_go_jori.o
+	$(FC) $(OBJ_ORIENTED) compare_go_jori.o -L. -ltmatrix $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./compare_go_jori.x'
+
+# Birefringence certification: the real part of the forward-amplitude
+# difference, checked against its imaginary part by Kramers-Kronig, plus the
+# Rayleigh-analytic, continuity, and stored-precision anchors.
+compare_birefringence.o: driver/compare_birefringence.f90 tmatrix_api.o tmatrix_status.o read_index.o asymptotic_optics.o tmatrix_oriented.o
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+compare_birefringence.x: libtmatrix.a $(OBJ_ORIENTED) compare_birefringence.o
+	$(FC) $(OBJ_ORIENTED) compare_birefringence.o -L. -ltmatrix $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./compare_birefringence.x'
+
+# Fixed-orientation scattering-matrix engine and aligned population: closure,
+# optical theorem, random-orientation average, Rayleigh limit, symmetry (A-E),
+# size-integrated closure vs the jori table (F), the Rayleigh K sin^2 law (G),
+# and the meridional rotations at general geometry (H).  Anchor F calls the
+# size-integrated accumulation, so this links OpenMP like run_scatmat_aligned.x.
+compare_scatmat_aligned.o: driver/compare_scatmat_aligned.f90 tmatrix_api.o tmatrix_status.o scattering_matrix_expansion.o read_index.o tmatrix_oriented.o asymptotic_optics.o scattering_matrix_oriented.o size_dist.o q_table_jori.o aligned_population_optics.o
+	$(FC) $(DRIVER_FFLAGS) $(OMPFLAGS) -I. -c -o $@ $<
+compare_scatmat_aligned.x: libtmatrix.a $(OBJ_ALIGNED) compare_scatmat_aligned.o
+	$(FC) $(OMPFLAGS) $(OBJ_ALIGNED) compare_scatmat_aligned.o -L. -ltmatrix $(LDFLAGS) -o $@
 	@echo
 	@echo 'Built: ./compare_scatmat_aligned.x'
-	@echo 'Run:   ./compare_scatmat_aligned.x'
+
+# Orientation-resolved optics shortward of the Q table's 0.0912 um end, at
+# arbitrary (lambda, a_eff) nodes: the Rayleigh dipole limit, the T-matrix with
+# its status IERR reported per node, and the geometric-optics limit side by
+# side, plus the volume-equivalent Mie sphere.
+euv_polarized_optics.o: driver/euv_polarized_optics.f90 tmatrix_api.o tmatrix_status.o read_index.o asymptotic_optics.o tmatrix_oriented.o mie.o
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+euv_polarized_optics.x: libtmatrix.a $(OBJ_ORIENTED) constants.o mie.o euv_polarized_optics.o
+	$(FC) $(OBJ_ORIENTED) constants.o mie.o euv_polarized_optics.o -L. -ltmatrix $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./euv_polarized_optics.x'
+	@echo 'Run:   ./euv_polarized_optics.x NODEFILE OUTFILE [sca|nosca] [XTM_HI]'
 
 clean:
-	rm -f *.o *.mod
+	rm -f *.o *.mod *.a
 	rm -rf build
 
 cleanall: clean
@@ -215,4 +279,8 @@ cleanall: clean
 	      compare_birefringence.x compare_scatmat_aligned.x run_scatmat_aligned.x \
 	      euv_polarized_optics.x
 
-.PHONY: all clean cleanall
+.PHONY: all all-compare clean cleanall
+
+# Module files are emitted into this directory.  Serialise until the project
+# has a dedicated object/module build tree.
+.NOTPARALLEL:

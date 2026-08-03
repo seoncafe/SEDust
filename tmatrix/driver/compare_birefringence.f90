@@ -58,7 +58,9 @@ program compare_birefringence
    !     Q_re(3)-Q_re(2) cancellation demand storing the difference directly.
 
    use, intrinsic :: iso_fortran_env, only: error_unit
-   use constants,        only: wp
+   use tmatrix_api,      only: wp, tmatrix_workspace_t, tmatrix_workspace_init, &
+                               tmatrix_workspace_finalize
+   use tmatrix_status,   only: TMATRIX_SUCCESS
    use read_index,       only: load_index, interp_m
    use tmatrix_oriented, only: tmatrix_oriented_cross, oriented_cross_sections
    use asymptotic_optics, only: rayleigh_limit
@@ -75,11 +77,26 @@ program compare_birefringence
    integer,  parameter :: NDGS    = 2, NP_OBL = -1
    real(wp), parameter :: X_SMALL = 0.1_wp, X_LARGE = 50.0_wp
    real(wp), parameter :: PI      = acos(-1.0_wp)
+   ! Node count above which the O(n^2) Kramers-Kronig transform thins the
+   ! wavelength grid (see kk_check).
+   integer,  parameter :: N_KK_MAX = 1100
 
    real(wp) :: a_eff(NA), lambda(NW)
    complex(wp) :: m_cache(NW)
    real(wp) :: nr, ki
    integer  :: jw
+
+   ! One workspace for this program: the T-matrix solves below are serial and
+   ! each AMPL evaluation reads the T-matrix the preceding solve left in it.
+   type(tmatrix_workspace_t) :: work
+   integer :: tm_status
+   character(len=160) :: tm_message
+
+   call tmatrix_workspace_init(work, tm_status, tm_message)
+   if (tm_status /= TMATRIX_SUCCESS) then
+      write(error_unit,'(a,a)') ' ERROR: libtmatrix: ', trim(tm_message)
+      stop 2
+   end if
 
    call read_one_col(f_aeff, NA, a_eff)
    call read_one_col(f_wave, NW, lambda)
@@ -97,6 +114,8 @@ program compare_birefringence
    call rayleigh_analytic_check()
    call continuity_check()
    call precision_check()
+
+   call tmatrix_workspace_finalize(work)
 
 contains
 
@@ -136,7 +155,12 @@ contains
       ! entire wavelength grid through the regime dispatcher.  The transform is
       ! evaluated directly on the native (log-spaced, hence nonuniform) om grid
       ! by singularity subtraction, so no resampling artifact is introduced.
-      stride = max(1, NW/1100)               ! keep essentially the full grid
+      ! The transform costs O(n^2) integrand terms per radius, so the node
+      ! count is capped near N_KK_MAX by thinning.  At NW = 1129 the ratio is
+      ! 1.03, so stride = 1: the full grid is used.  The ratio is formed in
+      ! real arithmetic and floored, which is the same value integer division
+      ! gives for positive operands.
+      stride = max(1, int(real(NW, wp) / real(N_KK_MAX, wp)))
       allocate(om(NW), red(NW), imd(NW), red_kk(NW), reg(NW), img(NW))
       do ir = 1, NR_TEST
          ia = rad_idx(ir)
@@ -226,20 +250,21 @@ contains
       integer,  intent(in)  :: n
       real(wp), intent(in)  :: om(:), imf(:)
       real(wp), intent(out) :: ref(:)
-      integer  :: i, j
+      integer  :: i, j, ilo, ihi
       real(wp) :: integ, deriv
       real(wp), allocatable :: h(:)
       allocate(h(n))
       do i = 1, n
          do j = 1, n
             if (j == i) then
-               if (i == 1) then
-                  deriv = (imf(2) - imf(1)) / (om(2) - om(1))
-               else if (i == n) then
-                  deriv = (imf(n) - imf(n-1)) / (om(n) - om(n-1))
-               else
-                  deriv = (imf(i+1) - imf(i-1)) / (om(i+1) - om(i-1))
-               end if
+               ! Grid-centered difference in the interior, one-sided at the two
+               ! ends.  Clamping the stencil indices reproduces all three cases
+               ! with the same operands in the same order: i = 1 gives
+               ! (imf(2)-imf(1))/(om(2)-om(1)) and i = n gives
+               ! (imf(n)-imf(n-1))/(om(n)-om(n-1)).
+               ilo = max(i-1, 1)
+               ihi = min(i+1, n)
+               deriv = (imf(ihi) - imf(ilo)) / (om(ihi) - om(ilo))
                h(j) = (imf(i) + om(i)*deriv) / (2.0_wp*om(i))
             else
                h(j) = (om(j)*imf(j) - om(i)*imf(i)) / (om(j)*om(j) - om(i)*om(i))
@@ -331,7 +356,7 @@ contains
       n = 0
       area = PI * a_eff(ia) * a_eff(ia)
       do j = 1, NW, stride
-         call oriented_cross_sections(a_eff(ia), lambda(j), m_cache(j), EPS_BA, &
+         call oriented_cross_sections(work, a_eff(ia), lambda(j), m_cache(j), EPS_BA, &
                   NP_OBL, DDELT, NDGS, qext_ori, qabs_ori, qsca_ori, flag, &
                   qre_ori=qre_ori)
          n = n + 1
@@ -348,7 +373,12 @@ contains
    subroutine rayleigh_analytic_check()
       integer  :: ia, jw2, ib
       real(wp) :: x, area, qbir_pipe, qbir_ana, rel
-      real(wp) :: qext_o(3), qsca_o(3), walb, asymm, qre_o(3)
+      ! Only the birefringence twin qre_ori is wanted here, but the random-
+      ! orientation averages are mandatory arguments, so they get their own
+      ! scalars.  They must NOT be array elements of qre_o or of one another:
+      ! rayleigh_limit declares them intent(out), and passing one actual
+      ! argument to two intent(out) dummies is not standard-conforming.
+      real(wp) :: qext_avg, qsca_avg, walb, asymm, qre_o(3)
       logical  :: found
 
       write(*,'(a)') '----------------------------------------------------------------------'
@@ -369,8 +399,8 @@ contains
          if (.not. found) cycle
          area = PI * a_eff(ia) * a_eff(ia)
          call rayleigh_limit(a_eff(ia), lambda(jw2), real(m_cache(jw2),wp), &
-                 aimag(m_cache(jw2)), EPS_BA, qext_o(1), qsca_o(1), walb, asymm, &
-                 qext_ori=qext_o, qabs_ori=qsca_o, qsca_ori=qsca_o, qre_ori=qre_o)
+                 aimag(m_cache(jw2)), EPS_BA, qext_avg, qsca_avg, walb, asymm, &
+                 qre_ori=qre_o)
          qbir_pipe = 0.5_wp*(qre_o(3) - qre_o(2)) * area
          call rayleigh_birefringence_closed(a_eff(ia), lambda(jw2), m_cache(jw2), &
                  EPS_BA, qbir_ana)
@@ -421,7 +451,11 @@ contains
    subroutine continuity_check()
       integer  :: ia, jw_ray, jw_tm, j, ierr
       real(wp) :: x, area, qbir_ray, qbir_tm, rel
-      real(wp) :: qext_o(3), qsca_o(3), qabs_o(3), qre_o(3), walb, asymm
+      real(wp) :: qext_o(3), qsca_o(3), qabs_o(3), qre_o(3)
+      ! Separate scalars for rayleigh_limit's mandatory random-orientation
+      ! averages: they are intent(out), so they must not alias qext_o(1) or
+      ! qsca_o(1), which the same call fills through qext_ori / qsca_ori.
+      real(wp) :: qext_avg, qsca_avg, walb, asymm
 
       write(*,'(a)') '----------------------------------------------------------------------'
       write(*,'(a)') ' Continuity anchor across x=0.1 (Rayleigh below vs T-matrix above)'
@@ -448,13 +482,18 @@ contains
          end do
          if (jw_tm == 0 .or. jw_ray == 0) cycle
          call rayleigh_limit(a_eff(ia), lambda(jw_ray), real(m_cache(jw_ray),wp), &
-                 aimag(m_cache(jw_ray)), EPS_BA, qext_o(1), qsca_o(1), walb, asymm, &
+                 aimag(m_cache(jw_ray)), EPS_BA, qext_avg, qsca_avg, walb, asymm, &
                  qext_ori=qext_o, qabs_ori=qabs_o, qsca_ori=qsca_o, qre_ori=qre_o)
          qbir_ray = 0.5_wp*(qre_o(3) - qre_o(2))
-         call tmatrix_oriented_cross(a_eff(ia), lambda(jw_tm), m_cache(jw_tm), &
+         call tmatrix_oriented_cross(work, a_eff(ia), lambda(jw_tm), m_cache(jw_tm), &
                  EPS_BA, NP_OBL, DDELT, NDGS, qext_o, qsca_o, qabs_o, ierr, qre_ori=qre_o)
          if (ierr /= 0) cycle
          qbir_tm = 0.5_wp*(qre_o(3) - qre_o(2))
+         ! Exact-zero test on purpose: the only value that must not reach the
+         ! division below is a hard zero, and any nonzero qbir_ray, however
+         ! small, gives a meaningful relative deviation.  A tolerance here
+         ! would discard nodes the anchor is meant to report.  This is the
+         ! -Wcompare-reals warning this file deliberately keeps.
          if (qbir_ray /= 0.0_wp) then
             rel = abs(qbir_tm/qbir_ray - 1.0_wp)
          else
@@ -472,7 +511,7 @@ contains
    ! ------------------------------------------------------------------
    subroutine precision_check()
       integer  :: ia, j, ierr, ncnt
-      real(wp) :: x, area, qbir_dir, qbir_sto, rel, cancel
+      real(wp) :: x, area, qbir_dir, qbir_sto
       real(wp) :: qext_o(3), qsca_o(3), qabs_o(3), qre_o(3)
       real(wp) :: q2rt, q3rt
       real(wp), allocatable :: relv(:), canv(:)
@@ -489,13 +528,19 @@ contains
          do j = 1, NW, 20
             x = 2.0_wp*PI*a_eff(ia)/lambda(j)
             if (x <= X_SMALL .or. x >= X_LARGE) cycle
-            call tmatrix_oriented_cross(a_eff(ia), lambda(j), m_cache(j), EPS_BA, &
+            call tmatrix_oriented_cross(work, a_eff(ia), lambda(j), m_cache(j), EPS_BA, &
                      NP_OBL, DDELT, NDGS, qext_o, qsca_o, qabs_o, ierr, qre_ori=qre_o)
             if (ierr /= 0) cycle
             qbir_dir = 0.5_wp*(qre_o(3) - qre_o(2)) * area
             q2rt = roundtrip_es135(qre_o(2))
             q3rt = roundtrip_es135(qre_o(3))
             qbir_sto = 0.5_wp*(q3rt - q2rt) * area
+            ! Exact-zero test on purpose: this anchor measures the relative
+            ! error of the stored representation, so only a hard zero
+            ! denominator has to be dropped.  Rejecting small-but-nonzero
+            ! qbir_dir by a tolerance would remove exactly the strongly
+            ! cancelling nodes the anchor exists to expose.  This is the
+            ! -Wcompare-reals warning this file deliberately keeps.
             if (qbir_dir == 0.0_wp) cycle
             ncnt = ncnt + 1
             relv(ncnt) = abs(qbir_sto/qbir_dir - 1.0_wp)

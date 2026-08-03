@@ -30,7 +30,9 @@ program compare_go_jori
    ! the x-window match run_tmatrix.f90.
 
    use, intrinsic :: iso_fortran_env, only: real64, error_unit
-   use constants,        only: wp
+   use tmatrix_api,      only: wp, tmatrix_workspace_t, tmatrix_workspace_init, &
+                               tmatrix_workspace_finalize
+   use tmatrix_status,   only: TMATRIX_SUCCESS
    use read_index,       only: load_index, interp_m
    use asymptotic_optics, only: geometric_optics_limit, &
                                 projected_area_extinction, fresnel_opaque_absorption
@@ -67,6 +69,18 @@ program compare_go_jori
    real(wp) :: qpolE_h, qranE_h, qpolA_h, qranA_h, floor_pol
    integer  :: jw, ja, jo, n_win, n_ranE, n_polE, n_ranA, n_polA, n_viol
    real(wp) :: t0, t1
+
+   ! One workspace for this program: the T-matrix solves below are serial and
+   ! each AMPL evaluation reads the T-matrix the preceding solve left in it.
+   type(tmatrix_workspace_t) :: work
+   integer :: tm_status
+   character(len=160) :: tm_message
+
+   call tmatrix_workspace_init(work, tm_status, tm_message)
+   if (tm_status /= TMATRIX_SUCCESS) then
+      write(error_unit,'(a,a)') ' ERROR: libtmatrix: ', trim(tm_message)
+      stop 2
+   end if
 
    call cpu_time(t0)
 
@@ -175,6 +189,8 @@ program compare_go_jori
    write(*,'(a,f8.1,a)') ' wall (cpu) time : ', t1 - t0, ' s'
    write(*,'(a)') '======================================================================'
 
+   call tmatrix_workspace_finalize(work)
+
 contains
 
    subroutine anchor_continuity()
@@ -229,7 +245,7 @@ contains
             if (ntry > MAX_TRY) exit
             xt = 2.0_wp*PI*a_eff(ja)/lambda(jw)
             mm = cmplx(nr_cache(jw), ki_cache(jw), kind=wp)
-            call tmatrix_oriented_cross(a_eff(ja), lambda(jw), mm, EPS_BA, &
+            call tmatrix_oriented_cross(work, a_eff(ja), lambda(jw), mm, EPS_BA, &
                                         NP_OBL, DDELT, NDGS, qe_t, qs_t, qa_t, kerr)
             if (kerr == 0) then
                jw_lo = jw;  xlo = xt;  exit

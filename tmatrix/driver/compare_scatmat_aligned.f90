@@ -30,7 +30,13 @@ program compare_scatmat_aligned
    ! run_scatmat.f90 (eps_ba = 1.4, oblate NP = -1, DDELT = 1e-3, NDGS = 2).
 
    use, intrinsic :: iso_fortran_env, only: error_unit
-   use constants,         only: wp
+   use tmatrix_api,       only: wp, tmatrix_options_t, tmatrix_result_t, &
+                                tmatrix_scatmat_t, tmatrix_workspace_t, &
+                                tmatrix_workspace_init, tmatrix_workspace_finalize, &
+                                tmatrix_eval_scattering_matrix, ampl, gauss, &
+                                phase_matrix_from_amplitude
+   use tmatrix_status,    only: TMATRIX_SUCCESS, TMATRIX_ERR_NUMERICAL_NONFINITE
+   use scattering_matrix_expansion, only: scatmat_from_moments
    use read_index,        only: load_index, interp_m
    use tmatrix_oriented,  only: tmatrix_oriented_cross
    use asymptotic_optics, only: rayleigh_limit, spheroid_dipole_polarizability
@@ -49,7 +55,7 @@ program compare_scatmat_aligned
    character(len=*), parameter :: f_wave   = '../data/dielectric/DH21_wave'
    character(len=*), parameter :: f_aeff   = '../data/dielectric/DH21_aeff'
 
-   integer,  parameter :: NPL     = 201          ! matches src/tmd.par.f
+   integer,  parameter :: NPL     = 201          ! tmatrix_expansion_size
    real(wp), parameter :: EPS_BA  = 1.4_wp
    real(wp), parameter :: DDELT   = 1.0e-3_wp
    integer,  parameter :: NDGS    = 2, NP_OBL = -1
@@ -62,11 +68,23 @@ program compare_scatmat_aligned
    real(wp), parameter :: TM_A(NTM)   = (/ 0.10_wp, 0.30_wp, 0.05_wp  /)
    real(wp), parameter :: TM_L(NTM)   = (/ 0.55_wp, 0.55_wp, 0.365_wp /)
 
-   external :: tmd_one_scatmat, ampl, gauss, scatmat_from_moments
-
    integer :: nfail_total
 
+   ! One workspace for every anchor.  solve_full leaves the converged T-matrix
+   ! of the size it just solved in it and returns the scatmat identifying it;
+   ! every AMPL evaluation below reads that same workspace through that
+   ! scatmat, so an anchor that interleaved sizes would be reported, not run.
+   type(tmatrix_workspace_t) :: work
+   integer :: tm_status
+   character(len=160) :: tm_message
+
    nfail_total = 0
+
+   call tmatrix_workspace_init(work, tm_status, tm_message)
+   if (tm_status /= TMATRIX_SUCCESS) then
+      write(error_unit,'(a,a)') ' ERROR: libtmatrix: ', trim(tm_message)
+      stop 2
+   end if
 
    call load_index(f_index)
 
@@ -83,6 +101,8 @@ program compare_scatmat_aligned
    call anchor_g()
    call anchor_h()
 
+   call tmatrix_workspace_finalize(work)
+
    write(*,'(a)') '======================================================================'
    if (nfail_total == 0) then
       write(*,'(a)') ' ALL ANCHORS PASSED'
@@ -97,12 +117,13 @@ contains
    ! Anchor A: closure of INT Z dOmega against the jori cross sections.
    ! ==================================================================
    subroutine anchor_a()
-      integer  :: ip, nmax
+      integer  :: ip
       real(wp) :: a, lam, area, maxe
       real(wp) :: qext_o(3), qsca_o(3), qabs_o(3), qsca_rand
       real(wp) :: a1(NPL), a2(NPL), a3(NPL), a4(NPL), b1(NPL), b2(NPL)
       real(wp) :: i11, i11p, i11m
       integer  :: lmax
+      type(tmatrix_scatmat_t) :: sm
       logical  :: ok
 
       write(*,'(a)') '----------------------------------------------------------------------'
@@ -111,21 +132,21 @@ contains
       maxe = 0.0_wp
       do ip = 1, NTM
          a = TM_A(ip);  lam = TM_L(ip)
-         call solve_full(a, lam, nmax, qext_o, qsca_o, qabs_o, &
+         call solve_full(a, lam, sm, qext_o, qsca_o, qabs_o, &
                          a1, a2, a3, a4, b1, b2, lmax, qsca_rand, ok)
          if (.not. ok) then
             write(*,'(a,f6.3,a,f6.3)') '   T-matrix did not converge at a=', a, ' lam=', lam
             nfail_total = nfail_total + 1;  cycle
          end if
          area = PI * a * a
-         write(*,'(a,f6.3,a,f6.4,a,i0)') '   a_eff=', a, ' um  lam=', lam, ' um   NMAX=', nmax
+         write(*,'(a,f6.3,a,f6.4,a,i0)') '   a_eff=', a, ' um  lam=', lam, ' um   NMAX=', sm%nmax_tm
 
          ! theta_i = 0: unpolarized closure vs jori=1.
-         call sphere_integrals(nmax, lam, 0.0_wp, i11, i11p, i11m)
+         call sphere_integrals(sm, 0.0_wp, i11, i11p, i11m)
          maxe = max(maxe, chk_rel('   ti=0  INT Z11      = Csca(j1)', i11, qsca_o(1)*area, 1.0e-6_wp))
 
          ! theta_i = 90: unpolarized and the two linear-polarization closures.
-         call sphere_integrals(nmax, lam, 90.0_wp, i11, i11p, i11m)
+         call sphere_integrals(sm, 90.0_wp, i11, i11p, i11m)
          maxe = max(maxe, chk_rel('   ti=90 INT Z11      =(Csca2+3)/2', i11, &
                     0.5_wp*(qsca_o(2)+qsca_o(3))*area, 1.0e-6_wp))
          maxe = max(maxe, chk_rel('   ti=90 INT(Z11+Z12) = Csca(j2)', i11p, qsca_o(2)*area, 1.0e-6_wp))
@@ -139,11 +160,12 @@ contains
    ! Anchor B: optical-theorem wiring, (4 pi / k) Im S_fwd vs C_ext(jori).
    ! ==================================================================
    subroutine anchor_b()
-      integer  :: ip, nmax, lmax
+      integer  :: ip, lmax, ierr_a
       real(wp) :: a, lam, area, cext_fac, maxe
       real(wp) :: qext_o(3), qsca_o(3), qabs_o(3), qsca_rand
       real(wp) :: a1(NPL), a2(NPL), a3(NPL), a4(NPL), b1(NPL), b2(NPL)
       complex(wp) :: vv, vh, hv, hh
+      type(tmatrix_scatmat_t) :: sm
       logical  :: ok
 
       write(*,'(a)') '----------------------------------------------------------------------'
@@ -151,7 +173,7 @@ contains
       maxe = 0.0_wp
       do ip = 1, NTM
          a = TM_A(ip);  lam = TM_L(ip)
-         call solve_full(a, lam, nmax, qext_o, qsca_o, qabs_o, &
+         call solve_full(a, lam, sm, qext_o, qsca_o, qabs_o, &
                          a1, a2, a3, a4, b1, b2, lmax, qsca_rand, ok)
          if (.not. ok) then
             write(*,'(a,f6.3,a,f6.3)') '   T-matrix did not converge at a=', a, ' lam=', lam
@@ -162,12 +184,16 @@ contains
          write(*,'(a,f6.3,a,f6.4)') '   a_eff=', a, ' um  lam=', lam, ' um'
 
          ! theta_i = 0 forward (theta_s = 0, phi = 0): both polarizations -> jori=1.
-         call ampl(nmax, lam, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, vv, vh, hv, hh)
+         call ampl(work, sm, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
+                   vv, vh, hv, hh, ierr_a)
+         call ampl_ok(ierr_a)
          maxe = max(maxe, chk_rel('   ti=0  Im S11 -> Cext(j1)', cext_fac*aimag(vv), qext_o(1)*area, 1.0e-6_wp))
          maxe = max(maxe, chk_rel('   ti=0  Im S22 -> Cext(j1)', cext_fac*aimag(hh), qext_o(1)*area, 1.0e-6_wp))
 
          ! theta_i = 90 forward: V -> jori=2, H -> jori=3.
-         call ampl(nmax, lam, 90.0_wp, 90.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, vv, vh, hv, hh)
+         call ampl(work, sm, 90.0_wp, 90.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
+                   vv, vh, hv, hh, ierr_a)
+         call ampl_ok(ierr_a)
          maxe = max(maxe, chk_rel('   ti=90 Im S11 -> Cext(j2)', cext_fac*aimag(vv), qext_o(2)*area, 1.0e-6_wp))
          maxe = max(maxe, chk_rel('   ti=90 Im S22 -> Cext(j3)', cext_fac*aimag(hh), qext_o(3)*area, 1.0e-6_wp))
       end do
@@ -184,12 +210,13 @@ contains
       real(wp), parameter :: CP_L(NCP)   = (/ 0.55_wp, 0.55_wp /)
       real(wp), parameter :: THC(NTHC)   = (/ 30.0_wp, 90.0_wp, 140.0_wp /)
       integer,  parameter :: IDX(NTHC)   = (/ 31, 91, 141 /)     ! into 181-pt grid
-      integer  :: ic, k, nmax, lmax, nb, na
+      integer  :: ic, k, lmax, nb, na
       real(wp) :: a, lam, area, csca_rand, qsca_rand, maxe, f11r
       real(wp) :: qext_o(3), qsca_o(3), qabs_o(3)
       real(wp) :: a1(NPL), a2(NPL), a3(NPL), a4(NPL), b1(NPL), b2(NPL)
       real(wp) :: th181(181), f11(181), f22(181), f33(181), f44(181), f12(181), f34(181)
       real(wp) :: zbar(4,4), fmod(4,4)
+      type(tmatrix_scatmat_t) :: sm
       logical  :: ok
 
       write(*,'(a)') '----------------------------------------------------------------------'
@@ -198,7 +225,7 @@ contains
       maxe = 0.0_wp
       do ic = 1, NCP
          a = CP_A(ic);  lam = CP_L(ic)
-         call solve_full(a, lam, nmax, qext_o, qsca_o, qabs_o, &
+         call solve_full(a, lam, sm, qext_o, qsca_o, qabs_o, &
                          a1, a2, a3, a4, b1, b2, lmax, qsca_rand, ok)
          if (.not. ok) then
             write(*,'(a,f6.3,a,f6.3)') '   T-matrix did not converge at a=', a, ' lam=', lam
@@ -208,13 +235,13 @@ contains
          csca_rand = qsca_rand * area
          call scatmat_from_moments(a1, a2, a3, a4, b1, b2, lmax, 181, &
                                    th181, f11, f22, f33, f44, f12, f34)
-         nb = 2*nmax + 2                            ! GL nodes in cos(BETA)
-         na = 4*nmax + 4                            ! uniform nodes in ALPHA
+         nb = 2*sm%nmax_tm + 2                      ! GL nodes in cos(BETA)
+         na = 4*sm%nmax_tm + 4                      ! uniform nodes in ALPHA
          write(*,'(a,f6.3,a,f6.4,a,i0,a,i0,a,i0)') '   a_eff=', a, ' um  lam=', lam, &
-              ' um   NMAX=', nmax, '   nBETA=', nb, '  nALPHA=', na
+              ' um   NMAX=', sm%nmax_tm, '   nBETA=', nb, '  nALPHA=', na
 
          do k = 1, NTHC
-            call orient_average_z(nmax, lam, THC(k), nb, na, zbar)
+            call orient_average_z(sm, THC(k), nb, na, zbar)
             fmod = 4.0_wp * PI * zbar / csca_rand
             f11r = f11(IDX(k))
             write(*,'(a,f6.1,a)') '     Theta=', THC(k), ' deg'
@@ -246,7 +273,7 @@ contains
       integer,  parameter :: NDI = 2
       real(wp), parameter :: DA(NDI) = (/ 0.008_wp, 0.012_wp /)   ! continuity pair
       real(wp), parameter :: DL(NDI) = (/ 0.55_wp,  0.55_wp  /)
-      integer  :: id, it, is, ipp, nmax, lmax, i, j
+      integer  :: id, it, is, ipp, lmax, i, j
       real(wp) :: a, lam, nr, ki, area, k, maxe, maxc
       real(wp) :: u, ts_deg
       real(wp) :: z(4,4), zdip(4,4)
@@ -259,6 +286,7 @@ contains
       real(wp), parameter :: TS3(3) = (/ 30.0_wp, 90.0_wp, 140.0_wp /)
       real(wp), parameter :: PH3(3) = (/ 0.0_wp, 60.0_wp, 120.0_wp /)
       real(wp), parameter :: TSC(5) = (/ 30.0_wp, 60.0_wp, 90.0_wp, 120.0_wp, 150.0_wp /)
+      type(tmatrix_scatmat_t) :: sm
       logical  :: ok
 
       write(*,'(a)') '----------------------------------------------------------------------'
@@ -299,7 +327,7 @@ contains
       do id = 1, NDI
          a = DA(id);  lam = DL(id)
          call interp_m(lam, nr, ki)
-         call solve_full(a, lam, nmax, qext_o, qsca_o, qabs_o, &
+         call solve_full(a, lam, sm, qext_o, qsca_o, qabs_o, &
                          a1, a2, a3, a4, b1, b2, lmax, qsca_rand, ok)
          if (.not. ok) then
             write(*,'(a,f6.3,a,f6.3)') '   T-matrix did not converge at a=', a, ' lam=', lam
@@ -315,7 +343,7 @@ contains
          do it = 1, 3
             do is = 1, 3
                do ipp = 1, 3
-                  call mueller_matrix_fixed_orientation(nmax, lam, TI3(it), TS3(is), PH3(ipp), z)
+                  call mueller_matrix_fixed_orientation(work, sm, TI3(it), TS3(is), PH3(ipp), z)
                   call rayleigh_mueller_matrix_oriented(a, lam, nr, ki, EPS_BA, &
                                                         TI3(it), TS3(is), PH3(ipp), zdip)
                   do i = 1, 4
@@ -338,7 +366,7 @@ contains
    ! Anchor E: symmetries.
    ! ==================================================================
    subroutine anchor_e()
-      integer  :: nmax, lmax, is, ipp, i, j, icand, ibest
+      integer  :: lmax, is, ipp, i, j, icand, ibest
       real(wp) :: a, lam, maxe, res, bestres
       real(wp) :: qext_o(3), qsca_o(3), qabs_o(3), qsca_rand
       real(wp) :: a1(NPL), a2(NPL), a3(NPL), a4(NPL), b1(NPL), b2(NPL)
@@ -351,13 +379,14 @@ contains
       real(wp), parameter :: GTS(3) = (/ 40.0_wp, 80.0_wp, 130.0_wp /)
       real(wp), parameter :: GPH(3) = (/ 30.0_wp, 70.0_wp, 110.0_wp /)
       integer  :: it, jt, kt
+      type(tmatrix_scatmat_t) :: sm
       logical  :: ok
       character(len=1) :: srow(4)
 
       write(*,'(a)') '----------------------------------------------------------------------'
       write(*,'(a)') ' Anchor E: symmetries at T-matrix point (0.10, 0.55)'
       a = 0.10_wp;  lam = 0.55_wp
-      call solve_full(a, lam, nmax, qext_o, qsca_o, qabs_o, &
+      call solve_full(a, lam, sm, qext_o, qsca_o, qabs_o, &
                       a1, a2, a3, a4, b1, b2, lmax, qsca_rand, ok)
       if (.not. ok) then
          write(*,'(a)') '   T-matrix did not converge; anchor E skipped'
@@ -369,8 +398,8 @@ contains
       maxe = 0.0_wp
       do is = 1, 3
          do ipp = 1, 2
-            call mueller_matrix_fixed_orientation(nmax, lam, 45.0_wp, TSE(is), PHE(ipp),           zp)
-            call mueller_matrix_fixed_orientation(nmax, lam, 45.0_wp, TSE(is), 360.0_wp-PHE(ipp),  zm)
+            call mueller_matrix_fixed_orientation(work, sm, 45.0_wp, TSE(is), PHE(ipp),          zp)
+            call mueller_matrix_fixed_orientation(work, sm, 45.0_wp, TSE(is), 360.0_wp-PHE(ipp), zm)
             res = 0.0_wp
             do i = 1, 4
                do j = 1, 4
@@ -396,7 +425,7 @@ contains
       ! physically correct statement, verified here.
       maxe = 0.0_wp
       do is = 1, 3
-         call mueller_matrix_fixed_orientation(nmax, lam, 0.0_wp, TSE(is), 0.0_wp, z0)  ! Zsp
+         call mueller_matrix_fixed_orientation(work, sm, 0.0_wp, TSE(is), 0.0_wp, z0)  ! Zsp
          ! Z11 phi-independence and block-diagonal Zsp.
          res = 0.0_wp
          res = max(res, abs(z0(1,3))/abs(z0(1,1)));  res = max(res, abs(z0(1,4))/abs(z0(1,1)))
@@ -404,7 +433,7 @@ contains
          res = max(res, abs(z0(3,1))/abs(z0(1,1)));  res = max(res, abs(z0(3,2))/abs(z0(1,1)))
          res = max(res, abs(z0(4,1))/abs(z0(1,1)));  res = max(res, abs(z0(4,2))/abs(z0(1,1)))
          do ipp = 1, 4
-            call mueller_matrix_fixed_orientation(nmax, lam, 0.0_wp, TSE(is), PHZ(ipp), z1)
+            call mueller_matrix_fixed_orientation(work, sm, 0.0_wp, TSE(is), PHZ(ipp), z1)
             res = max(res, abs(z1(1,1) - z0(1,1))/abs(z0(1,1)))     ! Z11 phi-independent
             call stokes_rotate_incident(z0, PHZ(ipp), z2)           ! Zsp . R(phi)
             do i = 1, 4
@@ -420,11 +449,11 @@ contains
 
       ! (iii) equatorial mirror: derive theta_i -> 180-theta_i mapping.
       write(*,'(a)') ' E(iii) equatorial mirror: derive theta_i -> 180-theta_i mapping'
-      call mueller_matrix_fixed_orientation(nmax, lam, 35.0_wp, 75.0_wp, 55.0_wp, z0)
+      call mueller_matrix_fixed_orientation(work, sm, 35.0_wp, 75.0_wp, 55.0_wp, z0)
       bestres = huge(1.0_wp);  ibest = 1;  sbest = 1.0_wp
       do icand = 1, 3
          ! candidate azimuth map: 1 -> phi, 2 -> 180-phi, 3 -> 360-phi
-         call mueller_matrix_fixed_orientation(nmax, lam, 145.0_wp, 105.0_wp, &
+         call mueller_matrix_fixed_orientation(work, sm, 145.0_wp, 105.0_wp, &
                                                phi_candidate(icand, 55.0_wp), zc)
          ! sign pattern from the generic reference point
          do i = 1, 4
@@ -441,8 +470,8 @@ contains
          do it = 1, 4
             do jt = 1, 3
                do kt = 1, 3
-                  call mueller_matrix_fixed_orientation(nmax, lam, GTI(it), GTS(jt), GPH(kt), z1)
-                  call mueller_matrix_fixed_orientation(nmax, lam, 180.0_wp-GTI(it), &
+                  call mueller_matrix_fixed_orientation(work, sm, GTI(it), GTS(jt), GPH(kt), z1)
+                  call mueller_matrix_fixed_orientation(work, sm, 180.0_wp-GTI(it), &
                        180.0_wp-GTS(jt), phi_candidate(icand, GPH(kt)), z2)
                   do i = 1, 4
                      do j = 1, 4
@@ -562,7 +591,7 @@ contains
          f_al(ia) = falign_hd23(a_dist(ia))
       end do
       call interp_m(lam_used, nr, ki)
-      call accumulate_aligned_population(lam_used, nr, ki, EPS_BA, NP_OBL, DDELT, &
+      call accumulate_aligned_population(work, lam_used, nr, ki, EPS_BA, NP_OBL, DDELT, &
               NDGS, X_SMALL, X_LARGE, a_dist, dn_ad, f_al, ti, ts, ph, &
               z_al, cext_al, cpol_al, cbir_al, csca_al, sacc, sref, lmax_acc, &
               csca_tot, csca_ref, cext_tot, cext_ref, skipped_weight, &
@@ -602,11 +631,12 @@ contains
       real(wp) :: cabs_a, cabs_b, cre_a, cre_b
       real(wp) :: cv, ch, rv, rh, ref_cv, ref_ch, ref_rv, ref_rh
       complex(wp) :: alpha_a, alpha_b, k2, svv, shh
-      integer  :: it, nmax, lmax
+      integer  :: it, lmax, ierr_a
       real(wp) :: qext_o(3), qsca_o(3), qabs_o(3), qsca_rand
       real(wp) :: a1(NPL), a2(NPL), a3(NPL), a4(NPL), b1(NPL), b2(NPL)
       complex(wp) :: vv, vh, hv, hh
       real(wp) :: c_a, c_b, dev
+      type(tmatrix_scatmat_t) :: sm
       logical  :: ok
 
       write(*,'(a)') '----------------------------------------------------------------------'
@@ -647,21 +677,25 @@ contains
       write(*,'(a)') ' Anchor G(ii): T-matrix forward amplitudes obey the sin^2 law at x=0.137'
       write(*,'(a)') '   C_a = C_v(90) [jori2], C_b = C_h(90) [jori3]                  [tol 5%]'
       a = 0.012_wp;  lam = 0.55_wp
-      call solve_full(a, lam, nmax, qext_o, qsca_o, qabs_o, &
+      call solve_full(a, lam, sm, qext_o, qsca_o, qabs_o, &
                       a1, a2, a3, a4, b1, b2, lmax, qsca_rand, ok)
       if (.not. ok) then
          write(*,'(a)') '   T-matrix did not converge; anchor G(ii) skipped'
          nfail_total = nfail_total + 1;  return
       end if
       fac4 = 2.0_wp*lam
-      call ampl(nmax, lam, 90.0_wp, 90.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, vv, vh, hv, hh)
+      call ampl(work, sm, 90.0_wp, 90.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
+                vv, vh, hv, hh, ierr_a)
+      call ampl_ok(ierr_a)
       c_a = fac4*aimag(vv)                        ! E||a at ti=90 (jori 2)
       c_b = fac4*aimag(hh)                        ! E perp a at ti=90 (jori 3)
       write(*,'(a,f6.4,a,f6.3)') '   a=', a, ' um  x=', 2.0_wp*PI*a/lam
       dev = 0.0_wp
       do it = 1, 5
          s2 = sin(TIG(it)*DEG)**2;  c2 = cos(TIG(it)*DEG)**2
-         call ampl(nmax, lam, TIG(it), TIG(it), 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, vv, vh, hv, hh)
+         call ampl(work, sm, TIG(it), TIG(it), 0.0_wp, 0.0_wp, 0.0_wp, 0.0_wp, &
+                   vv, vh, hv, hh, ierr_a)
+         call ampl_ok(ierr_a)
          cv = fac4*aimag(vv);  ch = fac4*aimag(hh)
          ref_cv = s2*c_a + c2*c_b
          dev = max(dev, abs(cv/ref_cv - 1.0_wp))
@@ -705,13 +739,14 @@ contains
       real(wp), parameter :: GTS(NG) = (/  70.0_wp,  70.0_wp,  70.0_wp, 70.0_wp /)
       real(wp), parameter :: GPH(NG) = (/  30.0_wp, 120.0_wp, 250.0_wp,  1.0_wp /)
       real(wp), parameter :: TOL_H   = 5.0e-5_wp
-      integer  :: ic, k, i, j, nmax, lmax, nb, na
+      integer  :: ic, k, i, j, lmax, nb, na
       real(wp) :: a, lam, area, csca_rand, qsca_rand, maxe, locmax
       real(wp) :: qext_o(3), qsca_o(3), qabs_o(3)
       real(wp) :: a1(NPL), a2(NPL), a3(NPL), a4(NPL), b1(NPL), b2(NPL)
       real(wp) :: thf(NF), f11(NF), f22(NF), f33(NF), f44(NF), f12(NF), f34(NF)
       real(wp) :: zbar(4,4), fmod(4,4), fmat(4,4), rhs(4,4), l1(4,4), l2(4,4)
       real(wp) :: cos_th, big_theta, sigma1, sigma2, ff(6), dummy
+      type(tmatrix_scatmat_t) :: sm
       logical  :: ok
 
       write(*,'(a)') '----------------------------------------------------------------------'
@@ -720,7 +755,7 @@ contains
       maxe = 0.0_wp
       do ic = 1, NCP
          a = CP_A(ic);  lam = CP_L(ic)
-         call solve_full(a, lam, nmax, qext_o, qsca_o, qabs_o, &
+         call solve_full(a, lam, sm, qext_o, qsca_o, qabs_o, &
                          a1, a2, a3, a4, b1, b2, lmax, qsca_rand, ok)
          if (.not. ok) then
             write(*,'(a,f6.3,a,f6.3)') '   T-matrix did not converge at a=', a, ' lam=', lam
@@ -728,11 +763,11 @@ contains
          end if
          area      = PI*a*a
          csca_rand = qsca_rand*area
-         nb = 2*nmax + 2;  na = 4*nmax + 4
+         nb = 2*sm%nmax_tm + 2;  na = 4*sm%nmax_tm + 4
          call scatmat_from_moments(a1, a2, a3, a4, b1, b2, lmax, NF, &
                                    thf, f11, f22, f33, f44, f12, f34)
          write(*,'(a,f6.3,a,f6.4,a,i0,a,i0,a,i0)') '   a_eff=', a, ' um  lam=', lam, &
-              ' um   NMAX=', nmax, '   nBETA=', nb, '  nALPHA=', na
+              ' um   NMAX=', sm%nmax_tm, '   nBETA=', nb, '  nALPHA=', na
          do k = 1, NG
             cos_th = cos(GTI(k)*DEG)*cos(GTS(k)*DEG) &
                    + sin(GTI(k)*DEG)*sin(GTS(k)*DEG)*cos(GPH(k)*DEG)
@@ -740,7 +775,7 @@ contains
             big_theta = acos(cos_th)/DEG
 
             ! Ground truth: orientation-averaged Z at the general geometry.
-            call orient_average_z_general(nmax, lam, GTI(k), GTS(k), GPH(k), nb, na, zbar)
+            call orient_average_z_general(sm, GTI(k), GTS(k), GPH(k), nb, na, zbar)
             fmod = 4.0_wp*PI*zbar/csca_rand
 
             ! Reference: block-diagonal F(Theta) rotated into the meridional bases.
@@ -768,6 +803,19 @@ contains
       end do
       dummy = chk_rel('   Anchor H max normalized error', maxe, 0.0_wp, TOL_H)
    end subroutine anchor_h
+
+
+   subroutine ampl_ok(ierr_a)
+      ! AMPL's contract failures (no converged T-matrix in the workspace, a
+      ! scatmat retired by a later evaluation, NMAX out of range, an angle
+      ! outside its allowable range) are programming errors here: every anchor
+      ! evaluates a converged particle at a legal geometry.
+      integer, intent(in) :: ierr_a
+      if (ierr_a /= 0) then
+         write(error_unit,'(a,i0)') ' ERROR: libtmatrix ampl returned ierr = ', ierr_a
+         stop 2
+      end if
+   end subroutine ampl_ok
 
 
    real(wp) function helem(val, ref, f11r) result(e)
@@ -977,48 +1025,63 @@ contains
    ! ==================================================================
    ! shared solvers and quadratures
    ! ==================================================================
-   subroutine solve_full(a, lam, nmax_tm, qext_ori, qsca_ori, qabs_ori, &
+   subroutine solve_full(a, lam, sm, qext_ori, qsca_ori, qabs_ori, &
                          a1, a2, a3, a4, b1, b2, lmax, qsca_rand, ok)
       ! One (a_eff, lam) solve serving every anchor: the oriented cross
       ! sections (reference for A/B) from tmatrix_oriented_cross, and the
-      ! truncation order NMAX_TM, random-orientation Q_sca, and GSP expansion
-      ! coefficients from TMD_ONE_SCATMAT.  Both are the identical T-matrix
-      ! solve, so the second leaves COMMON /TMAT/ valid with the returned
-      ! NMAX_TM for the subsequent AMPL evaluations.
+      ! scatmat SM -- truncation order, random-orientation Q_sca, and GSP
+      ! expansion coefficients -- from tmatrix_eval_scattering_matrix.  Both
+      ! are the identical T-matrix solve, so the second leaves the workspace
+      ! holding that T-matrix with SM identifying it for the AMPL evaluations.
       real(wp), intent(in)  :: a, lam
-      integer,  intent(out) :: nmax_tm, lmax
+      type(tmatrix_scatmat_t), intent(out) :: sm
+      integer,  intent(out) :: lmax
       real(wp), intent(out) :: qext_ori(3), qsca_ori(3), qabs_ori(3)
       real(wp), intent(out) :: a1(NPL), a2(NPL), a3(NPL), a4(NPL), b1(NPL), b2(NPL)
       real(wp), intent(out) :: qsca_rand
       logical,  intent(out) :: ok
-      real(wp) :: nr, ki, qext, walb, asymm
+      real(wp) :: nr, ki
       complex(wp) :: m
       integer  :: ierr, ierr2
+      type(tmatrix_options_t) :: opts
+      type(tmatrix_result_t)  :: res
 
       call interp_m(lam, nr, ki)
       m = cmplx(nr, ki, kind=wp)
-      call tmatrix_oriented_cross(a, lam, m, EPS_BA, NP_OBL, DDELT, NDGS, &
+      call tmatrix_oriented_cross(work, a, lam, m, EPS_BA, NP_OBL, DDELT, NDGS, &
                                   qext_ori, qsca_ori, qabs_ori, ierr)
-      call tmd_one_scatmat(a, lam, nr, ki, EPS_BA, NP_OBL, DDELT, NDGS, &
-                           qext, qsca_rand, walb, asymm, &
-                           a1, a2, a3, a4, b1, b2, lmax, ierr2, nmax_tm)
+      opts%aspect_ratio = EPS_BA
+      opts%tolerance    = DDELT
+      opts%shape        = NP_OBL
+      opts%ndgs         = NDGS
+      call tmatrix_eval_scattering_matrix(work, a, lam, nr, ki, opts, res, sm)
+      if (res%status /= TMATRIX_SUCCESS .and. res%legacy_ierr == 0 .and. &
+          res%status /= TMATRIX_ERR_NUMERICAL_NONFINITE) then
+         write(error_unit,'(a,a)') ' ERROR: libtmatrix: ', trim(res%message)
+         stop 2
+      end if
+      qsca_rand = res%qsca
+      ierr2     = res%legacy_ierr
+      lmax      = sm%lmax
+      a1 = sm%al1;  a2 = sm%al2;  a3 = sm%al3
+      a4 = sm%al4;  b1 = sm%be1;  b2 = sm%be2
       ok = (ierr == 0 .and. ierr2 == 0)
    end subroutine solve_full
 
 
-   subroutine sphere_integrals(nmax, lam, theta_i, i11, i11p12, i11m12)
+   subroutine sphere_integrals(sm, theta_i, i11, i11p12, i11m12)
       ! INT Z11, INT (Z11+Z12), INT (Z11-Z12) over the scattering sphere,
       ! on the SAME exact quadrature as scatter_sphere_integral in
       ! driver/tmatrix_oriented.f90: Gauss-Legendre in cos(theta_s) with
       ! N_theta = NMAX+2 nodes, uniform phi with N_phi = 2*NMAX+2 points.
-      integer,  intent(in)  :: nmax
-      real(wp), intent(in)  :: lam, theta_i
+      type(tmatrix_scatmat_t), intent(in) :: sm
+      real(wp), intent(in)  :: theta_i
       real(wp), intent(out) :: i11, i11p12, i11m12
       integer  :: nth, nph, it, ip
       real(wp), allocatable :: xg(:), wg(:)
       real(wp) :: wphi, ts_deg, phi_deg, wt, z(4,4)
 
-      nth = nmax + 2;  nph = 2*nmax + 2
+      nth = sm%nmax_tm + 2;  nph = 2*sm%nmax_tm + 2
       allocate(xg(nth), wg(nth))
       call gauss(nth, 0, 0, xg, wg)
       wphi = 2.0_wp*PI / real(nph, kind=wp)
@@ -1027,7 +1090,7 @@ contains
          ts_deg = acos(xg(it)) / DEG
          do ip = 1, nph
             phi_deg = real(ip-1, kind=wp) * 360.0_wp / real(nph, kind=wp)
-            call mueller_matrix_fixed_orientation(nmax, lam, theta_i, ts_deg, phi_deg, z)
+            call mueller_matrix_fixed_orientation(work, sm, theta_i, ts_deg, phi_deg, z)
             wt = wg(it) * wphi
             i11    = i11    + wt *  z(1,1)
             i11p12 = i11p12 + wt * (z(1,1) + z(1,2))
@@ -1038,18 +1101,19 @@ contains
    end subroutine sphere_integrals
 
 
-   subroutine orient_average_z(nmax, lam, theta_deg, nb, na, zbar)
+   subroutine orient_average_z(sm, theta_deg, nb, na, zbar)
       ! Orientation average of the fixed-orientation Mueller matrix, incidence
       ! along z (TL = 0, PL = 0) and scattering at (theta_deg, 0), over the
       ! grain axis direction: Gauss-Legendre in cos(BETA) with nb nodes and
       ! uniform ALPHA with na nodes.  The averaged matrix depends only on the
       ! incidence-to-scattering angle theta_deg and, divided by Csca/4pi,
       ! reproduces the random-orientation F(Theta).
-      integer,  intent(in)  :: nmax, nb, na
-      real(wp), intent(in)  :: lam, theta_deg
+      type(tmatrix_scatmat_t), intent(in) :: sm
+      integer,  intent(in)  :: nb, na
+      real(wp), intent(in)  :: theta_deg
       real(wp), intent(out) :: zbar(4,4)
       real(wp), allocatable :: bx(:), bw(:)
-      integer  :: ib, ia
+      integer  :: ib, ia, ierr_a
       real(wp) :: beta_deg, alpha_deg, wb, z(4,4)
       complex(wp) :: vv, vh, hv, hh
 
@@ -1061,9 +1125,10 @@ contains
          wb = 0.5_wp * bw(ib)                    ! normalize the cos(BETA) average
          do ia = 1, na
             alpha_deg = real(ia-1, kind=wp) * 360.0_wp / real(na, kind=wp)
-            call ampl(nmax, lam, 0.0_wp, theta_deg, 0.0_wp, 0.0_wp, &
-                      alpha_deg, beta_deg, vv, vh, hv, hh)
-            call mueller_from_amplitude(vv, vh, hv, hh, z)
+            call ampl(work, sm, 0.0_wp, theta_deg, 0.0_wp, 0.0_wp, &
+                      alpha_deg, beta_deg, vv, vh, hv, hh, ierr_a)
+            call ampl_ok(ierr_a)
+            call phase_matrix_from_amplitude(vv, vh, hv, hh, z)
             zbar = zbar + (wb / real(na, kind=wp)) * z
          end do
       end do
@@ -1071,7 +1136,7 @@ contains
    end subroutine orient_average_z
 
 
-   subroutine orient_average_z_general(nmax, lam, theta_i, theta_s, phi, nb, na, zbar)
+   subroutine orient_average_z_general(sm, theta_i, theta_s, phi, nb, na, zbar)
       ! Orientation average of the fixed-orientation Mueller matrix at ARBITRARY
       ! incidence (theta_i, azimuth 0) and scattering (theta_s, phi), over the
       ! grain axis direction: Gauss-Legendre in cos(BETA) with nb nodes and
@@ -1079,11 +1144,12 @@ contains
       ! is the theta_i = 0, phi = 0 special case).  The ensemble average obeys
       ! the rotation identity Z = L(pi - sigma2) F(Theta) L(-sigma1), which
       ! Anchor H checks.
-      integer,  intent(in)  :: nmax, nb, na
-      real(wp), intent(in)  :: lam, theta_i, theta_s, phi
+      type(tmatrix_scatmat_t), intent(in) :: sm
+      integer,  intent(in)  :: nb, na
+      real(wp), intent(in)  :: theta_i, theta_s, phi
       real(wp), intent(out) :: zbar(4,4)
       real(wp), allocatable :: bx(:), bw(:)
-      integer  :: ib, ia
+      integer  :: ib, ia, ierr_a
       real(wp) :: beta_deg, alpha_deg, wb, z(4,4)
       complex(wp) :: vv, vh, hv, hh
 
@@ -1095,41 +1161,15 @@ contains
          wb = 0.5_wp * bw(ib)
          do ia = 1, na
             alpha_deg = real(ia-1, kind=wp) * 360.0_wp / real(na, kind=wp)
-            call ampl(nmax, lam, theta_i, theta_s, 0.0_wp, phi, &
-                      alpha_deg, beta_deg, vv, vh, hv, hh)
-            call mueller_from_amplitude(vv, vh, hv, hh, z)
+            call ampl(work, sm, theta_i, theta_s, 0.0_wp, phi, &
+                      alpha_deg, beta_deg, vv, vh, hv, hh, ierr_a)
+            call ampl_ok(ierr_a)
+            call phase_matrix_from_amplitude(vv, vh, hv, hh, z)
             zbar = zbar + (wb / real(na, kind=wp)) * z
          end do
       end do
       deallocate(bx, bw)
    end subroutine orient_average_z_general
-
-
-   subroutine mueller_from_amplitude(s11, s12, s21, s22, z)
-      ! Mueller matrix from the amplitude matrix, the same verbatim Mishchenko
-      ! bilinears as phase_matrix_from_amplitude in the engine module; kept
-      ! local so the orientation average can form Z at arbitrary grain Euler
-      ! angles (ALPHA, BETA), which the two-angle engine interface fixes to 0.
-      complex(wp), intent(in)  :: s11, s12, s21, s22
-      real(wp),    intent(out) :: z(4,4)
-      complex(wp), parameter :: CI = (0.0_wp, 1.0_wp)
-      z(1,1) = 0.5_wp*real( s11*conjg(s11)+s12*conjg(s12)+s21*conjg(s21)+s22*conjg(s22), kind=wp)
-      z(1,2) = 0.5_wp*real( s11*conjg(s11)-s12*conjg(s12)+s21*conjg(s21)-s22*conjg(s22), kind=wp)
-      z(1,3) = real(-s11*conjg(s12)-s22*conjg(s21), kind=wp)
-      z(1,4) = real(CI*(s11*conjg(s12)-s22*conjg(s21)), kind=wp)
-      z(2,1) = 0.5_wp*real( s11*conjg(s11)+s12*conjg(s12)-s21*conjg(s21)-s22*conjg(s22), kind=wp)
-      z(2,2) = 0.5_wp*real( s11*conjg(s11)-s12*conjg(s12)-s21*conjg(s21)+s22*conjg(s22), kind=wp)
-      z(2,3) = real(-s11*conjg(s12)+s22*conjg(s21), kind=wp)
-      z(2,4) = real(CI*(s11*conjg(s12)+s22*conjg(s21)), kind=wp)
-      z(3,1) = real(-s11*conjg(s21)-s22*conjg(s12), kind=wp)
-      z(3,2) = real(-s11*conjg(s21)+s22*conjg(s12), kind=wp)
-      z(3,3) = real( s11*conjg(s22)+s12*conjg(s21), kind=wp)
-      z(3,4) = real(-CI*(s11*conjg(s22)+s21*conjg(s12)), kind=wp)
-      z(4,1) = real(CI*(s21*conjg(s11)+s22*conjg(s12)), kind=wp)
-      z(4,2) = real(CI*(s21*conjg(s11)-s22*conjg(s12)), kind=wp)
-      z(4,3) = real(-CI*(s22*conjg(s11)-s12*conjg(s21)), kind=wp)
-      z(4,4) = real( s22*conjg(s11)-s12*conjg(s21), kind=wp)
-   end subroutine mueller_from_amplitude
 
 
    subroutine stokes_rotate_incident(zsp, phi_deg, z)
@@ -1201,6 +1241,12 @@ contains
       character(len=*), intent(in) :: label
       real(wp),         intent(in) :: val, ref, tol
       character(len=4) :: verdict
+      ! Exact-zero test on purpose: several references here are exactly zero by
+      ! symmetry (F34 in the random-orientation limit, the off-diagonal blocks
+      ! at scattering angles 0 and pi), and those are the cases that must be
+      ! judged on the absolute residual.  Every other reference, however small,
+      ! carries a meaningful relative error.  This is the -Wcompare-reals
+      ! warning this file deliberately keeps.
       if (ref /= 0.0_wp) then
          err = abs(val/ref - 1.0_wp)
       else
