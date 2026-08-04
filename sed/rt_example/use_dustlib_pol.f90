@@ -79,19 +79,22 @@ program use_dustlib_pol
    !
    ! WHICH WAVELENGTHS ARE POLARIZED. Cpol_ext, Cbir_ext and lamI_pol are built
    ! from the orientation-resolved OPTICS table, which covers 0.0912 - 39810 um
-   ! -- the whole grid this example builds. A host that widens the grid with
-   ! build_astrodust's lam_min gets an EUV block whose polarized optics need the
-   ! separate EUV companion table (tmatrix/driver/run_q_jori.f90, `euv` mode);
-   ! without it build_Cpol reports on stderr that the band is zero BY OMISSION
-   ! and leaves it there, so a host must read that report rather than take the
-   ! zero for physics. The scalar Cext / Cabs / Csca are unaffected either way:
-   ! they come from an extinction table that already covers the EUV.
+   ! -- 1129 of the 1762 wavelengths this example runs on. The grid is the
+   ! SCALAR Q table's and reaches 1.0e-4 um (12398 eV), so over the 633
+   ! wavelengths below 0.0912 um the polarized pair is zero BY OMISSION, not by
+   ! physics, and build_Cpol says so on stderr rather than letting the zero pass
+   ! for a result. A host that needs those wavelengths polarized generates the
+   ! EUV companion table (tmatrix/driver/run_q_jori.f90, `euv` mode) and passes
+   ! it as qpol_euv_path / qpol_euv_wave_path. The scalar Cext / Cabs / Csca are
+   ! unaffected: their extinction table covers the whole grid.
    use constants, only: wp
    use radfield,  only: J_Mathis
    use dust_lib,  only: dust_model_t, build_astrodust, dust_emission, &
                         dust_extinction, dust_set_alignment, dust_nlam
    implicit none
-   character(len=*), parameter :: QTAB  = '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat'
+   ! The scalar example grid is the EUV companion table.  The historical
+   ! non-EUV table remains the default for ordinary SED/MC runs.
+   character(len=*), parameter :: QTAB  = '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400_euv.dat'
    character(len=*), parameter :: SIZED = '../data/release/size_distribution.dat'
    real(wp), parameter :: DEG   = acos(-1.0_wp)/180.0_wp
    ! --- cell geometry: the host's numbers, not SEDust's ---

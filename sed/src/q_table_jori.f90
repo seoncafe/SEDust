@@ -85,7 +85,14 @@ module q_table_jori_mod
    integer, parameter :: wp = real64
 
    integer, parameter :: NA_DEF = 169    ! DH21 size grid length
-   integer, parameter :: NW_DEF = 1129   ! DH21 wavelength grid length
+   ! The wavelength grid length is NOT written down here.  run_q_jori.f90 takes
+   ! its axis from a grid file and its length with it, so a table's length is a
+   ! property of the axis it was swept on rather than of this module, and the
+   ! orientation-resolved table need not match the scalar one: the shipped
+   ! polarized table is the 1129-point DH21 axis, 0.0912-39810 um, while the
+   ! scalar Q table now runs to 1.0e-4 um on 1762 points.  The length is
+   ! counted out of the axis file the caller names, exactly as the EUV
+   ! companion reader below already does.
    integer, parameter :: NHEAD  = 12     ! header lines in the Q table
    integer, parameter :: NORI   = 3      ! orientations stored
 
@@ -161,6 +168,7 @@ contains
       logical, optional, intent(out) :: ok
 
       logical  :: sub_ok, bir
+      integer  :: nw_file
       real(wp), allocatable :: qext_j(:,:,:), qabs_j(:,:,:), qsca_j(:,:,:)  ! (NLAM, NA, 3)
       real(wp), allocatable :: qre_j(:,:,:)      ! (NLAM, NA, 3), optional 4th block
       character(len=512)    :: msg
@@ -170,7 +178,19 @@ contains
       ! free_state() zeroes the grid counters, so set them only afterwards.
       call free_state()
 
-      call read_jori_stream(q_file, wave_file, aeff_file, NA_DEF, NW_DEF, &
+      nw_file = count_grid_values(wave_file)
+      if (nw_file < 2) then
+         if (present(ok)) then
+            call free_state();  ok = .false.
+         else
+            write(error_unit,'(a,a)') &
+               'load_q_table_jori: cannot count the wavelength axis ', trim(wave_file)
+            stop 1
+         end if
+         return
+      end if
+
+      call read_jori_stream(q_file, wave_file, aeff_file, NA_DEF, nw_file, &
                             lam_j, aeff_j, qext_j, qabs_j, qsca_j, qre_j, &
                             bir, sub_ok, msg)
       if (.not. sub_ok) then
@@ -184,7 +204,7 @@ contains
       end if
 
       nj_aeff = NA_DEF
-      nj_lam  = NW_DEF
+      nj_lam  = nw_file
 
       ! ---- derived combinations --------------------------------------
       allocate(qpol_ext(nj_lam, nj_aeff), qpol_abs(nj_lam, nj_aeff))

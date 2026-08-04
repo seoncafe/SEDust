@@ -113,11 +113,14 @@ module dust_lib
    !   from_files (none -- a file-defined model's product is named after the
    !               model, so a host wanting extinction must name the file)
    ! The astrodust and DL07 defaults are the EUV products because they are the
-   ! WIDEST grid each model has (~1e-4 to 39810 um), so one file serves a host
-   ! that transports ionizing radiation and a host that does not -- the
-   ! latter's grid is a subset of the former's, on the same nodes. Naming a
-   ! kext_path is therefore how you NARROW the table (to
-   ! kext_astrodust_MW.dat / kext_dl07_MW.dat), or point at a product of your
+   ! WIDEST grid each model has, so one file serves a host that transports
+   ! ionizing radiation and a host that does not -- the latter's grid is a
+   ! subset of the former's, on the same nodes. Since the Q table itself
+   ! reached 1.0e-4 um the astrodust pair covers the SAME 1762 wavelengths and
+   ! differs only in field width, header, and the dichroic eighth column that
+   ! kext_astrodust_MW.dat carries; only DL07 still has two grids to choose
+   ! between (1762 nodes from 1.0e-4 um, or 1823 from 6.205e-5 um). Naming a
+   ! kext_path is how you pick the narrower one, or point at a product of your
    ! own. A kext_path that cannot be read fails the build (see the codes
    ! below); a
    ! DEFAULT that cannot be read does not, since the emission-only drivers must
@@ -133,10 +136,11 @@ module dust_lib
    ! the table; when it is omitted such a call stops the run.
    !
    ! All four builders carry scattering optics, so albedo and gbar are physical
-   ! for every model: astrodust from the T-matrix Q table (and Mie on the same
-   ! dielectric function below 0.0912 um), DL07 from Mie on the D03 silicate
-   ! and graphite functions, Zubko and file-defined models from the Q_sca and g
-   ! columns of their own tables. Only astrodust carries polarized optics.
+   ! for every model: astrodust from the T-matrix Q table at every wavelength
+   ! the model has, the ionizing band included, DL07 from Mie on the D03
+   ! silicate and graphite functions, Zubko and file-defined models from the
+   ! Q_sca and g columns of their own tables. Only astrodust carries polarized
+   ! optics.
    !
    ! GRAIN ALIGNMENT. Both the polarized emission (lamI_pol) and the dichroic
    ! extinction (Cpol_ext) are weighted by an alignment efficiency
@@ -214,6 +218,13 @@ module dust_lib
    !                                  9 the EUV band runs outside the
    !                                    wavelengths that table covers,
    !                                    0.0124-0.0912 um (build_astrodust only)
+   !                                 11 euv_tmatrix = .true. but the spheroid
+   !                                    optics of the EUV band are not
+   !                                    available: no euv_band_optics_i is
+   !                                    registered (a library built without
+   !                                    the T-matrix), or the registered one
+   !                                    could not compute the band
+   !                                    (build_astrodust only)
    !                                  (build_astrodust also forwards sed_init's
    !                                   polarized-optics codes 3, 4, 5)
    !                                  build_dl07 only:
@@ -234,16 +245,72 @@ module dust_lib
    !                     7 size-dist read    8 calorimetry read failed
    !                     9 an explicitly named kext_path failed to load
    !
-   ! WAVELENGTH GRID AND THE EUV. m%lam is the T-matrix Q table's grid, which
-   ! ends at 0.0912 um (13.6 eV, the Lyman limit). build_astrodust and
-   ! build_dl07 take an optional lam_min [um] that carries the grid down to
-   ! that wavelength, log-spaced no more coarsely than the table's own spacing,
-   ! for a host that transports the 6-100 eV band a photoionization RT needs.
-   ! Omitting it leaves the grid, and every result, exactly as before. In the
-   ! extended band the SCALAR astrodust optics come from the DH21 dielectric
-   ! function for the volume-equivalent sphere rather than the b/a = 1.4
-   ! spheroid; Cext, Cabs, Csca, gbar and albedo are complete over the whole
-   ! extended grid.
+   ! WAVELENGTH GRID AND THE EUV. m%lam is the T-matrix Q table's grid, and
+   ! that table spans 1.0e-4 to 39810 um -- 12398 eV down to 0.031 eV -- on
+   ! 1762 wavelengths. THE IONIZING BAND IS INSIDE IT, computed the same way as
+   ! the rest of it, so a host that transports ionizing radiation reads it off
+   ! the table and needs nothing further. Below 0.0912 um the table's
+   ! wavelengths are the DH21 dielectric function's own energy nodes, so each
+   ! absorption edge stays an exact step between adjacent grid points; the one
+   ! added point that is not a node, 0.0912*(1-1e-4), resolves the Lyman-limit
+   ! step of the radiation FIELD rather than anything in the grain.
+   !
+   ! build_astrodust and build_dl07 still take an optional lam_min [um] that
+   ! prepends log-spaced points from lam_min up to the table, no more coarsely
+   ! than the table's own spacing at its short end (0.00794 in dln(lambda) on
+   ! the current axis, taken from the table rather than written down). Omitting
+   ! it, or passing one the table already covers, prepends nothing.
+   !
+   ! FOR ASTRODUST THERE IS NOTHING LEFT TO ASK FOR. The DH21 dielectric
+   ! function stops at 1.00003e-4 um, longward of the table's own first
+   ! wavelength, so every legal lam_min either falls inside the table -- no
+   ! band, no work -- or below the dielectric data, where it is refused rather
+   ! than served with a frozen refractive index. DL07 can still be extended, to
+   ! 6.205e-5 um, because the D03 optical constants reach further than the
+   ! table does; its optics are Mie on those functions at every wavelength, so
+   ! that extension needs no T-matrix either.
+   !
+   ! WHEN a band IS computed (n_euv > 0), the SCALAR astrodust optics there come
+   ! from the DH21 dielectric function on the b/a = 1.400 oblate SPHEROID the Q
+   ! table itself is made of, so the grain does not change shape at the seam;
+   ! Cext, Cabs, Csca, gbar and albedo are complete over the whole grid.
+   !
+   ! That spheroid is the ONLY thing in this library that needs the T-matrix,
+   ! and it is not compiled in by default. The plain libsedust.a therefore has
+   ! no T-matrix in it and links without one; asking it for the spheroid
+   ! (euv_tmatrix = .true., the default whenever lam_min is given) is REFUSED
+   ! with status 11 rather than answered with a sphere. With the shipped tables
+   ! no model reaches that refusal, because no model reaches the band. To get
+   ! the spheroid anyway -- for a shorter Q table, or a model whose dielectric
+   ! data outruns its table:
+   !
+   !   cd tmatrix && make libtmatrix.a
+   !   cd sed     && WITH_TMATRIX=1 make libsedust.a     # or ./build_lib.sh
+   !
+   ! and, once in the host, before the model is built:
+   !
+   !   use euv_astrodust_tmatrix, only: use_tmatrix_euv_band_optics
+   !   call use_tmatrix_euv_band_optics()
+   !
+   ! (Or register an implementation of your own: sed_register_euv_band_optics
+   ! takes any procedure matching the abstract interface euv_band_optics_i,
+   ! both re-exported here, and sed_forget_euv_band_optics undoes it.)
+   ! A host that would rather have the far cheaper volume-equivalent sphere
+   ! asks for it explicitly with euv_tmatrix = .false.
+   !
+   ! LINKING. One archive, and one .mod search path:
+   !   cd sed && make libsedust.a          # or ./build_lib.sh -> sed/lib/
+   !   gfortran -I<sed> my_rt.f90 -L<sed> -lsedust -fopenmp -o my_rt.x
+   ! Nothing in this library reaches the T-matrix, so ../tmatrix need not even
+   ! be built.
+   !
+   ! A host that DOES want the astrodust EUV band on the spheroid builds the
+   ! T-matrix into the SAME archive, so the link line does not change:
+   !   cd tmatrix && make libtmatrix.a
+   !   cd sed     && WITH_TMATRIX=1 make libsedust.a
+   !   gfortran -I<sed> my_rt.f90 -L<sed> -lsedust -fopenmp -o my_rt.x
+   ! and calls use_tmatrix_euv_band_optics() once, as above. libtmatrix.a
+   ! itself needs no OpenMP runtime; the threading is on the SEDust side.
    !
    ! The POLARIZED optics are NOT extended by default, and this is the one
    ! place where a caller can be misled by a zero. Cpol_ext and Cbir_ext below
@@ -272,6 +339,9 @@ module dust_lib
                                 dust_extinction, size_integrated_extinction, &
                                 dust_mass_per_H, &
                                 dust_has_polarized_optics, &
+                                euv_band_optics_i, &
+                                sed_register_euv_band_optics, &
+                                sed_forget_euv_band_optics, &
                                 dust_set_alignment, dust_set_alignment_profile
    ! Aligned-grain polarized scattering optics for a polarized RT host. The
    ! init call (load_scatmat_aligned) runs once from serial code; the query
@@ -297,6 +367,10 @@ module dust_lib
    public :: dust_emission, dust_emission_single_teq, dust_extinction
    public :: size_integrated_extinction
    public :: dust_mass_per_H
+   ! Optics of the astrodust EUV band; see the WAVELENGTH GRID AND THE EUV note
+   ! above.
+   public :: euv_band_optics_i
+   public :: sed_register_euv_band_optics, sed_forget_euv_band_optics
    public :: dust_has_polarized_optics
    public :: dust_set_alignment, dust_set_alignment_profile
    ! Re-exported aligned-scattering API (initialization + path queries)

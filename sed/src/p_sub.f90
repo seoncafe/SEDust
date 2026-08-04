@@ -21,6 +21,12 @@ module p_sub
    use, intrinsic :: iso_fortran_env, only: real64
    use constants, only: wp
    use sed_mathlib,   only: interp, logadd
+   ! The upward-transition rates are driven by PHOTONS, so the band they are
+   ! integrated over is the band the field occupies -- not the span of whatever
+   ! optics table the model happens to be tabulated on.  hardest_photon_energy
+   ! is the library's one answer to "how hard does this field get"; calc_P is
+   ! the fourth caller that needs it.
+   use radfield,      only: hardest_photon_energy
    implicit none
    private
    public :: p_sub_setup, calc_Teq, calc_P
@@ -30,6 +36,31 @@ module p_sub
    real(wp), parameter :: c     = 2.99792458d10   ! cm/s
    real(wp), parameter :: hp    = 6.62606957d-27  ! cm^2 g s^-1
    real(wp), parameter :: hc    = hp*c*1d4        ! erg um  (lambda is in um)
+
+   ! Sampling of the highest-bin integral, which runs over every photon more
+   ! energetic than the top enthalpy bin's gap.
+   !
+   ! The rule used to be a flat 51 points spanning from lambda(1) -- the short
+   ! end of the OPTICS GRID -- to the gap wavelength.  That tied the resolution
+   ! to the optics table instead of to the band being integrated.  On a grid
+   ! stopping at the Lyman limit it happened to work, giving dln(lambda) =
+   ! 0.0018-0.0238 across the bins that carry the correction; on a table
+   ! carried to 1e-4 um the same 51 points spread over 912 times the range and
+   ! left between 1 and 8 of them inside the band the field actually occupies.
+   !
+   ! Moving the lower limit to the field's own short end fixes where the band
+   ! is, but a fixed count would still make the step follow the band's width,
+   ! so the count follows it instead: enough points for a step of
+   ! DLNWAV_TARGET, never fewer than NWAV_MIN, never more than NWAV_MAX.
+   ! DLNWAV_TARGET is the coarsest step the old 51 points ever gave over the
+   ! bands that carry the correction, so a narrow band is sampled at least as
+   ! finely as before (NWAV_MIN reproduces it outright), and a band four
+   ! decades wide -- which the old rule sampled at dln(lambda) = 0.19 -- is no
+   ! longer starved.  The integrand, C_abs(lambda) * lambda^2 * J_lambda, is
+   ! smooth over the illuminated band, so a bounded step is all it needs.
+   integer,  parameter :: NWAV_MIN      = 51
+   integer,  parameter :: NWAV_MAX      = 301
+   real(wp), parameter :: DLNWAV_TARGET = 0.02_wp
 
    real(wp), allocatable :: dlnlam_int(:)
    real(wp), allocatable :: log_lambda(:)
@@ -113,9 +144,22 @@ contains
       real(wp) :: sumB
       integer  :: nwav
       real(wp) :: dlnwav, wav
+      real(wp) :: u_hard, lam_hard, span
 
       nlambda = size(lambda)
       nT      = size(T)
+      ! Hardest photon the FIELD carries, and the wavelength that goes with it.
+      ! Every upward rate below is cut off there: a transition needing more
+      ! energy than this has nothing to drive it.  A field that is zero
+      ! everywhere returns 0, and the fallback then leaves the old grid-edge
+      ! behavior rather than dividing by it.
+      u_hard = hardest_photon_energy(lambda, Jfield)
+      if (u_hard > 0.0_wp) then
+         lam_hard = hc / u_hard
+      else
+         lam_hard = lambda(1)
+         u_hard   = hc / lambda(1)
+      end if
       ! Amat_ws/Bmat_ws are reused per thread across calls: (re)allocate only
       ! when unallocated or when nT changes, then zero-fill (the recursion
       ! rebuilds the whole matrix each call).
@@ -150,13 +194,27 @@ contains
             wavl = hc / ener
             call interp(lambda, Jfield, wavl, Jwavl)
             call interp(lambda, Cabs,   wavl, Cross)
+            ! No photon this hard exists, so the transition has no driver.
+            ! Without the test `interp` clamps instead: asked below lambda(1) it
+            ! returns Jfield(1), which on a grid ending at the field's own edge
+            ! is the full J there rather than zero, and every gap wider than the
+            ! hardest photon is then driven by a photon flux that is not in the
+            ! field.  A grid carried past the field makes the clamp harmless,
+            ! but the cutoff belongs to the physics, not to the tabulation.
+            if (ener > u_hard) Jwavl = 0.0_wp
             Amat_ws(i2, i1) = FOURPI * Cross * hc * delH / ener**3 * Jwavl
-            ! Highest-bin: add transitions to all energies above this bin.
-            if (i2 == nT) then
-               nwav   = 51
-               dlnwav = log(wavl/lambda(1))/(nwav-1)
+            ! Highest-bin: add transitions to all energies above this bin, i.e.
+            ! to every photon shorter than wavl.  The field carries none shorter
+            ! than lam_hard, so the band is [lam_hard, wavl] -- and it is empty
+            ! when the gap already exceeds the hardest photon.  Leaving that
+            ! case to the loop would integrate backwards over an unilluminated
+            ! band and subtract a rate.
+            if (i2 == nT .and. ener < u_hard) then
+               span   = log(wavl/lam_hard)
+               nwav   = min(NWAV_MAX, max(NWAV_MIN, ceiling(span/DLNWAV_TARGET) + 1))
+               dlnwav = span/(nwav-1)
                do k = 1, nwav
-                  wav = lambda(1) * exp((k-1)*dlnwav)
+                  wav = lam_hard * exp((k-1)*dlnwav)
                   call interp(lambda, Jfield, wav, Jwavl)
                   call interp(lambda, Cabs,   wav, Cross)
                   Amat_ws(i2, i1) = Amat_ws(i2, i1) + &

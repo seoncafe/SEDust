@@ -28,6 +28,12 @@ program main_astrodust
                                 use_induced_emission, gd_photon_cutoff
    use stoch_qm_mod,      only: qm_method, qm_nstate_default, qm_nisrf_max
    use enthalpy_astrodust_mod, only: s1_density_corrected
+   ! The astrodust EUV band, when one is asked for, is solved on the oblate
+   ! spheroid of the Q table rather than on a volume-equivalent sphere. That
+   ! calculation is a separate module so that the library links without the
+   ! T-matrix; naming it here makes this driver able to carry a grid below
+   ! the Q table's short-wavelength end the moment sed_init is given a lam_min.
+   use euv_astrodust_tmatrix, only: use_tmatrix_euv_band_optics
    implicit none
 
    character(len=*), parameter :: F_QTAB =  &
@@ -132,6 +138,7 @@ program main_astrodust
    ! caught now rather than after the solve.
    write(*,'(a,a,a)')  ' output files: ', OUTDIR, trim(suffix)//'<stage>.dat'
 
+   call use_tmatrix_euv_band_optics()
    call sed_init(F_QTAB, F_SIZE, NT_IN, T_LO, T_HI)
    write(*,'(a,i0,a)') ' sed_init done. NLAM=', NLAM, ' wavelengths cached.'
    write(*,'(a)') ''
@@ -191,8 +198,14 @@ contains
          write(uu,'(a,a)') '# Enthalpy stage: ', trim(stage)
       end if
       write(uu,'(a)') '# columns: lambda[um]    lambda*I_lambda / N_H [erg s^-1 cm^-2 sr^-1 H^-1]'
+      ! e3 on the intensity: carried into the EUV and X-ray, lambda*I_lambda
+      ! underflows to subnormals (~1e-320) on the Wien side of a 20 K grain, and
+      ! a two-digit exponent field drops the E there -- Fortran writes
+      ! 4.29970510-319, which its own list-directed read accepts but numpy, IDL
+      ! and awk do not.  The wavelength column needs no widening: the grid spans
+      ! 1e-4 to 4e4 um, two exponent digits throughout.
       do kk = 1, NLAM
-         write(uu,'(es14.6,1x,es16.8)') lam(kk), lamI(kk)
+         write(uu,'(es14.6,1x,es16.8e3)') lam(kk), lamI(kk)
       end do
       close(uu)
       write(*,'(a,a)') 'wrote ', trim(fn)

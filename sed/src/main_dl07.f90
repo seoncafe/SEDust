@@ -120,8 +120,11 @@ program main_dl07
    write(u,'(a)') '# PAH ionization computed via WD01b grain charging (pah_ionfrac)'
    write(u,'(a)') '# columns: lambda[um]  lamI_total/NH  lamI_sil/NH  lamI_carb/NH'
    write(u,'(a)') '#          [erg s^-1 cm^-2 sr^-1 H^-1]'
+   ! e3 on the intensities: on a grid carried into the EUV, lambda*I_lambda
+   ! underflows to subnormals, and a two-digit exponent field drops the E there
+   ! (4.29970510-319), which readers outside Fortran cannot parse.
    do k = 1, NLAM
-      write(u,'(es14.6,3(1x,es16.8))') lam(k), lamI_tot(k), lamI_sil(k), lamI_carb(k)
+      write(u,'(es14.6,3(1x,es16.8e3))') lam(k), lamI_tot(k), lamI_sil(k), lamI_carb(k)
    end do
    close(u)
    write(*,'(a,a)') ' wrote ', trim(fname)

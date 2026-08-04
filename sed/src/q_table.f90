@@ -10,6 +10,12 @@ module q_table_mod
    ! sweep (no 'test' arg) before invoking this module — the test-mode
    ! file has stride > 1 and breaks the NA*NW row count assumed here.
    !
+   ! NW is not written down here. run_tmatrix.f90 takes its wavelength axis
+   ! from a grid file and its length with it, so the axis changes whenever that
+   ! file does — extending the table into the EUV and X-ray took it from 1129 to
+   ! 1761 points. The length is therefore recovered from the table itself, as
+   ! the data-row count divided by the size-grid length.
+   !
    ! Also provides a simple log-linear interpolator in `a_eff` at fixed
    ! lambda index, which is the operation tau_check needs.
 
@@ -23,7 +29,6 @@ module q_table_mod
    integer, parameter :: wp = real64
 
    integer, parameter :: NA_DEF = 169   ! DH21 size grid length
-   integer, parameter :: NW_DEF = 1129  ! DH21 wavelength grid length
 
    integer  :: n_aeff = 0, n_lam = 0
    real(wp), allocatable :: aeff_t(:), lam_t(:)            ! grid axes
@@ -36,8 +41,9 @@ contains
 
    subroutine load_q_table(filename, na_in, nw_in, ok)
       ! Reads a (NA, NW) Q table written by run_tmatrix.f90 in jw-outer,
-      ! ja-inner order. Defaults na=169, nw=1129; pass other values when
-      ! reading a different grid.
+      ! ja-inner order. na defaults to 169; nw defaults to the file's own data-
+      ! row count divided by na. Pass either explicitly to read a grid whose
+      ! shape is known independently of the file.
       !
       ! Optional ok: absent -> print + stop on any error (original behavior);
       ! present -> return .false. with the module left unloaded (arrays freed,
@@ -61,7 +67,21 @@ contains
       if (present(ok)) ok = .true.
 
       n_aeff = NA_DEF;  if (present(na_in)) n_aeff = na_in
-      n_lam  = NW_DEF;  if (present(nw_in)) n_lam  = nw_in
+      if (present(nw_in)) then
+         n_lam = nw_in
+      else
+         call count_lambda_blocks(filename, n_aeff, n_lam)
+      end if
+      if (n_lam < 1) then
+         if (present(ok)) then
+            call reset_state();  ok = .false.;  return
+         else
+            write(error_unit,'(a,a)') &
+               'load_q_table: cannot determine the wavelength grid length of ', &
+               trim(filename)
+            stop 1
+         end if
+      end if
 
       if (allocated(aeff_t)) deallocate(aeff_t, lam_t, qext, qabs, qsca, albedo, gpar, flag, log_a)
       allocate(aeff_t(n_aeff), lam_t(n_lam))
@@ -204,6 +224,38 @@ contains
       end do
 
    contains
+
+      subroutine count_lambda_blocks(fname, na, nlam)
+         ! Wavelength grid length of a table on disk: its data rows divided by
+         ! the size-grid length, since the writer emits one a_eff block per
+         ! wavelength. Returns 0 -- the caller's "unusable" value -- when the
+         ! file will not open, holds no data row, or holds a row count that is
+         ! not a whole number of blocks, which is the signature of a truncated
+         ! file or of a stride > 1 subset table.
+         character(len=*), intent(in)  :: fname
+         integer,          intent(in)  :: na
+         integer,          intent(out) :: nlam
+         integer :: uc, iosc, nrow
+         character(len=512) :: rec
+
+         nlam = 0
+         if (na < 1) return
+         open(newunit=uc, file=fname, status='old', action='read', iostat=iosc)
+         if (iosc /= 0) return
+         nrow = 0
+         do
+            read(uc,'(a)',iostat=iosc) rec
+            if (iosc /= 0) exit
+            rec = adjustl(rec)
+            if (len_trim(rec) == 0) cycle
+            if (rec(1:1) == '#')    cycle
+            nrow = nrow + 1
+         end do
+         close(uc)
+         if (nrow < na)           return
+         if (mod(nrow, na) /= 0)  return
+         nlam = nrow / na
+      end subroutine count_lambda_blocks
 
       subroutine reset_state()
          ! Free the module arrays and mark the table unloaded (error path).

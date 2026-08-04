@@ -127,8 +127,12 @@ program main_zubko
         T_EUV, ' K, W = ', W_EUV
    write(u,'(a)') '# columns: lambda[um]  lamI_total/NH  lamI_PAH/NH  lamI_GRA/NH  lamI_SIL/NH'
    write(u,'(a)') '#          [erg s^-1 cm^-2 sr^-1 H^-1]'
+   ! e3 on the intensities: this model's optics grid already starts at 1e-3 um
+   ! (1.24 keV), where lambda*I_lambda underflows to subnormals, and a two-digit
+   ! exponent field drops the E there (4.29970510-319), which readers outside
+   ! Fortran cannot parse.
    do k = 1, m%NLAM
-      write(u,'(es14.6,4(1x,es16.8))') m%lam(k), lamI_tot(k), &
+      write(u,'(es14.6,4(1x,es16.8e3))') m%lam(k), lamI_tot(k), &
            (lamI_chan(k, ic), ic = 1, m%n_channel)
    end do
    close(u)

@@ -1,8 +1,13 @@
 # SEDust -- SED solver build.
 #
 # Targets:
-#   make                     main_astrodust.x main_dl07.x make_enthalpy.x calc_kext.x
-#   make libsedust.a         the model-agnostic dust-emission library
+#   make                     main_astrodust.x main_dl07.x main_zubko.x
+#                            make_enthalpy.x calc_kext.x
+#   make libsedust.a         the model-agnostic dust-emission library, with no
+#                            T-matrix in it (see below)
+#   WITH_TMATRIX=1 make libsedust.a
+#                            ... with the T-matrix and the spheroid optics of
+#                            the astrodust EUV band in the same archive
 #   make calc_kext.x             size-integrated transport optics for any model
 #   make calc_polext.x           HD23 polarized extinction per H, vs release
 #   make test_scatmat_aligned.x  aligned-scattering reader/interface checks
@@ -38,6 +43,45 @@ WARN    = -Wall -Wextra -Wno-compare-reals -Wno-unused-dummy-argument \
 FFLAGS  = -O3 -ffree-line-length-none $(WARN)
 # FFLAGS  = -O3 -march=native -ffree-line-length-none $(WARN)
 FFLAGS += -fopenmp
+# Local variables belong on the run-time stack, not in static storage: the EUV
+# band optics of sed_astrodust.f90 are threaded, and they reach
+# spheroid_optics.f90 and asymptotic_optics.f90, which this Makefile recompiles
+# with its own flags.  The flag is a no-op for GFortran, which already stacks
+# local arrays (measured: an object holding a 4096-element local array has an
+# empty .bss either way).  It is not a no-op for Intel, where the same object
+# carries 32 kB of .bss without it.  Enabling OpenMP happens to imply it on
+# both compilers, so nothing is broken today; stating it keeps the reentrancy
+# of a threaded path from resting on that side effect.
+FFLAGS += -frecursive
+
+# ---- T-matrix library, for the astrodust EUV band only ---------------
+# The astrodust model's extreme-ultraviolet band (a lam_min shorter than the Q
+# table's own short-wavelength end) is solved on the same oblate spheroid the
+# table itself is, which is a T-matrix calculation.  It is the only thing in
+# the tree that needs libtmatrix.a, and src/sed_astrodust.f90 reaches it
+# through a procedure pointer rather than a use statement, so:
+#
+#   * `make libsedust.a` links and archives NO T-matrix at all.  A model built
+#     from that library answers euv_tmatrix = .true. with status 11.
+#   * `WITH_TMATRIX=1 make libsedust.a` adds the T-matrix and the spheroid
+#     route to the same archive, so an RT host still links only -lsedust.  The
+#     host calls use_tmatrix_euv_band_optics() once before build_astrodust.
+#   * the two astrodust CLI drivers (main_astrodust.x, calc_kext.x) always
+#     take the spheroid route, so they are always built against
+#     $(TMDIR)/libtmatrix.a.  Build it first:
+#         cd ../tmatrix && make libtmatrix.a
+TMDIR   = ../tmatrix
+TMARCH  = $(TMDIR)/libtmatrix.a
+TMINC   = -I$(TMDIR)
+TMLIB   = -L$(TMDIR) -ltmatrix
+
+# The spheroid route: the two driver modules that own the size-parameter regime
+# selection (Rayleigh dipole / T-matrix / geometric optics), and the module
+# that solves the EUV band with them.  The last one uses sed_astrodust_mod, so
+# it must FOLLOW src/sed_astrodust.f90.
+SRC_EUVTM = $(TMDIR)/driver/asymptotic_optics.f90 \
+            $(TMDIR)/driver/spheroid_optics.f90 \
+            src/euv_astrodust_tmatrix.f90
 
 # ---- source groups, in dependency order ------------------------------
 SRC_BASE    = src/constants.f90 src/sed_mathlib.f90
@@ -65,14 +109,25 @@ SRC_ENTH    = $(SRC_BASE) src/enthalpy_v2.f90 \
 
 all: make_enthalpy.x main_astrodust.x main_dl07.x main_zubko.x calc_kext.x
 
+# Fail with an instruction rather than a link error when the T-matrix archive is
+# absent.  No prerequisites, so this recipe runs only if the file does not
+# exist.  It sits after `all` so that `all` stays the default goal.
+$(TMARCH):
+	@echo '*** $(TMARCH) not found.'
+	@echo '*** Build it first:   cd $(TMDIR) && make libtmatrix.a'
+	@false
+
 make_enthalpy.x: $(SRC_ENTH)
 	$(FC) $(FFLAGS) $^ -o $@
 	@echo 'Built: ./make_enthalpy.x'
 
-main_astrodust.x: $(SRC_PIPE) src/main_astrodust.f90
-	$(FC) $(FFLAGS) $^ -o $@
+main_astrodust.x: $(SRC_PIPE) $(SRC_EUVTM) src/main_astrodust.f90 | $(TMARCH)
+	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) -o $@
 	@echo 'Built: ./main_astrodust.x'
 
+# DL07 emission. Its own optics are Mie on the D03 dielectric functions, which
+# already run to 6.2e-5 um, so this driver reaches no astrodust EUV band and
+# needs no T-matrix.
 main_dl07.x: $(SRC_PIPE) src/main_dl07.f90
 	$(FC) $(FFLAGS) $^ -o $@
 	@echo 'Built: ./main_dl07.x'
@@ -91,8 +146,8 @@ main_zubko.x: $(SRC_PIPE) src/main_zubko.f90
 # principles (size_integrated_extinction); the tables it writes here are the
 # very ones dust_extinction reads back for an RT host.  The astrodust product
 # also carries the dichroic C_polext/H column.
-calc_kext.x: $(SRC_PIPE) src/calc_kext.f90
-	$(FC) $(FFLAGS) $^ -o $@
+calc_kext.x: $(SRC_PIPE) $(SRC_EUVTM) src/calc_kext.f90 | $(TMARCH)
+	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) -o $@
 	@echo 'Built: ./calc_kext.x'
 
 # Polarized extinction per H from the orientation-resolved DH21 spheroid
@@ -135,15 +190,43 @@ test_euv_extension.x: $(SRC_TEUV)
 
 # ---- libsedust.a: the model-agnostic dust-emission library, for a Fortran
 # 3D RT code to link.  Usage from the RT:  use dust_lib ;  link
-#   -L<sed> -lsedust  with the .mod search path  -I<sed>
+#   -L<sed> -lsedust        with the .mod search path  -I<sed>
+# One archive, and no T-matrix in it, so a host that transports no ionizing
+# radiation needs nothing from ../tmatrix at all.
+#
+# A host that DOES want the astrodust EUV band on the spheroid of the Q table
+# builds  WITH_TMATRIX=1 make libsedust.a  instead.  The T-matrix objects and
+# the spheroid route then go into the same archive (still one -lsedust), and
+# the host adds
+#       use euv_astrodust_tmatrix, only: use_tmatrix_euv_band_optics
+#       call use_tmatrix_euv_band_optics()
+# once before build_astrodust.  Without that call, euv_tmatrix = .true. is
+# refused with status 11 rather than answered with a sphere.
 LIB_SRC = $(SRC_PIPE) src/dust_lib.f90
 LIB_OBJ = $(notdir $(LIB_SRC:.f90=.o))
+
+ifdef WITH_TMATRIX
+
+# The T-matrix objects are taken from ../tmatrix's own build, not recompiled
+# here: tmatrix_core.f90 needs -fno-inline for its results to be reproducible,
+# and that knowledge belongs to the Makefile that owns the source.
+libsedust.a: $(LIB_SRC) $(SRC_EUVTM) | $(TMARCH)
+	$(FC) $(FFLAGS) $(TMINC) -c $(LIB_SRC) $(SRC_EUVTM)
+	rm -rf tmarch.d && mkdir tmarch.d && (cd tmarch.d && ar x ../$(TMARCH))
+	rm -f $@
+	ar rcs $@ $(LIB_OBJ) $(notdir $(SRC_EUVTM:.f90=.o)) tmarch.d/*.o
+	rm -rf tmarch.d
+	@echo 'Built: libsedust.a with the T-matrix  (link with -L. -lsedust -I.)'
+
+else
 
 libsedust.a: $(LIB_SRC)
 	$(FC) $(FFLAGS) -c $(LIB_SRC)
 	rm -f $@
 	ar rcs $@ $(LIB_OBJ)
 	@echo 'Built: libsedust.a  (link with -L. -lsedust -I.)'
+
+endif
 
 # rt_example: aligned-scattering Peest-style consumer, built AS AN EXTERNAL host
 # would -- against libsedust.a and the .mod search path, not from the pipeline
@@ -154,6 +237,7 @@ use_dustlib_scatmat.x: libsedust.a rt_example/use_dustlib_scatmat.f90
 
 clean:
 	rm -f *.o *.mod
+	rm -rf tmarch.d
 
 cleanall: clean
 	rm -f *.a make_enthalpy.x main_astrodust.x main_dl07.x main_zubko.x \

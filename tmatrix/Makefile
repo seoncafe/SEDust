@@ -40,22 +40,68 @@
 # `make cleanall` deliberately does NOT delete them.
 
 FC = gfortran
-OMPFLAGS ?= -fopenmp
 BUILD ?= release
 
-WARNFLAGS = -Wall -Wextra -Wimplicit-interface -Wsurprising
-LEGACY_BASE = -ffixed-line-length-none -fmax-stack-var-size=65536
-MODERN_BASE = -ffree-line-length-none
+# Compiler family.  Only the flag spellings differ; the object list and the
+# reentrancy contract are the same for both.  On the oneAPI releases installed
+# here the `ifort` driver is the IFX compiler, so `ifort`, `ifx`, and the MPI
+# wrappers all take the Intel spellings.  Set FC_FAMILY on the command line
+# when the compiler is reached through a wrapper whose name hides it (mpif90,
+# ftn, ...).
+ifneq (,$(filter ifort ifx mpiifort mpiifx,$(notdir $(FC))))
+  FC_FAMILY ?= intel
+else
+  FC_FAMILY ?= gnu
+endif
+
+ifeq ($(FC_FAMILY),intel)
+  OMPFLAGS ?= -qopenmp
+  WARNFLAGS = -warn all
+  # -extend-source 132 covers lpd.f, whose only line past column 72 is a
+  # comment; keeping it explicit means a future long statement is not silently
+  # truncated.  Free-form sources need no length flag because Intel already
+  # accepts the whole line.
+  LEGACY_BASE = -extend-source 132
+  MODERN_BASE = -free
+  # -recursive is the Intel spelling of -frecursive: it puts every local
+  # variable on the run-time stack, which is what makes a routine reentrant.
+  # Intel's default (-auto-scalar) stacks only intrinsic-type scalars and
+  # leaves fixed-size local arrays, derived types, and character locals in
+  # static storage, so this flag is required, not decorative.
+  RECURSIVE_FLAG = -recursive
+  # Intel counterpart of -fno-inline, kept so the Intel build has the same
+  # "core is not inlined" property.  The reproducibility argument recorded at
+  # the tmatrix_core.o rule is a GNU-to-GNU one and does not carry across
+  # compilers.
+  NOINLINE_FLAG = -inline-level=0
+  # Intel defaults to -fp-model fast, which reassociates and contracts freely.
+  # The T-matrix convergence test compares successive iterates against DDELT,
+  # so value-unsafe rearrangement moves the iteration count.  -fp-model precise
+  # is what keeps the solver on the iteration path the golden data records.
+  OPT_FLAGS = -O2 -fp-model precise
+  LEGACY_QUIET = -warn none
+  DEBUG_FLAGS = -O0 -g -check all -traceback -fpe0
+else
+  OMPFLAGS ?= -fopenmp
+  WARNFLAGS = -Wall -Wextra -Wimplicit-interface -Wsurprising
+  LEGACY_BASE = -ffixed-line-length-none -fmax-stack-var-size=65536
+  MODERN_BASE = -ffree-line-length-none
+  RECURSIVE_FLAG = -frecursive
+  NOINLINE_FLAG = -fno-inline
+  OPT_FLAGS = -O2
+  LEGACY_QUIET = -w
+  DEBUG_FLAGS = -O0 -g -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow
+endif
 
 ifeq ($(BUILD),debug)
-  LEGACY_FFLAGS = -O0 -g -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow $(LEGACY_BASE)
-  MODERN_FFLAGS = -O0 -g -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow $(MODERN_BASE) $(WARNFLAGS)
+  LEGACY_FFLAGS = $(DEBUG_FLAGS) $(LEGACY_BASE)
+  MODERN_FFLAGS = $(DEBUG_FLAGS) $(MODERN_BASE) $(WARNFLAGS)
 else
   # The one remaining fixed-form source (LAPACK) carries pervasive historical
   # diagnostics.  Keep them isolated; library, driver, and programs always
   # compile with warnings enabled.
-  LEGACY_FFLAGS = -O2 $(LEGACY_BASE) -w
-  MODERN_FFLAGS = -O2 $(MODERN_BASE) $(WARNFLAGS)
+  LEGACY_FFLAGS = $(OPT_FLAGS) $(LEGACY_BASE) $(LEGACY_QUIET)
+  MODERN_FFLAGS = $(OPT_FLAGS) $(MODERN_BASE) $(WARNFLAGS)
 endif
 
 # macOS needs an explicit 64 MB main-thread stack: its 8 MB default is too
@@ -83,39 +129,43 @@ tmatrix_status.o: src/tmatrix_status.f90
 tmatrix_types.o: src/tmatrix_types.f90 tmatrix_kinds.o
 	$(FC) $(MODERN_FFLAGS) -I. -c -o $@ $<
 tmatrix_core.o: src/tmatrix_core.f90 tmatrix_kinds.o tmatrix_types.o
-	# -frecursive keeps every migrated helper reentrant.  -fno-inline is kept
-	# because inlining changes where the compiler contracts multiply-add pairs,
-	# which moves the last bits of the T-matrix convergence test.
-	$(FC) $(MODERN_FFLAGS) -frecursive -fno-inline -I. -c -o $@ $<
+	# RECURSIVE_FLAG keeps every migrated helper reentrant.  NOINLINE_FLAG is
+	# kept because inlining changes where the compiler contracts multiply-add
+	# pairs, which moves the last bits of the T-matrix convergence test.
+	$(FC) $(MODERN_FFLAGS) $(RECURSIVE_FLAG) $(NOINLINE_FLAG) -I. -c -o $@ $<
 tmatrix_full_direct_bridge.o: src/tmatrix_full_direct_bridge.f90 tmatrix_kinds.o tmatrix_types.o tmatrix_core.o
-	$(FC) $(MODERN_FFLAGS) -frecursive -I. -c -o $@ $<
+	$(FC) $(MODERN_FFLAGS) $(RECURSIVE_FLAG) -I. -c -o $@ $<
 fixed_orientation_amplitude.o: src/fixed_orientation_amplitude.f90 tmatrix_kinds.o tmatrix_types.o
 	# AMPL's CAL(NPN4,NPN4) and the four VIGAMPL work vectors are automatic
-	# locals.  -frecursive keeps them on the caller's stack so concurrent
+	# locals.  RECURSIVE_FLAG keeps them on the caller's stack so concurrent
 	# callers sharing one workspace do not share them.
-	$(FC) $(MODERN_FFLAGS) -frecursive -I. -c -o $@ $<
+	$(FC) $(MODERN_FFLAGS) $(RECURSIVE_FLAG) -I. -c -o $@ $<
 fixed_orientation_phase_matrix.o: src/fixed_orientation_phase_matrix.f90 tmatrix_kinds.o
 	# Called from the OpenMP node loop of aligned_population_optics, so keep
 	# it reentrant like the amplitude routine that feeds it.
-	$(FC) $(MODERN_FFLAGS) -frecursive -I. -c -o $@ $<
+	$(FC) $(MODERN_FFLAGS) $(RECURSIVE_FLAG) -I. -c -o $@ $<
 scattering_matrix_expansion.o: src/scattering_matrix_expansion.f90 tmatrix_kinds.o tmatrix_types.o
-	$(FC) $(MODERN_FFLAGS) -frecursive -I. -c -o $@ $<
+	$(FC) $(MODERN_FFLAGS) $(RECURSIVE_FLAG) -I. -c -o $@ $<
 tmatrix_api.o: src/tmatrix_api.f90 tmatrix_kinds.o tmatrix_status.o tmatrix_types.o tmatrix_core.o tmatrix_full_direct_bridge.o fixed_orientation_amplitude.o fixed_orientation_phase_matrix.o
-	$(FC) $(MODERN_FFLAGS) -frecursive -I. -c -o $@ $<
+	$(FC) $(MODERN_FFLAGS) $(RECURSIVE_FLAG) -I. -c -o $@ $<
 lpd.o: src/lpd.f
-	$(FC) $(LEGACY_FFLAGS) -frecursive -c -o $@ $<
+	$(FC) $(LEGACY_FFLAGS) $(RECURSIVE_FLAG) -c -o $@ $<
 
 libtmatrix.a: $(PRODUCTION_OBJ)
 	ar rcs $@ $^
 	@echo 'Built library archive: ./libtmatrix.a'
 
 # ---------------------------------------------------------------------------
-# driver layer.  Everything is compiled -frecursive: the Mueller-matrix and
+# driver layer.  Everything carries RECURSIVE_FLAG: the Mueller-matrix and
 # dipole routines are called from the OpenMP node loop of
-# aligned_population_optics, so their locals must live on the calling thread's
-# stack.
+# aligned_population_optics, and the SED solver calls spheroid_q -- and through
+# it rayleigh_limit and geometric_optics_limit -- from an OpenMP loop of its
+# own, so their locals must live on the calling thread's stack.  Under gfortran
+# that already happens by default; Intel's default (-auto-scalar) stacks only
+# intrinsic-type scalars and leaves local arrays, derived types, and character
+# locals in static storage, where concurrent callers overwrite each other.
 # ---------------------------------------------------------------------------
-DRIVER_FFLAGS = $(MODERN_FFLAGS) -frecursive
+DRIVER_FFLAGS = $(MODERN_FFLAGS) $(RECURSIVE_FLAG)
 
 read_index.o: driver/read_index.f90
 	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
@@ -158,7 +208,7 @@ all: run_tmatrix.x run_scatmat.x run_q_jori.x
 all-compare: compare_rayleigh_jori.x compare_tmatrix_jori.x compare_tmatrix_abs.x \
              compare_go_jori.x compare_birefringence.x compare_scatmat_aligned.x
 
-run_tmatrix.o: driver/run_tmatrix.f90 tmatrix_api.o tmatrix_status.o read_index.o spheroid_optics.o
+run_tmatrix.o: driver/run_tmatrix.f90 tmatrix_api.o tmatrix_status.o read_index.o asymptotic_optics.o spheroid_optics.o
 	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
 run_tmatrix.x: libtmatrix.a $(OBJ_BASE) spheroid_optics.o run_tmatrix.o
 	$(FC) $(OBJ_BASE) spheroid_optics.o run_tmatrix.o -L. -ltmatrix $(LDFLAGS) -o $@
@@ -281,6 +331,6 @@ cleanall: clean
 
 .PHONY: all all-compare clean cleanall
 
-# Module files are emitted into this directory.  Serialise until the project
+# Module files are emitted into this directory.  Serialize until the project
 # has a dedicated object/module build tree.
 .NOTPARALLEL:

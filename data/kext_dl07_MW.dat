@@ -19,7 +19,8 @@
 #     ../data/dielectric/index_CpaD03, index_CpeD03
 #
 # Wavelength range:  9.120000E-02 -  3.981000E+04 um, 1129 points.
-#   The grid is the T-matrix Q table's own wavelength grid (no EUV extension was requested).
+#   The grid is the T-matrix Q table's own: no EUV extension was requested,
+#   but that grid by itself already covers the ionizing band.
 #
 # How far to trust the EUV band of THIS model:
 #   the optics are Mie on the D03 dielectric functions at EVERY

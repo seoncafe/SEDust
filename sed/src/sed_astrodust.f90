@@ -61,7 +61,12 @@ module sed_astrodust_mod
                                     graphite_index_lambda_range
    ! Astrodust optics from the DH21 dielectric function, for the EUV band
    ! below the T-matrix Q table's 0.0912 um (13.6 eV) short-wavelength end.
-   use q_astrodust_mod,       only: q_astrodust_full, load_astrodust_index, &
+   ! astrodust_index_at is the refractive index there, which the spheroid
+   ! route (see euv_band_optics_i below) is handed; q_astrodust_full is the
+   ! volume-equivalent-sphere Mie approximation, selected by
+   ! euv_tmatrix = .false.
+   use q_astrodust_mod,       only: astrodust_index_at, q_astrodust_full, &
+                                    load_astrodust_index, &
                                     set_astrodust_index_path, &
                                     get_astrodust_index_path, &
                                     astrodust_index_lambda_range
@@ -79,6 +84,10 @@ module sed_astrodust_mod
    private
    public :: sed_init, sed_solve, sed_solve_pah, sed_solve_qm_batch
    public :: sed_init_dl07, sed_solve_dl07
+   ! Injection point for the spheroid (T-matrix) optics of the astrodust EUV
+   ! band; see the abstract interface below.
+   public :: euv_band_optics_i
+   public :: sed_register_euv_band_optics, sed_forget_euv_band_optics
    ! Model-agnostic library API (path B: wraps the untouched solver core).
    public :: dust_model_t, build_astrodust, build_dl07, build_zubko, dust_emission
    public :: build_from_files, dust_emission_single_teq, dust_extinction
@@ -170,6 +179,57 @@ module sed_astrodust_mod
    real(wp), parameter :: H_SI    = 6.62606957e-34_wp
    real(wp), parameter :: C_SI    = 2.99792458e8_wp
    real(wp), parameter :: TWO_HCC = 2.0_wp * H_SI * C_SI**2
+
+   ! ---- optics of the EUV band below the Q table ------------------------
+   ! sed_init fills the wavelengths it prepends below the Q table's own
+   ! short-wavelength end from one of two particles: the volume-equivalent
+   ! SPHERE (Mie, q_astrodust_full, selected by euv_tmatrix = .false.), or the
+   ! b/a = 1.400 oblate SPHEROID the table itself is made of. The spheroid is
+   ! the continuation of the table -- same material, same shape, same
+   ! random-orientation average -- and it is a T-matrix calculation.
+   !
+   ! That calculation is INJECTED rather than compiled in: this module holds a
+   ! procedure pointer to it, so the SED library carries no reference to
+   ! libtmatrix.a and links without it. euv_astrodust_tmatrix.f90 implements
+   ! the interface below and registers it in one call; a build that leaves
+   ! that file out has no spheroid route, and euv_tmatrix = .true. is then
+   ! REFUSED (status 11) instead of being quietly answered with the sphere,
+   ! which is a different particle.
+   !
+   ! The shipped Q table now reaches 1.0e-4 um (12398 eV), so a host whose
+   ! lam_min lies on or above that end prepends no wavelengths at all and
+   ! never enters this route.  It stays because lam_min is the host's to
+   ! choose, and a band asked for below the table has to be answered with the
+   ! table's own particle.
+   abstract interface
+      subroutine euv_band_optics_i(lam, a_um, nr, ki, qabs, qsca, gsca, status)
+         !! Efficiencies of the astrodust grain at every (wavelength, radius)
+         !! pair of the EUV band, normalized to pi a_eff^2 as the Q table is.
+         !!   lam(n_euv)                   wavelengths [um], ascending, all
+         !!                                below the Q table's own first point
+         !!   a_um(NA)                     effective radii [um]
+         !!   nr(n_euv), ki(n_euv)         refractive index m = nr + i*ki there
+         !!   qabs/qsca/gsca(n_euv, NA)    absorption and scattering
+         !!                                efficiencies and the scattering
+         !!                                asymmetry <cos>
+         !!   status   0  every point was produced and passed its physical
+         !!               bounds
+         !!         >  0  that many points failed a bound; the values are
+         !!               still returned and the caller only warns
+         !!         <  0  the arrays do not agree with the two grids, so
+         !!               nothing was computed
+         import :: wp
+         real(wp), intent(in)  :: lam(:)
+         real(wp), intent(in)  :: a_um(:)
+         real(wp), intent(in)  :: nr(:), ki(:)
+         real(wp), intent(out) :: qabs(:,:)
+         real(wp), intent(out) :: qsca(:,:)
+         real(wp), intent(out) :: gsca(:,:)
+         integer,  intent(out) :: status
+      end subroutine euv_band_optics_i
+   end interface
+
+   procedure(euv_band_optics_i), pointer :: euv_band_optics => null()
 
    logical :: initialized = .false.
    logical, save :: use_induced_emission = .false.
@@ -367,10 +427,25 @@ module sed_astrodust_mod
 contains
 
    ! =====================================================================
+   subroutine sed_register_euv_band_optics(proc)
+      !! Name the calculation sed_init is to use for the astrodust EUV band
+      !! when euv_tmatrix = .true.  One call before the model is built;
+      !! euv_astrodust_tmatrix.f90 wraps it as use_tmatrix_euv_band_optics().
+      procedure(euv_band_optics_i) :: proc
+      euv_band_optics => proc
+   end subroutine sed_register_euv_band_optics
+
+   subroutine sed_forget_euv_band_optics()
+      !! Undo the above: euv_tmatrix = .true. is then refused (status 11) and
+      !! only the volume-equivalent sphere remains.
+      euv_band_optics => null()
+   end subroutine sed_forget_euv_band_optics
+
+   ! =====================================================================
    subroutine sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status, &
                        qpol_path, qpol_wave_path, qpol_aeff_path, scatmat_path, &
                        load_polarized_optics, lam_min, astrodust_index_path, &
-                       qpol_euv_path, qpol_euv_wave_path)
+                       qpol_euv_path, qpol_euv_wave_path, euv_tmatrix)
       character(len=*), intent(in) :: qtable_path, sizedist_path
       integer,          intent(in) :: NT_in
       real(wp),         intent(in) :: T_lo, T_hi
@@ -394,6 +469,10 @@ contains
       !               model's grid (a missing EUV companion table is NOT an
       !               error -- that band degrades to a reported zero)
       !   status = 9  lam_min runs outside the EUV companion table's coverage
+      !   status = 11 euv_tmatrix = .true. but the spheroid optics of the EUV
+      !               band are not available: no implementation of
+      !               euv_band_optics_i is registered, or the registered one
+      !               reported that it could not compute the band
       integer, optional, intent(out) :: status
       ! Orientation-resolved DH21 table and its grid axes, supplying the
       ! polarized optics. Default to QPOL_*_DEF. An implicit-default table that
@@ -435,6 +514,17 @@ contains
       ! the whole point of the companion table is that this band no longer
       ! returns an unannounced zero.
       character(len=*), optional, intent(in) :: qpol_euv_path, qpol_euv_wave_path
+      ! How the EUV band's optics are computed. Default .true.: the T-matrix
+      ! on the b/a = 1.400 oblate spheroid, i.e. the same particle and the same
+      ! random-orientation average as the Q table, so the grain does not change
+      ! shape at the seam. That route is the registered euv_band_optics_i, and
+      ! asking for it without one registered is an error (status 11), not a
+      ! silent substitution. .false. substitutes the volume-equivalent-sphere
+      ! Mie approximation of q_astrodust_mod, which is ~2% low in the
+      ! geometric-optics limit (that module measures it size by size) but costs
+      ! milliseconds where the T-matrix costs minutes. Ignored when there is no
+      ! EUV band.
+      logical, optional, intent(in) :: euv_tmatrix
       integer  :: i, ja, jw, jt, is, scstat, euv_stat
       real(wp) :: a_um, x, t, Q_neu, Q_ion
       real(wp) :: qext1, qsca1, qabs1, gsca1
@@ -442,8 +532,15 @@ contains
       real(wp), allocatable :: lam_grid(:)
       logical  :: rok, want_pol, pol_explicit, pol_loaded
       character(len=512) :: pol_q, pol_w, pol_a, pol_eq, pol_ew
+      ! EUV band: route selector and the band's optics.
+      logical  :: use_tm
+      integer  :: euv_optics_stat, n_euv_bad
+      real(wp), allocatable :: nr_euv(:), ki_euv(:)
+      real(wp), allocatable :: q_euv_abs(:,:), q_euv_sca(:,:), q_euv_g(:,:)
 
       if (present(status)) status = 0
+      use_tm = .true.
+      if (present(euv_tmatrix)) use_tm = euv_tmatrix
       if (present(astrodust_index_path)) &
          call set_astrodust_index_path(astrodust_index_path)
 
@@ -479,13 +576,30 @@ contains
       call euv_extended_lambda_grid(lam_grid, lam_min, n_extra=n_lam_euv)
 
       ! ---- EUV band below the Q table -----------------------------------
-      ! Its optics are Mie on the DH21 dielectric function, so load that file
+      ! Its optics come from the DH21 dielectric function, so load that file
       ! HERE, before anything is built, rather than letting the first optics
       ! call load it lazily inside the size loop: a missing file or a lam_min
       ! the file cannot cover has to reach the caller through `status`, which
       ! is what sed_init promises, and not stop the process out of an RT host.
       ! Also name the file, so its pairing with the Q table is visible.
       if (n_lam_euv > 0) then
+         ! The spheroid route is an injected calculation, so a build that does
+         ! not carry one cannot honor euv_tmatrix = .true.  Say so before
+         ! anything is built rather than answering with the sphere, which is a
+         ! different particle and would leave a step at the seam.
+         if (use_tm .and. .not. associated(euv_band_optics)) then
+            write(*,'(a)') ' sed_init: euv_tmatrix = .true., but no spheroid optics are'
+            write(*,'(a)') '           registered for the EUV band.  Build with the'
+            write(*,'(a)') '           T-matrix (euv_astrodust_tmatrix.f90) and call'
+            write(*,'(a)') '           use_tmatrix_euv_band_optics() once beforehand,'
+            write(*,'(a)') '           or pass euv_tmatrix = .false. for the'
+            write(*,'(a)') '           volume-equivalent-sphere approximation.'
+            if (present(status)) then
+               status = 11;  return
+            else
+               stop 1
+            end if
+         end if
          if (present(status)) then
             call load_astrodust_index(ok=rok)
             if (.not. rok) then;  status = 6;  return;  end if
@@ -508,6 +622,16 @@ contains
             ' wavelengths below the Q table.'
          write(*,'(a,a)')    '           astrodust dielectric function: ', &
             trim(get_astrodust_index_path())
+         if (use_tm) then
+            ! The axial ratio is stated by whoever implements the spheroid
+            ! route, since that is where the particle is defined; naming a
+            ! number here could only repeat it, or contradict it.
+            write(*,'(a)')      '           EUV optics: T-matrix, oblate spheroid'// &
+               ' (same particle as the table).'
+         else
+            write(*,'(a)')      '           EUV optics: Mie, volume-equivalent'// &
+               ' sphere (shape approximation).'
+         end if
       end if
 
       NLAM      = size(lam_grid)
@@ -558,6 +682,39 @@ contains
       ! ---- Setup p_sub's lambda-integration weights ----
       call p_sub_setup(lam)
 
+      ! ---- EUV band, spheroid route -------------------------------------
+      ! The registered euv_band_optics_i computes the whole band -- every
+      ! wavelength on every radius -- in one call, on the DH21 astrodust index.
+      ! Same material, same oblate spheroid and same random-orientation average
+      ! as the Q table, so the extension continues the table's own calculation
+      ! and the grain does not change shape at the seam.  The refractive index
+      ! is a function of wavelength alone, so it is evaluated once here, before
+      ! any threading inside that routine, rather than again for every radius.
+      n_euv_bad = 0
+      if (n_lam_euv > 0 .and. use_tm) then
+         allocate(nr_euv(n_lam_euv), ki_euv(n_lam_euv))
+         do jw = 1, n_lam_euv
+            call astrodust_index_at(lam(jw), nr_euv(jw), ki_euv(jw))
+         end do
+         allocate(q_euv_abs(n_lam_euv, NA), q_euv_sca(n_lam_euv, NA), &
+                  q_euv_g(n_lam_euv, NA))
+         call euv_band_optics(lam(1:n_lam_euv), aeff, nr_euv, ki_euv, &
+                              q_euv_abs, q_euv_sca, q_euv_g, euv_optics_stat)
+         deallocate(nr_euv, ki_euv)
+         if (euv_optics_stat < 0) then
+            write(*,'(a)') ' sed_init: the registered EUV band optics could not'
+            write(*,'(a)') '           compute the band.'
+            if (present(status)) then
+               status = 11;  return
+            else
+               stop 1
+            end if
+         end if
+         ! Points that failed a physical bound: warned about by the routine
+         ! itself, counted here for the summary below.
+         n_euv_bad = euv_optics_stat
+      end if
+
       ! ---- Cabs(NLAM, NA) and Csca(NLAM, NA) by interpolating Q in log(a) ----
       ! Q table grid (qt_aeff) is denser than dist grid (aeff); interpolate to
       ! the dist grid where the size sum lives.
@@ -570,20 +727,31 @@ contains
          ! is already dimensionless -- no pi a^2 conversion.
          call interp_q_grid(x, qt_aeff, qt_gpar, gsca_ad(n_lam_euv+1:, ja))
          ! EUV band below the Q table (n_lam_euv = 0 unless lam_min asked for
-         ! it): Mie on the DH21 astrodust dielectric function, i.e. the same
-         ! material as the table, for the volume-equivalent sphere rather than
-         ! the b/a = 1.4 spheroid. q_astrodust_mod carries the domain of
-         ! validity of that shape approximation.
+         ! it). The spheroid route was computed just above and is only copied
+         ! in here; euv_tmatrix = .false. instead substitutes the
+         ! volume-equivalent SPHERE (Mie) on the same DH21 dielectric function,
+         ! and q_astrodust_mod carries the domain of validity of that shape
+         ! approximation.
          do jw = 1, n_lam_euv
-            call q_astrodust_full(a_um, lam(jw), qext1, qsca1, qabs1, gsca1)
-            Cabs(jw, ja)    = qabs1
-            Csca(jw, ja)    = qsca1
-            gsca_ad(jw, ja) = gsca1
+            if (use_tm) then
+               Cabs(jw, ja)    = q_euv_abs(jw, ja)
+               Csca(jw, ja)    = q_euv_sca(jw, ja)
+               gsca_ad(jw, ja) = q_euv_g(jw, ja)
+            else
+               call q_astrodust_full(a_um, lam(jw), qext1, qsca1, qabs1, gsca1)
+               Cabs(jw, ja)    = qabs1
+               Csca(jw, ja)    = qsca1
+               gsca_ad(jw, ja) = gsca1
+            end if
          end do
          ! Convert Q -> C: C = pi * (a_cm)^2 * Q
          Cabs(:, ja) = Cabs(:, ja) * PI * (a_um * UM2CM)**2
          Csca(:, ja) = Csca(:, ja) * PI * (a_um * UM2CM)**2
       end do
+      if (allocated(q_euv_abs)) deallocate(q_euv_abs, q_euv_sca, q_euv_g)
+      if (n_euv_bad > 0) &
+         write(*,'(a,i0,a)') ' sed_init: EUV optics: ', n_euv_bad, &
+            ' point(s) failed a physical bound (values kept; see the warnings above).'
 
       ! ---- Cpol(NLAM, NA), falign_ad(NA) from the DH21 spheroid table ----
       ! Scalar-only build: skip the table entirely (no default-path substitution,
@@ -1930,18 +2098,27 @@ contains
 
    subroutine euv_extended_lambda_grid(lam_out, lam_min, n_extra)
       ! Model wavelength grid = the T-matrix Q table's grid, optionally carried
-      ! into the extreme ultraviolet below its short-wavelength end (0.0912 um
-      ! = 13.6 eV, the Lyman limit).  A photoionization RT host transports
-      ! 6-100 eV, so half of that band lies off the table.
+      ! below its short-wavelength end.  That end is now 1.0e-4 um (12398 eV):
+      ! the ionizing band a photoionization RT host transports is INSIDE the
+      ! astrodust table, so nothing is prepended for it any more.  For that
+      ! model nothing can be: the DH21 dielectric function stops at
+      ! 1.000032e-4 um, longward of the table's own first wavelength, so every
+      ! lam_min a caller may legally ask for lands inside the table.  DL07 is
+      ! where this still does something -- its D03 optical constants reach
+      ! 6.205e-5 um, past the table.  (The orientation-resolved polarized table
+      ! is a separate product and still ends at 0.0912 um; build_Cpol aligns the
+      ! two on their long-wavelength end and reports the block below it.)
       !
-      ! When lam_min is shorter than the table's first wavelength, log-spaced
+      ! When lam_min IS shorter than the table's first wavelength, log-spaced
       ! points are prepended from lam_min up to just below it.  Their spacing
-      ! is at most the table's own spacing at its short-wavelength end
-      ! (dln lam = 0.01156), so the extension is never coarser than the grid it
-      ! joins.  lam_out(1) is set to lam_min exactly, so the caller's requested
-      ! floor is covered rather than approached.  n_extra = 0 (and the plain
-      ! table grid) when lam_min is absent, non-positive, or not shorter than
-      ! the table -- which is what keeps the unextended model bit-identical.
+      ! is at most the table's own spacing at its short-wavelength end, taken
+      ! from the table itself (dln lam = 0.00794 on the current axis, where the
+      ! nodes below 0.0912 um are the dielectric function's own), so the
+      ! extension is never coarser than the grid it joins.  lam_out(1) is set
+      ! to lam_min exactly, so the caller's requested floor is covered rather
+      ! than approached.  n_extra = 0 (and the plain table grid) when lam_min is
+      ! absent, non-positive, or not shorter than the table -- which is what
+      ! keeps the unextended model bit-identical.
       real(wp), allocatable, intent(out) :: lam_out(:)
       real(wp), optional,    intent(in)  :: lam_min
       ! Number of points prepended; 0 when the grid is the plain table grid.
@@ -2044,7 +2221,7 @@ contains
       character(len=*), intent(in)  :: q_file, wave_file, aeff_file
       ! The extreme-ultraviolet companion table and its wavelength axis, read
       ! only when the model grid actually reaches below the main table
-      ! (n_lam_euv > 0). It shares aeff_file as its size axis.
+      ! (n_pol_euv > 0). It shares aeff_file as its size axis.
       character(len=*), intent(in)  :: euv_q_file, euv_wave_file
       ! .true. iff the orientation-resolved table was read successfully. .false.
       ! leaves the polarized arrays allocated and zero (graceful degradation);
@@ -2064,6 +2241,16 @@ contains
       integer  :: ja, jw
       logical  :: rok
       logical  :: euv_pol      ! an EUV companion table was read for this grid
+      ! Model wavelengths lying SHORTWARD of the polarized table's own first
+      ! node -- the block this routine has to fill from somewhere other than
+      ! that table.  It is derived from the table's coverage, not from
+      ! n_lam_euv: the scalar Q table and the polarized one are separate
+      ! products and no longer start at the same wavelength (the scalar table
+      ! reaches 1.0e-4 um, the polarized ones 0.0912 um), so the count of
+      ! wavelengths the scalar table does not cover says nothing about the
+      ! block the polarized table leaves open.  The two agree, and this reduces
+      ! to n_lam_euv, whenever the two tables do share a short-wavelength end.
+      integer  :: n_pol_euv
       real(wp), allocatable :: qeuv_a(:)      ! one size, all EUV table lambdas
 
       Cpol       = 0.0_wp
@@ -2082,26 +2269,30 @@ contains
          return
       end if
 
-      ! The polarized table and the Cabs table are both computed on the DH21
-      ! wavelength grid, so they must agree node for node over the block the
-      ! tables cover, lam(n_lam_euv+1:). A mismatch there means inconsistent
-      ! input, not a recoverable condition. The n_lam_euv points below it are
-      ! the EUV extension, which no table reaches; they are treated separately.
-      if (qj_n_lam /= NLAM - n_lam_euv) then
+      ! The polarized table has to sit on the LONG-wavelength end of the model
+      ! grid, node for node: both are the DH21 axis, and the model grid is that
+      ! axis possibly extended shortward. Anything else is inconsistent input,
+      ! not a recoverable condition. The n_pol_euv points below the table's
+      ! first node are the block it does not reach; they are treated separately.
+      n_pol_euv = NLAM - qj_n_lam
+      if (n_pol_euv < 0) then
          write(error_unit,'(a,i0,a,i0)') ' build_Cpol: polarized table has ', &
-            qj_n_lam, ' wavelengths but the Q table block has ', NLAM - n_lam_euv
+            qj_n_lam, ' wavelengths but the model grid only has ', NLAM
          euv_status = 8;  return
       end if
       do jw = 1, qj_n_lam
-         if (abs(qj_lam(jw) - lam(n_lam_euv+jw)) > 1.0e-10_wp * abs(lam(n_lam_euv+jw))) then
+         if (abs(qj_lam(jw) - lam(n_pol_euv+jw)) > 1.0e-10_wp * abs(lam(n_pol_euv+jw))) then
             write(error_unit,'(a,i0)') &
                ' build_Cpol: polarized and Q wavelength grids differ at jw=', jw
             euv_status = 8;  return
          end if
       end do
 
-      ! EUV EXTENSION (n_lam_euv > 0). The prepended points lie shortward of
-      ! the main table, and their polarized optics come from the companion
+      ! EUV EXTENSION (n_pol_euv > 0). The points shortward of the polarized
+      ! table's first node -- which is where the model grid runs below it,
+      ! whether because lam_min extended the grid or because the scalar Q table
+      ! itself reaches further than the polarized one -- have no entry in that
+      ! table, and their polarized optics come from the companion
       ! table computed on the DH21_wave_euv axis by run_q_jori.f90's `euv`
       ! mode: the SAME first-principles core (Rayleigh dipole / Mishchenko
       ! T-matrix / geometric optics), the same DH21 dielectric function and the
@@ -2147,7 +2338,7 @@ contains
       ! cannot coincide with the precomputed axis -- and are therefore
       ! interpolated in log(lambda) as well.
       euv_pol = .false.
-      if (n_lam_euv > 0) then
+      if (n_pol_euv > 0) then
          call load_q_table_jori_euv(euv_q_file, euv_wave_file, aeff_file, ok=euv_pol)
          if (.not. euv_pol) then
             ! No EUV companion table. This is the DEFAULT state: the polarized
@@ -2164,7 +2355,7 @@ contains
                ' build_Cpol: no EUV polarized table (', trim(euv_q_file)//')'
             write(error_unit,'(a,es10.3,a)') &
                '             dichroic extinction and birefringence are zero below', &
-               lam(n_lam_euv+1), ' um (zero by omission, not by physics).'
+               lam(n_pol_euv+1), ' um (zero by omission, not by physics).'
          end if
       end if
       if (euv_pol) then
@@ -2179,9 +2370,9 @@ contains
             euv_status = 9
             return
          end if
-         if (lam(n_lam_euv) > qj_lam_euv(qj_n_lam_euv) * (1.0_wp + 1.0e-12_wp)) then
+         if (lam(n_pol_euv) > qj_lam_euv(qj_n_lam_euv) * (1.0_wp + 1.0e-12_wp)) then
             write(error_unit,'(a,es10.3,a,es10.3,a)') &
-               ' sed_init: the EUV block reaches', lam(n_lam_euv), &
+               ' sed_init: the EUV block reaches', lam(n_pol_euv), &
                ' um but the EUV polarized table stops at', &
                qj_lam_euv(qj_n_lam_euv), ' um.'
             euv_status = 9
@@ -2195,13 +2386,13 @@ contains
 
       allocate(qeuv_a(max(qj_n_lam_euv, 1)))
       do ja = 1, NA
-         call interp_q_grid(log(aeff(ja)), qj_aeff, qj_qpol_abs, Cpol(n_lam_euv+1:, ja))
-         call interp_q_grid(log(aeff(ja)), qj_aeff, qj_qpol_ext, Cpol_ext(n_lam_euv+1:, ja))
+         call interp_q_grid(log(aeff(ja)), qj_aeff, qj_qpol_abs, Cpol(n_pol_euv+1:, ja))
+         call interp_q_grid(log(aeff(ja)), qj_aeff, qj_qpol_ext, Cpol_ext(n_pol_euv+1:, ja))
          if (euv_pol) then
             call interp_q_grid(log(aeff(ja)), qj_aeff_euv, qj_qpol_abs_euv, qeuv_a)
-            call interp_loglam_grid(qj_lam_euv, qeuv_a, lam(1:n_lam_euv), Cpol(1:n_lam_euv, ja))
+            call interp_loglam_grid(qj_lam_euv, qeuv_a, lam(1:n_pol_euv), Cpol(1:n_pol_euv, ja))
             call interp_q_grid(log(aeff(ja)), qj_aeff_euv, qj_qpol_ext_euv, qeuv_a)
-            call interp_loglam_grid(qj_lam_euv, qeuv_a, lam(1:n_lam_euv), Cpol_ext(1:n_lam_euv, ja))
+            call interp_loglam_grid(qj_lam_euv, qeuv_a, lam(1:n_pol_euv), Cpol_ext(1:n_pol_euv, ja))
          end if
          Cpol(:, ja)     = Cpol(:, ja)     * PI * (aeff(ja) * UM2CM)**2
          Cpol_ext(:, ja) = Cpol_ext(:, ja) * PI * (aeff(ja) * UM2CM)**2
@@ -2217,11 +2408,11 @@ contains
          do ja = 1, NA
             if (qj_has_bir) &
                call interp_q_grid(log(aeff(ja)), qj_aeff, qj_qbir_ext, &
-                                  Cbir_ext(n_lam_euv+1:, ja))
+                                  Cbir_ext(n_pol_euv+1:, ja))
             if (euv_pol .and. qj_has_bir_euv) then
                call interp_q_grid(log(aeff(ja)), qj_aeff_euv, qj_qbir_ext_euv, qeuv_a)
-               call interp_loglam_grid(qj_lam_euv, qeuv_a, lam(1:n_lam_euv), &
-                                       Cbir_ext(1:n_lam_euv, ja))
+               call interp_loglam_grid(qj_lam_euv, qeuv_a, lam(1:n_pol_euv), &
+                                       Cbir_ext(1:n_pol_euv, ja))
             end if
             Cbir_ext(:, ja) = Cbir_ext(:, ja) * PI * (aeff(ja) * UM2CM)**2
          end do
@@ -2235,11 +2426,11 @@ contains
          if (qj_has_bir) then
             write(error_unit,'(a,es10.3,a)') &
                ' build_Cpol: the EUV polarized table has no Q_re block, so the '// &
-               'birefringence is zero below', lam(n_lam_euv+1), ' um.'
+               'birefringence is zero below', lam(n_pol_euv+1), ' um.'
          else
             write(error_unit,'(a,es10.3,a)') &
                ' build_Cpol: the main polarized table has no Q_re block, so the '// &
-               'birefringence is zero above', lam(n_lam_euv+1), ' um.'
+               'birefringence is zero above', lam(n_pol_euv+1), ' um.'
          end if
       end if
 
@@ -2491,7 +2682,8 @@ contains
    subroutine build_astrodust(m, qtable_path, sizedist_path, NT_in, T_lo, T_hi, status, &
                               qpol_path, qpol_wave_path, qpol_aeff_path, scatmat_path, &
                               load_polarized_optics, lam_min, astrodust_index_path, &
-                              qpol_euv_path, qpol_euv_wave_path, kext_path)
+                              qpol_euv_path, qpol_euv_wave_path, kext_path, &
+                              euv_tmatrix)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: qtable_path, sizedist_path
       integer,            intent(in)  :: NT_in
@@ -2518,6 +2710,8 @@ contains
       !               EUV companion table covers
       !   status = 10 an explicitly named extinction table (kext_path) could
       !               not be read
+      !   status = 11 euv_tmatrix = .true. but the spheroid optics of the EUV
+      !               band are not available; see sed_init
       integer, optional,  intent(out) :: status
       ! Orientation-resolved DH21 table + grid axes for the polarized optics,
       ! forwarded to sed_init. Omit to use the defaults; an implicit-default
@@ -2557,6 +2751,12 @@ contains
       ! A kext_path that cannot be read FAILS the build (status 10): a host
       ! naming a file that is not there is a configuration error.
       character(len=*), optional, intent(in) :: kext_path
+      ! How the EUV band's optics are computed; see sed_init. Default .true.
+      ! = the T-matrix on the oblate spheroid of the Q table, which requires a
+      ! registered euv_band_optics_i and fails with status 11 without one.
+      ! .false. = the volume-equivalent-sphere Mie approximation, far cheaper
+      ! and ~2% low in the geometric-optics limit.
+      logical, optional, intent(in) :: euv_tmatrix
       logical :: kext_ok
 
       if (present(status)) status = 0
@@ -2573,7 +2773,8 @@ contains
                     lam_min=lam_min, &
                     astrodust_index_path=astrodust_index_path, &
                     qpol_euv_path=qpol_euv_path, &
-                    qpol_euv_wave_path=qpol_euv_wave_path)  ! sets globals
+                    qpol_euv_wave_path=qpol_euv_wave_path, &
+                    euv_tmatrix=euv_tmatrix)  ! sets globals
       if (present(status)) then
          if (status /= 0) return
       end if
@@ -3733,7 +3934,19 @@ contains
                            m%kext_Cext, m%kext_Cabs, m%kext_Csca, read_ok)
       if (allocated(alb)) deallocate(alb)
       if (.not. read_ok) then
-         if (present(kext_path)) ok = .false.
+         ! A table named by the caller is required, and its failure reaches that
+         ! caller as a build status. The default one is optional -- the emission
+         ! model is complete without it -- but dropping it in silence would take
+         ! dust_extinction away from a host with nothing to show for it.
+         ! Announce the loss. The usual causes are a table that has not been
+         ! generated yet and one left behind by an earlier wavelength grid,
+         ! neither of which the reader can distinguish from a corrupt file.
+         if (present(kext_path)) then
+            ok = .false.
+         else
+            write(*,'(a,a)') ' WARNING: could not read the default extinction table ', trim(path)
+            write(*,'(a)')   '          The model is built, but dust_extinction has nothing to serve.'
+         end if
          return
       end if
       m%kext_n    = n

@@ -203,7 +203,7 @@ program test_euv_extension
       stop 2
    end if
    call build_astrodust(m_scal_euv, QTAB, SIZED, NT_IN, T_LO, T_HI, status=st, &
-                        load_polarized_optics=.false., lam_min=LAM_MIN)
+                        load_polarized_optics=.false., lam_min=LAM_MIN, euv_tmatrix=.false.)
    if (st /= 0) then
       write(*,'(a,i0)') ' FATAL: scalar extended build failed, status = ', st
       stop 2
@@ -235,11 +235,11 @@ program test_euv_extension
       call build_astrodust(m_euv, QTAB, SIZED, NT_IN, T_LO, T_HI, status=st, &
                            qpol_path=QPOL, qpol_wave_path=QWAVE, qpol_aeff_path=QAEFF, &
                            lam_min=LAM_MIN, qpol_euv_path=trim(euv_q), &
-                           qpol_euv_wave_path=trim(euv_wave))
+                           qpol_euv_wave_path=trim(euv_wave), euv_tmatrix=.false.)
    else
       call build_astrodust(m_euv, QTAB, SIZED, NT_IN, T_LO, T_HI, status=st, &
                            qpol_path=QPOL, qpol_wave_path=QWAVE, qpol_aeff_path=QAEFF, &
-                           lam_min=LAM_MIN)
+                           lam_min=LAM_MIN, euv_tmatrix=.false.)
    end if
    if (st /= 0) then
       write(*,'(a,i0)') ' FATAL: polarized extended build failed, status = ', st

@@ -56,9 +56,25 @@ driver per cell, with the per-H emission expressed in HD23 units
 The pipeline consists of five phases:
 \begin{itemize}
   \item[A.] Random-orientation T-matrix sweep on the DH21 native grid
-        (169 sizes $\times$ 1129 wavelengths) producing
+        (169 sizes $\times$ 1762 wavelengths,
+        \SIrange{1e-4}{3.981e4}{\micro\meter}) producing
         \Qabs($\lambda, a$), \Qsca($\lambda, a$), and the asymmetry
-        parameter $g$.
+        parameter $g$. Longward of \SI{0.0912}{\micro\meter} the axis is
+        DH21a's own 200-per-decade grid, 1129 points. Shortward of it
+        the axis is the DH21 dielectric function's own energy nodes,
+        632 points from \SIrange{14.0}{12398}{\electronvolt}, so the
+        absorption edges tabulated there stay exact steps between
+        adjacent grid points instead of being averaged into ramps. Each
+        is a pair of nodes about $10^{-4}$ apart in relative energy,
+        across which ${\rm Im}(n)$ jumps by $+211\%$ at Fe\,K
+        (\SI{7124}{\electronvolt}), $+131\%$ at O\,K
+        (\SI{538}{\electronvolt}), $+67\%$ at Fe\,L
+        (\SI{724}{\electronvolt}) and $+30\%$ at C\,K
+        (\SI{291}{\electronvolt}). One point is not a node: $0.0912\,(1-10^{-4})$, which is
+        interpolated and is placed to resolve the Lyman-limit step of
+        the \emph{radiation field} rather than anything in the grain
+        (\S\ref{sec:euv}). The orientation-resolved (polarized) table
+        is a separate product and stays on the 1129-wavelength axis.
   \item[B.] Optical-depth verification:
         $\tau_{\rm Ad}/N_H = \sum_a (dn_{\rm Ad}/N_H)\,\pi a^2\,\Qext$
         compared against HD23 \texttt{extinction.dat}.
@@ -116,8 +132,10 @@ $M_{\rm Ad}/N_H$                           & 0.0092                 & DH21a Tab.
 Heating intensity $U$                      & $10^{0.2} \approx 1.585$ & HD23 \S2.3.1 \\
 Radiation-field shape                      & Mathis 1983 ISRF, scaled by $U$ & HD23 \S2.3.1 \\
 $a_{\rm eff}$ range                        & \SIrange{3.16e-4}{5.012}{\micro\meter} & DH21a, 169 points \\
-$\lambda$ range                            & \SIrange{0.0912}{3.98e4}{\micro\meter} & DH21a, 1129 points \\
-$\lambda$ range, extended                  & \SIrange{1.001e-4}{3.98e4}{\micro\meter} & optional, 1719 points; see \S\ref{sec:euv} \\
+$\lambda$ range                            & \SIrange{1e-4}{3.981e4}{\micro\meter} & $Q$-table grid, 1762 points; see \S\ref{sec:euv} \\
+\quad above the Lyman limit                & \SIrange{0.0912}{3.981e4}{\micro\meter} & DH21a, 200 per decade, 1129 points \\
+\quad below it                             & \SIrange{1e-4}{9.119e-2}{\micro\meter} & DH21a dielectric-function nodes, 633 points \\
+$\lambda$ range, polarized table           & \SIrange{0.0912}{3.981e4}{\micro\meter} & orientation-resolved, 1129 points \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -199,6 +217,10 @@ depolarization factors $L_a$, $L_b = (1-L_a)/2$ averaged over random
 orientation, and was found to remove a systematic 6\% under-prediction
 that a naive Mie-sphere fallback produces in the dipole limit.
 
+The timings that follow were taken on the 1129-wavelength axis, before
+the grid was carried into the ionizing band; the sweep on the present
+1762-wavelength axis has not been timed, and the 633 wavelengths it
+adds all fall in the ultraviolet slice, which is the expensive one.
 The full 169 by 1129 sweep takes 11 minutes single-threaded on
 Apple Silicon. A bash work-queue driver
 \texttt{run\_parallel.sh} dispatching $K = 32$ chunks across $N = 6$
@@ -210,7 +232,8 @@ essential ingredient.
 
 \begin{table}[h]
 \centering
-\caption{Parallel-sweep walltime measurements.}
+\caption{Parallel-sweep walltime measurements, on the 1129-wavelength
+axis.}
 \label{tab:parallel}
 \begin{tabular}{l c c c c}
 \toprule
@@ -1715,23 +1738,44 @@ uses.
 
 \subsection{Extending the grid below the Lyman limit}
 
-The astrodust wavelength grid is the T-matrix $Q$ table's, and that
-table stops at \SI{0.0912}{\micro\meter} --- \SI{13.6}{\electronvolt},
-the Lyman limit. A host that transports ionizing radiation needs
-shorter wavelengths, so \texttt{build\_astrodust} and
-\texttt{build\_dl07} take an optional \texttt{lam\_min}
-[\si{\micro\meter}] and prepend log-spaced points from it up to the
-table, at a step no coarser than the table's own
-$\Delta\ln\lambda = 0.01156$. Omitting \texttt{lam\_min} prepends
-nothing, so every earlier result is bit-identical. The same is true of
-the other options added at the same time --- the
+The astrodust wavelength grid is the T-matrix $Q$ table's, and the
+table reaches \SI{1e-4}{\micro\meter} ---
+\SI{12.4}{\kilo\electronvolt}. \textbf{The ionizing band is inside it},
+computed the same way as the rest of it, so a host that transports
+ionizing radiation reads it off the table and needs nothing more; in
+particular it does not have to link \texttt{libtmatrix.a}.
+
+\medskip
+\noindent \texttt{build\_astrodust} and \texttt{build\_dl07} still take an
+optional \texttt{lam\_min} [\si{\micro\meter}] for a host that needs
+something shorter still. Log-spaced points are then prepended from
+\texttt{lam\_min} up to the table, at a step no coarser than the
+table's own $\Delta\ln\lambda = 0.00794$ at its short-wavelength end,
+with the requested floor placed exactly. Omitting \texttt{lam\_min}
+prepends nothing, so every earlier result is bit-identical. The same is
+true of the other options added at the same time --- the
 \texttt{astrodust\_index\_path} of \texttt{sed\_init} /
 \texttt{build\_astrodust}, and the \texttt{albedo} output of
-\texttt{dust\_extinction}: absent, they change nothing.
+\texttt{dust\_extinction}: absent, they change nothing. For astrodust
+there is now nothing left to ask for either: the table already reaches
+the short end of the DH21 dielectric function itself
+($1.00003\times10^{-4}$\,\si{\micro\meter}), so every legal
+\texttt{lam\_min} either falls inside the table, prepending nothing, or
+below the dielectric data, where it is refused. DL07 can still be
+extended, to \SI{6.205e-5}{\micro\meter}, because the D03 optical
+constants reach further than the table does.
 
-In the extended band the astrodust optics come from Bohren--Huffman Mie
-on the DH21 dielectric function --- the same material as the table, so
-the model does not change composition at the seam. The carbonaceous
+\medskip
+\noindent Where the ionizing-band astrodust optics come from is therefore the
+same answer as for the rest of the table: the DH21 dielectric function,
+solved by the T-matrix for the same $b/a = 1.4$ oblate spheroid on the
+same random-orientation average, so the model changes neither
+composition nor shape at the seam. Bohren--Huffman Mie for the
+volume-equivalent \emph{sphere} remains available as a far cheaper
+approximation, selected with \texttt{euv\_tmatrix=.false.}, and
+\S\ref{sec:euv-shape} is the measurement of what that substitution
+costs --- but for astrodust neither route now has a wavelength to
+compute. The carbonaceous
 side changes character at \SI{21.4}{\electronvolt}
 ($1/\lambda = 17.25\,\mu\mathrm{m}^{-1}$), where the DL07 PAH cross
 section is zero by construction and graphite becomes the whole
@@ -1749,10 +1793,24 @@ clamp. The unextended grid never reaches this branch
 ($1/0.0912 = 10.96 < 17.25$).
 
 \subsection{The shape approximation and its two limits}
+\label{sec:euv-shape}
 
-The $Q$ table is a random-orientation T-matrix solution for a
-$b/a = 1.4$ oblate spheroid; the extended band uses Mie for the
-volume-equivalent \emph{sphere}. The justification is \emph{not} the
+\emph{No shipped astrodust product goes through this approximation, and
+none goes through the route it is an approximation to.} The $Q$ table
+covers the ionizing band, so every wavelength of every astrodust curve
+in \texttt{data/} is read off the table and the on-the-fly band is
+unreachable. What follows is the record of the measurement that decided
+which particle that band would be solved on while it still had to be
+solved on the fly, and of what would apply again if a dielectric
+function ever reached further than the table built from it.
+
+\medskip
+\noindent The $Q$ table is a random-orientation T-matrix solution for a
+$b/a = 1.4$ oblate spheroid, and so, by default, is the extended band.
+This subsection concerns the \emph{optional} cheap route
+(\texttt{euv\_tmatrix=.false.}), which replaces that spheroid by its
+volume-equivalent \emph{sphere} and solves it with Mie. The
+justification is \emph{not} the
 anomalous-diffraction condition $|m-1|\ll1$: for this material
 $|m-1| = 0.77$ at the seam and still $0.56$ at
 \SI{20}{\electronvolt}. It is instead that the two ends of the size
@@ -1792,7 +1850,9 @@ $Q_{\rm ext}$, $-1.89\%$ in $Q_{\rm abs}$ and $-1.94\%$ in
 $Q_{\rm sca}$ --- the geometric-optics constant, arrived at from the
 other side.
 
-In the size-integrated curve the step across
+In the size-integrated curve that this route produces --- which is what
+\texttt{data/kext\_astrodust\_MW\_euv.dat} held while that route was the
+one in use --- the step across
 \SI{0.0912}{\micro\meter} is $-1.54\%$ in $C_{\rm ext}$ and $-1.90\%$
 in $C_{\rm abs}$, \emph{smaller} than the neighboring steps of the
 table's own grid ($-1.95\%$ / $-1.72\%$ and $-2.20\%$ / $-1.94\%$), so
@@ -1802,6 +1862,19 @@ neighbors step $-0.39\%$ and $-0.36\%$, and the albedo $+2.31\%$
 against $+1.59\%$ and $+1.39\%$ --- a seam of roughly one percentage
 point, consistent with the $2\%$ shape error being carried mostly by
 $Q_{\rm sca}$.
+
+\medskip
+\noindent Grain by grain, the T-matrix route removed that seam almost
+entirely. Extrapolating the $Q$ table's first two wavelengths
+log--log back to the last extended-band wavelength and comparing with
+what the band produced there, over all 167 radii, the step in
+$C_{\rm abs}$ had median $0.012\%$ and maximum $0.068\%$ for the
+T-matrix, against median $1.17\%$ and maximum $15.7\%$ for the sphere.
+The asymmetry parameter behaved the same way: the table returns
+$\langle\cos\theta\rangle = 0$ wherever its own regime bounds place a
+radius in the Rayleigh or geometric-optics limit, which the T-matrix
+route reproduced exactly, while the sphere route stepped from $0.90$ to
+$0$ across the seam for $a\gtrsim\SI{1}{\micro\meter}$.
 
 \subsection{Two invariants that had to be protected}
 
@@ -1822,15 +1895,21 @@ called from \texttt{sed\_grain\_loop} and \texttt{narrow\_iterative} in
 
 \medskip
 \noindent\emph{The bound is a property of the radiation field, not of the
-wavelength grid.} That distinction is invisible for astrodust and DL07,
-whose $Q$ table stops at the Lyman limit itself:
+wavelength grid.} The distinction used to be invisible for astrodust
+and DL07, whose $Q$ table stopped at the Lyman limit itself:
 $hc/\SI{0.0912}{\micro\meter} = \SI{13.595}{\electronvolt} <
-\SI{13.6}{\electronvolt}$, so the maximum returns the old constant and
-nothing in this report moves. It is not invisible for Zubko, whose
+\SI{13.6}{\electronvolt}$, so grid and field returned the same number.
+It was never invisible for Zubko, whose
 DustEM tables start at \SI{1e-3}{\micro\meter}: measuring the grid
 there gives \SI{1239.8}{\electronvolt}, ninety-one times the Lyman
 limit, for a Mathis field that carries no photon below
-\SI{0.0912}{\micro\meter}.
+\SI{0.0912}{\micro\meter}. Carrying the astrodust table into the
+ionizing band moves astrodust and DL07 into the same position and
+further: their grid now starts at \SI{1e-4}{\micro\meter}, so the grid
+candidate is \SI{12398}{\electronvolt} against the field's
+\SI{13.595}{\electronvolt}, a factor of $912$. Every solver reads the
+field, so losing the coincidence costs nothing --- but it is why the
+grid-based form had to go before the table could be extended at all.
 
 \medskip
 \noindent Ninety-one times too high is not a change of physics but a
@@ -1874,6 +1953,19 @@ against \SI{370.1}{\electronvolt} respectively. The first run leaves
 the bound at exactly \SI{13.6}{\electronvolt} and so reproduces what
 the hard-coded constant produced; the second shows the bound following
 the field up.
+
+\medskip
+\noindent A fourth site took the same quantity from the grid and was
+found only after the extension. \texttt{calc\_P} in
+\texttt{sed/src/p\_sub.f90} sets the lower limit of the transition
+integral into the top enthalpy bin, and took it from
+\texttt{lambda(1)}; \texttt{interp1} clamps below its range, so on the
+old grid that integral was fed the radiation field's value \emph{at}
+the Lyman limit for a band in which the field is exactly zero. It now
+takes the limit from \texttt{hardest\_photon\_energy} as well.
+\texttt{docs/EUV\_EXTENSION\_HOST\_REGRESSION.md} \S10 records the
+defect and decomposes what its repair changed; removing those photons
+moves the SED by far more than extending the grid does.
 
 \paragraph{The Planck integrals.} $\kappa_B(T,a) = \int
 C_{\rm abs}B_\lambda\,{\rm d}\lambda$ is evaluated on an internal
@@ -1921,15 +2013,21 @@ should be stated plainly whenever the extended astrodust curve is used.
 
 The DL07 model, by contrast, can be compared with Draine's own
 published table for the same model over the whole range. Evaluating
-\texttt{data/kext\_dl07\_MW\_euv.dat} at the reference's wavelengths
+\texttt{data/kext\_dl07\_MW\_euv.dat} (1823 points, from
+\SI{6.205e-5}{\micro\meter}) at the reference's wavelengths
 and counting only points where the reference grid is no finer than ours
 (elsewhere the comparison measures our grid, not our optics) gives, per
 decade in $\lambda$, mean $|\Delta C_{\rm ext}|/C_{\rm ext}$ of
-$0.056$--$0.86\%$, mean $|\Delta\,\text{albedo}| \le 0.0019$ and mean
-$|\Delta\langle\cos\theta\rangle| \le 0.00054$. The excluded points
+$0.069$--$0.86\%$, mean $|\Delta\,\text{albedo}| \le 0.0019$ and mean
+$|\Delta\langle\cos\theta\rangle| \le 0.00073$. The excluded points
 cluster at the X-ray absorption edges (Fe\,K, Si\,K, Mg\,K, Fe\,L,
-O\,K, C\,K), which the reference brackets far more finely than our
-$\Delta\ln\lambda = 0.0116$ grid resolves. The largest single
+O\,K, C\,K), which the reference still brackets more finely than our
+grid resolves --- 150 of the 173 reference points in the
+\SIrange{1e-4}{1e-3}{\micro\meter} decade and 201 of 233 in the next
+one are dropped on that test, even though below the Lyman limit our
+grid there is the DH21 dielectric function's own node list and not the
+$\Delta\ln\lambda = 0.0116$ log grid it is at longer wavelengths. The
+largest single
 deviation, $7.9\%$ in the \SIrange{1}{10}{\micro\meter} decade, is
 confined to the 6.2, 7.6 and \SI{7.9}{\micro\meter} PAH C--C features,
 where Draine's 2003 table uses a different vintage of the PAH cross
@@ -1956,12 +2054,14 @@ absorbed-energy bookkeeping, not as a validated hard-EUV PAH
 file (under \texttt{data/}) & rows & $\lambda$ [\si{\micro\meter}] &
 what sets the short-wavelength floor \\
 \midrule
-\texttt{kext\_astrodust\_MW.dat} & 1129 & 0.0912--39810 &
-the $Q$-table grid; no extension requested \\
-\texttt{kext\_astrodust\_MW\_euv.dat} & 1719 & 1.001e-4--39810 &
-the DH21 astrodust dielectric function, which stops at
-$1.00003\times10^{-4}$ \\
-\texttt{kext\_dl07\_MW\_euv.dat} & 1761 & 6.205e-5--39810 &
+\texttt{kext\_astrodust\_MW.dat} & 1762 & 1e-4--39810 &
+the $Q$-table grid, which already covers the ionizing band \\
+\texttt{kext\_astrodust\_MW\_euv.dat} & 1762 & 1e-4--39810 &
+the same grid: the requested floor is inside it, so nothing is
+prepended \\
+\texttt{kext\_dl07\_MW.dat} & 1762 & 1e-4--39810 &
+the $Q$-table grid, which DL07 shares \\
+\texttt{kext\_dl07\_MW\_euv.dat} & 1823 & 6.205e-5--39810 &
 the D03 dielectric functions; the shorter-reaching of astrosilicate and
 graphite stops at $6.1992\times10^{-5}$ \\
 \texttt{kext\_zubko\_BARE\_GR\_S.dat} & 1201 & 1e-3--1e4 &
@@ -1975,22 +2075,50 @@ wavelength the data the model is made of actually covers, and a request
 below it is refused (\texttt{status = 7} from \texttt{build\_astrodust}
 and \texttt{build\_dl07}, or $6$ if the astrodust dielectric function
 cannot be read at all) rather than served with a refractive index
-frozen at the table boundary.
+frozen at the table boundary. The two astrodust products now cover the
+same grid and read every wavelength of it, the ionizing band included,
+off the $Q$ table: \texttt{euv} has nothing left to prepend, and the
+files differ only in the columns they carry, the field width they are
+written with, and their headers.
 \texttt{kext\_astrodust\_MW.dat} is a tracked regression reference and
-is reproduced byte for byte by \texttt{./calc\_kext.x astrodust}. The
-three extended products are byte-identical to the files of the same
-name on the scalar branch (v1.00), which is the check that the
-polarized branch did not disturb the scalar optics.
+is reproduced byte for byte by \texttt{./calc\_kext.x astrodust}.
 
-\paragraph{Why the extended products carry no polarized column.}
+\medskip
+\noindent Against the scalar branch (v1.00), which is the check that the
+polarized branch did not disturb the scalar optics:
+\texttt{kext\_dl07\_MW.dat}, \texttt{kext\_dl07\_MW\_euv.dat} and
+\texttt{kext\_zubko\_BARE\_GR\_S.dat} are byte-identical;
+\texttt{kext\_astrodust\_MW\_euv.dat} agrees in every number, its
+header text being the only difference; and
+\texttt{kext\_astrodust\_MW.dat} agrees byte for byte in its first
+seven columns, the eighth being the polarized one the scalar branch
+does not carry.
+
+\medskip
+\noindent The comparison that put the T-matrix in the ionizing band,
+and eventually in the table, is worth keeping on the record. While the
+band was still solved on the fly, the two routes agreed exactly at
+$\lambda\ge\SI{0.0912}{\micro\meter}$, both reading those wavelengths
+off the $Q$ table; below the seam the volume-equivalent sphere was low
+in $C_{\rm abs}$ by up to $3.6\%$, high in $C_{\rm sca}$ by up to
+$4.6\%$ and in albedo by up to $5.1\%$, and wrong in
+$\langle\cos\theta\rangle$ by up to a factor of four at the shortest
+wavelengths, while $C_{\rm ext}$ moved by $0.72\%$. Those are the
+numbers that made the spheroid the default rather than the option.
+
+\paragraph{Why the polarized column stops at the Lyman limit.}
 Shortward of \SI{0.0912}{\micro\meter} the dichroic and birefringent
 extinction need the EUV companion of the orientation-resolved table,
 covering \SIrange{0.0124}{0.0912}{\micro\meter}. That table is not
 distributed --- it is generated on demand --- and without it
 \texttt{build\_Cpol} announces on \texttt{stderr} that the band is
-``zero by omission, not by physics'' and leaves it at zero. Writing
-that zero into a data file would launder a known deficit into a
-physical value, so the three extended products stay scalar. When the
+``zero by omission, not by physics'' and leaves it at zero. Carrying
+the wavelength grid into the ionizing band therefore put that zero on
+disk: all $633$ rows of \texttt{kext\_astrodust\_MW.dat} below
+\SI{0.0912}{\micro\meter} carry $C_{\rm pol}^{\rm ext}/{\rm H} = 0$
+exactly, and nothing in the file distinguishes it from a computed
+value. \emph{It is not one.} No other product carries the column at
+all. When the companion
 table \emph{is} present, the grid must lie inside it: an EUV block
 reaching outside \SIrange{0.0124}{0.0912}{\micro\meter} is refused with
 \texttt{status = 9}, and a table that was requested but cannot be read
@@ -2160,8 +2288,8 @@ radiative-transfer driver. Memory cost per process is $\sim 5$~MB;
 wall-clock time per cell is $\sim 0.5$~s on Apple Silicon for the full
 three-enthalpy-stage AD + PAH solve. The same model object now also
 supplies the transport optics (\texttt{dust\_extinction}, scalar and
-dichroic), and the wavelength grid can be carried into the ionizing
-band; see \S\ref{sec:euv} Three caveats are recorded there: the
+dichroic), and the wavelength grid now reaches into the ionizing
+band; see \S\ref{sec:euv}. Three caveats are recorded there: the
 astrodust extreme-ultraviolet band has no external reference,
 hard-photon stochastic \emph{emission} is not yet a solved problem, and
 the polarized optics stop at the Lyman limit unless the EUV companion

@@ -76,8 +76,12 @@ Requires `gfortran` (OpenMP for the parallel drivers). No autoconf, no
 top-level configure; each subdirectory has its own `Makefile`.
 
 ```sh
+# the T-matrix library.  Only the astrodust EUV band uses it, so it is needed
+# by main_astrodust.x, calc_kext.x, and a WITH_TMATRIX library build
+cd tmatrix && make libtmatrix.a
+
 # the SED solver
-cd sed
+cd ../sed
 make                        # make_enthalpy.x main_astrodust.x main_dl07.x
                             # main_zubko.x calc_kext.x
 ./main_astrodust.x          # astrodust+PAH SED at log U = 0.20 -> output/
@@ -85,8 +89,13 @@ make                        # make_enthalpy.x main_astrodust.x main_dl07.x
 ./main_zubko.x              # Zubko/ZDA SED at U = 1            -> output/
 ./main_zubko.x euv          # ... with the field carried into the EUV
 
-# the library, for embedding in an RT code
-make libsedust.a            # link with:  -L. -lsedust -I.
+# the library, for embedding in an RT code.  No T-matrix in it: link with
+#   -I. -L. -lsedust
+make libsedust.a
+# ... and with the astrodust EUV band on the spheroid of the Q table, in the
+# same archive and on the same link line (the host then calls
+# use_tmatrix_euv_band_optics() once before build_astrodust)
+WITH_TMATRIX=1 make libsedust.a
 make use_dustlib_scatmat.x  # reference consumer of the aligned-scattering API
 
 # size-integrated transport optics: lambda, albedo, <cos>, C_ext/C_abs/C_sca per H
@@ -102,7 +111,7 @@ make calc_polext.x         && ./calc_polext.x
 # the Monte Carlo cross-check
 cd ../mc && make && ./main_mc_sed.x run_sed.nml
 
-# regenerating the T-matrix Q table (optional; the table ships with SEDust)
+# regenerating the scalar T-matrix Q table (optional; the table ships with SEDust)
 cd ../tmatrix && make && ./run_tmatrix.x test   # then ./run_tmatrix.x for the full sweep
 
 # orientation-resolved (polarized) Q table from first principles
@@ -127,39 +136,72 @@ Outputs are plain ASCII `.dat` files written to each subdirectory's `output/`;
 
 ## The ionizing band
 
-The astrodust wavelength grid is the T-matrix Q table's, and that table stops at
-0.0912 um — 13.6 eV, the Lyman limit. A host that transports ionizing radiation
-passes the shortest wavelength it needs as the optional `lam_min` to
-`build_astrodust` or `build_dl07`; the grid is then carried down to it. **Omit
-`lam_min` and nothing changes** — the unextended model is bit-identical to
-before.
+Two scalar T-matrix Q tables ship side by side.  The default
+`q_astrodust_P0.20_Fe0.00_1.400.dat` is the historical non-ionizing grid
+(1129 wavelengths, 0.0912--39810 um).  Explicit EUV commands use
+`q_astrodust_P0.20_Fe0.00_1.400_euv.dat` (1762 wavelengths,
+1.0e-4--39810 um).  The latter prepends DH21 dielectric-function nodes below
+the Lyman limit; its 1129 long-wavelength blocks are unchanged.  Select the
+EUV product deliberately through `calc_kext.x ... euv`; ordinary SED and MC
+runs retain the historical grid.
+
+Below 0.0912 um the table's wavelengths are the DH21 dielectric function's own
+energy nodes rather than a resampling of them. That band holds 21 absorption
+edges, each tabulated as a step across ~1e-4 in relative energy (k jumps +211%
+at Fe K, +131% at O K); a uniform 200-per-decade axis would average each into a
+ramp. Reusing the nodes keeps every edge an exact step between adjacent
+wavelengths. One point is not a dielectric node: 0.0912*(1-1e-4), placed to
+resolve the Lyman-limit step of the *radiation field* (see below).
+
+`build_astrodust` and `build_dl07` still take an optional `lam_min` [um] for a
+host needing something shorter still. It prepends log-spaced points below the
+table, and is refused when it asks for a wavelength the model's own dielectric
+data does not cover. For astrodust that leaves nothing to ask for — the table
+already reaches the dielectric function's short-wavelength end — so `lam_min`
+prepends nothing and the EUV band code does not run. DL07 can still be extended,
+to 6.205e-5 um, because the D03 optical constants reach further than the table.
 
 | product | rows | lambda [um] | what sets the floor |
 |---|---:|---|---|
-| `data/kext_astrodust_MW.dat` | 1129 | 0.0912 - 39810 | the Q-table grid (no extension) |
-| `data/kext_astrodust_MW_euv.dat` | 1719 | 1.001e-4 - 39810 | the DH21 astrodust dielectric function |
-| `data/kext_dl07_MW_euv.dat` | 1761 | 6.205e-5 - 39810 | the D03 dielectric functions |
+| `data/kext_astrodust_MW.dat` | 1129 | 0.0912 - 39810 | non-EUV Q-table grid |
+| `data/kext_astrodust_MW_euv.dat` | 1762 | 1e-4 - 39810 | EUV Q-table grid |
+| `data/kext_dl07_MW.dat` | 1129 | 0.0912 - 39810 | non-EUV Q-table grid |
+| `data/kext_dl07_MW_euv.dat` | 1823 | 6.205e-5 - 39810 | the D03 dielectric functions |
 | `data/kext_zubko_BARE_GR_S.dat` | 1201 | 1e-3 - 1e4 | the ZDA optics table itself |
 
 No floor is a free choice: each is the shortest wavelength the data the model is
 made of actually covers, and a shorter request is refused rather than served
 with a refractive index frozen at the table boundary.
 
-In the extended band the astrodust optics are Mie for the volume-equivalent
-sphere on the same DH21 dielectric function the Q table was computed from. That
-shape approximation is bounded by about 2% and converges to a constant -2.08% in
-the large-particle limit, not to zero. **There is no external reference for this
-band**: the HD23 release stops at 12.4 eV, exactly where the extension begins.
-The DL07 model *can* be checked, and agrees with Draine's published table for
-the same model to 0.056-0.86% in C_ext per decade. See
-`docs/SEDust_user_manual.pdf` for the full accounting.
+The DL07 extension below the table uses Mie on the volume-equivalent sphere; it
+agrees with Draine's published table for the same model to 0.056-0.86% in C_ext
+per decade. **There is no external reference for the astrodust ionizing band**:
+the HD23 release stops at 12.4 eV. See `docs/SEDust_user_manual.pdf` for the full
+accounting.
 
-**The polarized optics do not extend with it.** The four `kext_*.dat` products
-above are scalar transport optics; only the unextended
-`data/kext_astrodust_MW.dat` carries the dichroic extinction, as its eighth
-column. Below 0.0912 um the dichroism and the birefringence need a separate EUV
-companion table, which does not ship — see [Polarization in the ionizing
-band](#polarization-in-the-ionizing-band).
+**The polarized optics did not follow the table into that band, deliberately.**
+The five `kext_*.dat` products above are scalar transport optics;
+`data/kext_astrodust_MW.dat` carries the dichroic extinction as its eighth
+column, and that column is zero below 0.0912 um. The orientation-resolved
+tables the polarized quantities are read from stay on the 1129-wavelength DH21
+axis, 0.0912-39810 um, because polarized transfer is run at the few wavelengths
+an observation was made at rather than swept — see [Polarization in the ionizing
+band](#polarization-in-the-ionizing-band) for what fills the gap when a run
+needs it.
+
+### A step in the field needs a point, like a step in the material
+
+An ISRF is exactly zero below the Lyman limit and finite above it
+(`radfield.f90`: `if (lambda(i) < 0.0912d0) J(i) = 0`). The dielectric energy
+axis has no node between 13.595 and 14.000 eV, so a grid built from those nodes
+alone leaves one cell 2.98% wide straddling that step; a consumer's trapezoid
+integral then ramps up from zero across it and absorbs photons the field does
+not carry. Measured on the shipped optics, that inflates the absorbed power of
+the smallest grains by 1.74% and moves the emergent SED by up to 13%. The extra
+point at 0.0912*(1-1e-4) brings it to 0.006%. It is the same move the extension
+makes for every absorption edge — resolve a step with a close pair of points —
+applied to the one step that belongs to the radiation field rather than to the
+grain.
 
 ### The single-photon ceiling comes from the field
 
@@ -168,21 +210,55 @@ single photon a grain can absorb, `max(13.6 eV, hc/lambda_hard)`, where
 `lambda_hard` is the shortest wavelength at which the incident `J_lambda`
 exceeds 1e-12 of its own peak (`hardest_photon_energy` in
 `sed/src/radfield.f90`). **That ceiling is a property of the radiation field,
-not of the wavelength grid.** The two coincide for astrodust and DL07, whose Q
-table floor is the Lyman limit itself (13.595 eV < 13.6 eV, so the constant
-stays selected); they differ by a factor of 91 for Zubko, whose DustEM tables
-start at 1e-3 um (1239.8 eV) while a Mathis field carries nothing below
-0.0912 um. Reading the grid there would coarsen the fixed-count enthalpy bins —
-and the refinement loops, guarded and capped at ten iterations on the way down,
-would not walk it back — shifting the emergent SED by 1-2% with no photon behind
-it. `docs/EUV_EXTENSION_HOST_REGRESSION.md` records the measurement.
+not of the wavelength grid**, and every shipped model now depends on the
+distinction. The Q table reaches 1e-4 um (12.4 keV) and the Zubko/ZDA DustEM
+tables 1e-3 um (1.24 keV), while a Mathis field carries nothing below 0.0912 um:
+reading the grid instead of the field would raise the single-photon bound by
+factors of 912 and 91 respectively, with no photon to justify either. That
+coarsens the fixed-count enthalpy bins — and the refinement loops, guarded and
+capped at ten iterations on the way down, would not walk it back — shifting the
+emergent SED with nothing behind it.
+`docs/EUV_EXTENSION_HOST_REGRESSION.md` records the measurement.
 
-`./main_zubko.x [euv]` is the driver that keeps this path covered: Zubko is the
-one shipped model whose optics grid reaches far past the band a transported field
-occupies, so anything that reads the grid where it should read the field shows up
-there and nowhere else. It prints both candidates side by side. **Nothing changes
-for a model built without `lam_min`** — astrodust and DL07 keep the 13.6 eV
-constant either way.
+Before the Q table was carried into the ionizing band, astrodust and DL07 could
+not tell the two apart: their grid floor *was* the Lyman limit (13.595 eV <
+13.6 eV, so the constant stayed selected either way), and Zubko was the only
+model that exercised the distinction. Now all three do.
+`./main_zubko.x [euv]` still prints both candidates side by side, and is the
+quickest place to see them disagree.
+
+### The photon that was not there (fixed)
+
+`calc_P` builds the upward transition rates of the stochastic solver. Its
+highest-bin term — the rate into the top enthalpy bin, driven by every photon
+more energetic than that bin's gap — used to integrate **from `lambda(1)`, the
+short end of the optics grid**, and to read `J_lambda` at the gap wavelength
+through an interpolator that *clamps* outside its range
+(`interp1` in `sed/src/sed_mathlib.f90`). The top bin sits above the
+single-photon bound by construction, so its gap wavelength was always shorter
+than the grid, and the clamp answered every time with `J_lambda` at the grid
+edge instead of zero. On a grid ending at the Lyman limit that is the full
+Mathis intensity there, 1.359 in its own units: **every top-bin transition was
+driven by a photon flux the field does not carry.** The same clamp made the
+integral run backwards when the gap exceeded the grid's range, subtracting a
+rate instead of adding none.
+
+Both limits now come from the field — `hardest_photon_energy`, the same routine
+the enthalpy ceiling uses — and the band is skipped outright when the gap is
+harder than the hardest photon. The sample count follows the band's width
+instead of being a flat 51 points.
+
+**This changed all three shipped models**, and for Zubko it has nothing to do
+with the astrodust table: that model's grid has always started at 1e-3 um, so it
+carried the same defect independently. Measured against the previous products:
+astrodust up to 12.1% locally and −1.1% to +0.9% in integrated power, DL07 9.7%
+and −2.8%, Zubko 3.0% (6.0% with `euv`). Energy conservation improved, from
++0.236% to −0.057% (astrodust S1, emitted/absorbed per H).
+
+**Any SED produced before this fix includes photons that were not in the field**,
+in the top enthalpy bin of every stochastically heated grain. Do not compare
+against those products without accounting for it. The polarized emission
+`lamI_pol` moves with the total, since both are the same P(T).
 
 ## Stochastic heating
 
@@ -439,4 +515,4 @@ Kwang-il Seon (KASI/UST)
 
 ---
 
-Last updated: 2026-08-03 20:25 KST
+Last updated: 2026-08-04 10:36 KST

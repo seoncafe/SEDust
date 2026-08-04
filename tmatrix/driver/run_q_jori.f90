@@ -145,6 +145,22 @@ program run_q_jori
    ! Reference parameters (HD23 best fit).  Paths are relative to tmatrix/,
    ! where the Makefile drops run_q_jori.x.
    character(len=*), parameter :: f_aeff  = '../data/dielectric/DH21_aeff'
+   ! This sweep stays on DH21_wave, 0.0912-39810 um, even though the scalar Q
+   ! table now reaches 1.0e-4 um (12398 eV).  The two products are aligned on
+   ! their LONG-wavelength end -- build_Cpol takes the offset from the
+   ! polarized table's own length (n_pol_euv = NLAM - qj_n_lam) and fills the
+   ! block below its first node from the companion table instead -- so a
+   ! shorter polarized axis is the arrangement the reader is written for, not a
+   ! mismatch with the scalar one.
+   !
+   ! Carrying this sweep shortward would also take it past where its own
+   ! large-x rule holds.  The plain sweep sends x > 50 straight to geometric
+   ! optics, whose absorption is the opaque-grain Fresnel surface integral, and
+   ! that needs the chord optical depth 4 Im(m) x to be large: for astrodust it
+   ! is 3.7 at x = 50 at 100 eV and falls below 1 by 200 eV.  The `euv` mode
+   ! exists for the band below the seam precisely because it certifies the
+   ! T-matrix differently there and stops at 0.0124 um; below that, build_Cpol
+   ! refuses the grid rather than fill it from a limit that no longer applies.
    character(len=*), parameter :: f_wave  = '../data/dielectric/DH21_wave'
    character(len=*), parameter :: f_index = &
       '../data/dielectric/index_DH21Ad_P0.20_0.00_1.400'
