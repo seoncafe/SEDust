@@ -7,16 +7,17 @@
 #   (astrodust + PAH, Milky Way R_V = 3.1 fit).
 # Size distribution: ../data/release/size_distribution.dat
 # Optics:
-#   0.0912 - 39810 um : random-orientation T-matrix Q table,
-#     ../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat
-#     (oblate spheroid b/a = 1.4, porosity P = 0.20, f_Fe = 0)
-#   below 0.0912 um   : the same random-orientation T-matrix on the
-#     same b/a = 1.4 oblate spheroid, computed directly from the
+#   astrodust : the random-orientation T-matrix Q table, read at EVERY
+#     wavelength of the range stated below, the ionizing band included:
+#     ../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400_euv.dat
+#     (oblate spheroid b/a = 1.4, porosity P = 0.20, f_Fe = 0, on the
 #     Draine & Hensley (2021) dielectric function,
-#     ../data/dielectric/index_DH21Ad_P0.20_0.00_1.400
-#     Where the size parameter leaves the T-matrix range the
-#     Rayleigh dipole limit (x < 0.1) and the geometric optics
-#     limit (x > 50) are used, exactly as the Q table itself does.
+#     ../data/dielectric/index_DH21Ad_P0.20_0.00_1.400).
+#     Where the size parameter leaves the range the T-matrix is solved
+#     in, the table itself carries the Rayleigh dipole limit (x < 0.1)
+#     or the geometric optics limit (x > 50).  No astrodust cross
+#     section is solved on the fly by this program, and no sphere is
+#     substituted for the spheroid at any wavelength.
 #   PAH : charge-resolved DL07 absorption (neutral + cation mixed by
 #     f_ion, a > 100 A fully ionized).  PAH scattering is negligible
 #     (Rayleigh) and is not modelled, so the PAHs enter extinction
@@ -24,20 +25,15 @@
 #     scattering and the asymmetry.
 #
 # Wavelength range:  1.000000E-04 -  3.981000E+04 um, 1762 points.
-#   The floor is set by the DH21 astrodust dielectric function,
-#   whose own table stops at  1.000032E-04 um; a shorter floor is refused,
-#   because (n, k) would freeze at the boundary value there.
+#   The grid starts at whichever is shorter, the Q table's own short end
+#   or the requested floor.  A floor below the DH21 astrodust
+#   dielectric table's own end,  1.000032E-04 um, is refused, because (n, k)
+#   would freeze at the boundary value there.
 #
 # How far to trust the EUV band of THIS model:
-#   Above 0.0912 um the astrodust optics are the b/a = 1.4 spheroid
-#   T-matrix solution.  Below it they are volume-equivalent-sphere Mie
-#   on the same dielectric function.  That shape approximation costs
-#   <= 1.5% per grain in the orientation-averaged extinction and
-#   0.2 - 0.7% after the size integral, and converges to a CONSTANT
-#   -2.08% in the large-particle limit: by Cauchy's theorem the
-#   orientation-averaged projected area of a convex particle is S/4,
-#   which for b/a = 1.4 is 2.12% larger than pi a_eff^2 of the
-#   volume-equivalent sphere.
+#   The astrodust optics are the b/a = 1.4 oblate spheroid at every
+#   wavelength, read from one table, so the grain does not change
+#   shape and the solution does not change character across the band.
 #   There is NO external reference for this band: the HD23 author
 #   release (extinction.dat, scattering.dat) stops at 12.4 eV.
 #   Above 21.4 eV (1/lambda = 17.25 um^-1) the DL07 PAH cross section

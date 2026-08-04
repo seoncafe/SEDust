@@ -18,7 +18,7 @@ program calc_kext
    ! file header.
    !
    ! The extreme-ultraviolet extension (`euv`, or an explicit floor) carries
-   ! the wavelength grid below the T-matrix Q table's 0.0912 um (13.6 eV) end,
+   ! the wavelength grid below the T-matrix Q table's own short-wavelength end,
    ! for a host that transports ionizing radiation.  The floor is never
    ! hard-coded: it is asked of the dielectric function that will supply the
    ! optics there, because past its own tabulation the refractive index would
@@ -33,15 +33,22 @@ program calc_kext
    use q_astrodust_mod,   only: astrodust_index_lambda_range, get_astrodust_index_path
    use q_silicate_mod,    only: silicate_index_lambda_range
    use q_graphite_mod,    only: graphite_index_lambda_range
-   ! The astrodust EUV band is solved on the oblate spheroid of the Q table
-   ! rather than on a volume-equivalent sphere.  That calculation is a separate
-   ! module so that the library links without the T-matrix; this driver names
-   ! it because `./calc_kext.x astrodust euv` asks for the band.
+   ! Should a requested floor fall below the astrodust Q table, that band is
+   ! solved on the oblate spheroid of the table rather than on a
+   ! volume-equivalent sphere.  The calculation is a separate module so that
+   ! the library links without the T-matrix; this driver registers it because
+   ! `./calc_kext.x astrodust euv` is what could ask for such a band.  The Q
+   ! table shipped with this release already reaches into the ionizing band,
+   ! so with it nothing is left for this route to solve.
    use euv_astrodust_tmatrix, only: use_tmatrix_euv_band_optics
    implicit none
 
    ! ---- model inputs shared with the SED drivers -------------------------
+   ! Keep the two scalar Q products separate.  The plain product is the
+   ! historical, non-ionizing grid; the _euv product prepends the DH21 nodes
+   ! below the Lyman limit.  Select the latter only for an explicit EUV run.
    character(len=*), parameter :: F_QT  = '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat'
+   character(len=*), parameter :: F_QT_EUV = '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400_euv.dat'
    character(len=*), parameter :: F_SD  = '../data/release/size_distribution.dat'
    character(len=*), parameter :: F_EXT = '../data/release/extinction.dat'
    character(len=*), parameter :: F_SCA = '../data/release/scattering.dat'
@@ -103,14 +110,16 @@ program calc_kext
          end if
       end if
       if (euv) then
-         ! Below 0.0912 um the astrodust optics come from the DH21 dielectric
-         ! function, so that table's own short-wavelength end is the floor.
+         ! The requested floor is tested against the DH21 astrodust dielectric
+         ! function's own short-wavelength end: whatever the Q table does not
+         ! already cover would have to be computed from that function, and past
+         ! its tabulation (n, k) would freeze at the boundary value.
          call astrodust_index_lambda_range(lam_lo, lam_hi)
          if (lam_min <= 0.0_wp) lam_min = LAM_LO_MARGIN * lam_lo
          write(*,'(a,es12.5,a,es12.5,a)') ' DH21 astrodust dielectric function covers ', &
             lam_lo, ' - ', lam_hi, ' um'
          write(*,'(a,es12.5,a)') ' requested lam_min = ', lam_min, ' um'
-         call build_astrodust(m, F_QT, F_SD, NT_IN, T_LO, T_HI, lam_min=lam_min)
+         call build_astrodust(m, F_QT_EUV, F_SD, NT_IN, T_LO, T_HI, lam_min=lam_min)
          fout = '../data/kext_astrodust_MW_euv.dat'
       else
          call build_astrodust(m, F_QT, F_SD, NT_IN, T_LO, T_HI)
@@ -137,7 +146,7 @@ program calc_kext
          lam_lo = max(lam_lo, lam_lo2)
          if (lam_min <= 0.0_wp) lam_min = LAM_LO_MARGIN * lam_lo
          write(*,'(a,es12.5,a)') ' requested lam_min = ', lam_min, ' um'
-         call build_dl07(m, F_QT, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI, &
+         call build_dl07(m, F_QT_EUV, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI, &
                          lam_min=lam_min)
          fout = '../data/kext_dl07_MW_euv.dat'
       else
@@ -241,7 +250,7 @@ contains
       write(*,'(a)') ''
       write(*,'(a)') ' Writes lambda / albedo / <cos> / C_ext per H (+ C_abs, C_sca, and'
       write(*,'(a)') ' K_abs = C_abs/H normalized by the model dust mass per H) under'
-      write(*,'(a)') ' ../data/.  `euv` carries the grid below 0.0912 um, down to'
+      write(*,'(a)') ' ../data/.  `euv` asks for the ionizing band, down to'
       write(*,'(a)') ' whatever the model dielectric function itself covers.'
    end subroutine print_usage
 
@@ -430,38 +439,34 @@ contains
       call add_note('#   (astrodust + PAH, Milky Way R_V = 3.1 fit).')
       call add_note('# Size distribution: ' // F_SD)
       call add_note('# Optics:')
-      call add_note('#   0.0912 - 39810 um : random-orientation T-matrix Q table,')
-      call add_note('#     ' // F_QT)
-      call add_note('#     (oblate spheroid b/a = 1.4, porosity P = 0.20, f_Fe = 0)')
-      call add_note('#   below 0.0912 um   : the same random-orientation T-matrix on the')
-      call add_note('#     same b/a = 1.4 oblate spheroid, computed directly from the')
+      call add_note('#   astrodust : the random-orientation T-matrix Q table, read at EVERY')
+      call add_note('#     wavelength of the range stated below, the ionizing band included:')
+      call add_note('#     ' // F_QT_EUV)
+      call add_note('#     (oblate spheroid b/a = 1.4, porosity P = 0.20, f_Fe = 0, on the')
       call add_note('#     Draine & Hensley (2021) dielectric function,')
-      call add_note('#     ' // trim(get_astrodust_index_path()))
-      call add_note('#     Where the size parameter leaves the T-matrix range the')
-      call add_note('#     Rayleigh dipole limit (x < 0.1) and the geometric optics')
-      call add_note('#     limit (x > 50) are used, exactly as the Q table itself does.')
+      call add_note('#     ' // trim(get_astrodust_index_path()) // ').')
+      call add_note('#     Where the size parameter leaves the range the T-matrix is solved')
+      call add_note('#     in, the table itself carries the Rayleigh dipole limit (x < 0.1)')
+      call add_note('#     or the geometric optics limit (x > 50).  No astrodust cross')
+      call add_note('#     section is solved on the fly by this program, and no sphere is')
+      call add_note('#     substituted for the spheroid at any wavelength.')
       call add_note('#   PAH : charge-resolved DL07 absorption (neutral + cation mixed by')
       call add_note('#     f_ion, a > 100 A fully ionized).  PAH scattering is negligible')
       call add_note('#     (Rayleigh) and is not modelled, so the PAHs enter extinction')
       call add_note('#     through absorption only and the astrodust grains carry all the')
       call add_note('#     scattering and the asymmetry.')
-      call header_wavelength_range('The floor is set by the DH21 astrodust ' // &
-           'dielectric function,')
-      write(s,'(a,es13.6,a)') '#   whose own table stops at ', lam_lo, &
-           ' um; a shorter floor is refused,'
+      call header_wavelength_range('The grid starts at whichever is shorter, ' // &
+           'the Q table''s own short end')
+      call add_note('#   or the requested floor.  A floor below the DH21 astrodust')
+      write(s,'(a,es13.6,a)') '#   dielectric table''s own end, ', lam_lo, &
+           ' um, is refused, because (n, k)'
       call add_note(trim(s))
-      call add_note('#   because (n, k) would freeze at the boundary value there.')
+      call add_note('#   would freeze at the boundary value there.')
       call add_note('#')
       call add_note('# How far to trust the EUV band of THIS model:')
-      call add_note('#   Above 0.0912 um the astrodust optics are the b/a = 1.4 spheroid')
-      call add_note('#   T-matrix solution.  Below it they are volume-equivalent-sphere Mie')
-      call add_note('#   on the same dielectric function.  That shape approximation costs')
-      call add_note('#   <= 1.5% per grain in the orientation-averaged extinction and')
-      call add_note('#   0.2 - 0.7% after the size integral, and converges to a CONSTANT')
-      call add_note('#   -2.08% in the large-particle limit: by Cauchy''s theorem the')
-      call add_note('#   orientation-averaged projected area of a convex particle is S/4,')
-      call add_note('#   which for b/a = 1.4 is 2.12% larger than pi a_eff^2 of the')
-      call add_note('#   volume-equivalent sphere.')
+      call add_note('#   The astrodust optics are the b/a = 1.4 oblate spheroid at every')
+      call add_note('#   wavelength, read from one table, so the grain does not change')
+      call add_note('#   shape and the solution does not change character across the band.')
       call add_note('#   There is NO external reference for this band: the HD23 author')
       call add_note('#   release (extinction.dat, scattering.dat) stops at 12.4 eV.')
       call add_note('#   Above 21.4 eV (1/lambda = 17.25 um^-1) the DL07 PAH cross section')
@@ -507,8 +512,9 @@ contains
          call add_note(trim(s))
          call add_note('#   refused because (n, k) would freeze at the boundary value there.')
       else
-         call header_wavelength_range('The grid is the T-matrix Q table''s own ' // &
-              'wavelength grid (no EUV extension was requested).')
+         call header_wavelength_range('The grid is the T-matrix Q table''s own: ' // &
+              'no EUV extension was requested,')
+         call add_note('#   but that grid by itself already covers the ionizing band.')
       end if
       call add_note('#')
       call add_note('# How far to trust the EUV band of THIS model:')

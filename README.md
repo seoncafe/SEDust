@@ -101,13 +101,14 @@ Outputs are plain ASCII `.dat` files written to each subdirectory's `output/`;
 
 ## The ionizing band
 
-The astrodust wavelength grid is the T-matrix Q table's, and that table spans
-1.0e-4 to 39810 um — **12.4 keV down to 0.031 eV**, on 1762 wavelengths. The
-ionizing band is therefore already in the table, computed the same way as the
-rest of it: the T-matrix on the b/a = 1.400 oblate spheroid, on the DH21
-dielectric function. A host that transports ionizing radiation gets those optics
-by reading the table and needs nothing else — in particular it **does not have
-to link the T-matrix**.
+Two scalar T-matrix Q tables ship side by side.  The default
+`q_astrodust_P0.20_Fe0.00_1.400.dat` is the historical non-ionizing grid
+(1129 wavelengths, 0.0912--39810 um).  Explicit EUV commands use
+`q_astrodust_P0.20_Fe0.00_1.400_euv.dat` (1762 wavelengths,
+1.0e-4--39810 um).  The latter prepends DH21 dielectric-function nodes below
+the Lyman limit; its 1129 long-wavelength blocks are unchanged.  Select the
+EUV product deliberately through `calc_kext.x ... euv`; ordinary SED and MC
+runs retain the historical grid.
 
 Below 0.0912 um the table's wavelengths are the DH21 dielectric function's own
 energy nodes rather than a resampling of them. That band holds 21 absorption
@@ -127,9 +128,9 @@ to 6.205e-5 um, because the D03 optical constants reach further than the table.
 
 | product | rows | lambda [um] | what sets the floor |
 |---|---:|---|---|
-| `data/kext_astrodust_MW.dat` | 1762 | 1e-4 - 39810 | the Q-table grid (no extension) |
-| `data/kext_astrodust_MW_euv.dat` | 1762 | 1e-4 - 39810 | the Q-table grid; the DH21 dielectric function reaches no further |
-| `data/kext_dl07_MW.dat` | 1762 | 1e-4 - 39810 | the Q-table grid (no extension) |
+| `data/kext_astrodust_MW.dat` | 1129 | 0.0912 - 39810 | non-EUV Q-table grid |
+| `data/kext_astrodust_MW_euv.dat` | 1762 | 1e-4 - 39810 | EUV Q-table grid |
+| `data/kext_dl07_MW.dat` | 1129 | 0.0912 - 39810 | non-EUV Q-table grid |
 | `data/kext_dl07_MW_euv.dat` | 1823 | 6.205e-5 - 39810 | the D03 dielectric functions |
 | `data/kext_zubko_BARE_GR_S.dat` | 1201 | 1e-3 - 1e4 | the ZDA optics table itself |
 
@@ -265,4 +266,4 @@ Kwang-il Seon (KASI/UST)
 
 ---
 
-Last updated: 2026-08-03 23:42 KST
+Last updated: 2026-08-04 10:36 KST

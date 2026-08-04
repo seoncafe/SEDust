@@ -99,15 +99,19 @@ One archive:
 \begin{lstlisting}[style=sh]
 cd SEDust/sed && make libsedust.a         # the library archive
 \end{lstlisting}
-Nothing in it reaches the T-matrix, so \code{SEDust/tmatrix} need not even be
-built. A model built from this archive computes the astrodust
-extreme-ultraviolet band (\S\ref{sec:euv}) on the volume-equivalent sphere
-(\code{euv\_tmatrix = .false.}) and \emph{refuses} the spheroid
-(\code{euv\_tmatrix = .true.}, the default whenever \code{lam\_min} is given)
-with \code{status = 6}, rather than answering with a different particle behind
-the caller's back.
+Nothing in it reaches the T-matrix, so \code{SEDust/tmatrix} need not be built
+for the default, non-ionizing $Q$ table (1129 wavelengths,
+\SIrange{0.0912}{39810}{\micro\meter}).  The separately shipped
+\code{q\_astrodust\_P0.20\_Fe0.00\_1.400\_euv.dat} has 1762 wavelengths and
+reaches \SI{1e-4}{\micro\meter}; explicit EUV commands select that file.
+What follows applies to a model that forms a band below the table it was given.
+Built from this archive, such a model
+\emph{refuses} the spheroid (\code{euv\_tmatrix = .true.}, the default whenever
+\code{lam\_min} is given) with \code{status = 6}, rather than answering with a
+different particle behind the caller's back; \code{euv\_tmatrix = .false.} asks
+for the volume-equivalent sphere explicitly.
 
-A host that wants that band on the spheroid of the $Q$ table
+A host that wants such a band on the spheroid of the $Q$ table
 (\S\ref{sec:euv-shape}) builds the T-matrix into the \emph{same} archive, so the
 link line below does not change:
 \begin{lstlisting}[style=sh]
@@ -125,7 +129,7 @@ for an RT tree that carries its own copy of \code{sed/src/}; it writes
 
 Of the CLI drivers, \code{main\_astrodust.x} and \code{calc\_kext.x} are built
 against \code{libtmatrix.a} and make that call themselves --- they are the two
-that can be asked for the astrodust EUV band. \code{main\_dl07.x} and
+that would compute an astrodust EUV band if one ever formed. \code{main\_dl07.x} and
 \code{main\_zubko.x} need no T-matrix: those models' optics reach past the Lyman
 limit on their own.
 
@@ -190,7 +194,11 @@ call build_from_files(m, descriptor_path, data_dir, NT, T_lo, T_hi [, status] [,
       [\um] the model must cover, for a host that transports ionizing
       radiation. See \S\ref{sec:euv}. \textbf{Omitting it reproduces the previous
       behavior exactly} --- the grid, and every number derived from it, is
-      unchanged.
+      unchanged. For astrodust there is nothing left to ask for: the shipped
+      $Q$ table already reaches the short end of the DH21 dielectric function,
+      so every value that is not refused falls inside the table and prepends
+      nothing. DL07 can still be carried to $6.205\times10^{-5}$\um, because
+      its D03 optical constants reach past the table.
 \item \code{astrodust\_index\_path} (optional, astrodust only): the dielectric
       function the model is made of. It is read to decide how far
       \code{lam\_min} may reach, and it would supply the optics of a band below
@@ -220,7 +228,10 @@ tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat
       \code{.false.} asks for the volume-equivalent-sphere Mie approximation,
       which is far cheaper and about 2\% low in the geometric-optics limit, and
       needs no T-matrix at all. See \S\ref{sec:euv-shape}. Ignored when
-      \code{lam\_min} asks for no extension.
+      \code{lam\_min} asks for no extension --- which, with the shipped $Q$
+      table, is every legal request, so \textbf{this argument currently selects
+      nothing}. It is kept for a model whose optics table stops short of its own
+      dielectric function.
 \end{itemize}
 
 \begin{table}[h]
@@ -607,10 +618,16 @@ particular it does not have to link \code{libtmatrix.a}; \S\ref{sec:euv-shape}
 returns to what that leaves the injected route for.
 
 Below $0.0912$\um\ the table's wavelengths are the DH21 dielectric function's own
-energy nodes rather than a resampling of them. There are 21 absorption edges in
-that band, each tabulated as a step across $\sim10^{-4}$ in relative energy
-($k$ jumps by $+211\%$ at Fe\,K, $+131\%$ at O\,K, $+30\%$ at C\,K), and a
-uniform 200-per-decade axis would average each into a ramp. Reusing the nodes
+energy nodes rather than a resampling of them. That band is full of absorption
+edges, each tabulated as a step across a close pair of energies --- the
+separations run from $2.4\times10^{-6}$ to $3.6\times10^{-4}$ in relative
+energy, and $k$ jumps by $+211\%$ at Fe\,K (\SI{7124}{\electronvolt}), $+131\%$
+at O\,K (538), $+67\%$ at Fe\,L (724), $+30\%$ at C\,K (291), $+27\%$ at Si\,K
+(1846) and $+26\%$ at Mg\,K (1311). Counting them takes a threshold, and the
+answer moves with it: 23 places where $k$ jumps by more than $0.5\%$ across a
+pair closer than $5\times10^{-4}$, of which 14 are closer than $10^{-4}$. A
+uniform 200-per-decade axis would average every one of them into a ramp.
+Reusing the nodes
 keeps every edge an exact step between adjacent grid points, and makes the
 refractive index at each point the tabulated one rather than an interpolate.
 
@@ -674,10 +691,13 @@ resolve a step with a close pair of points.
       dielectric function --- the same material \emph{and} the same $b/a =
       1.400$ oblate spheroid as the $Q$ table, on the same random-orientation
       average, so the band continues the table's own calculation instead of
-      substituting a different particle for it. This is the default. Passing
+      substituting a different particle for it. This is the default; passing
       \code{euv\_tmatrix=.false.} instead selects Bohren--Huffman Mie for the
-      \emph{volume-equivalent sphere}: much cheaper, but an approximation.
-      Both are described in \S\ref{sec:euv-shape}.
+      \emph{volume-equivalent sphere}, much cheaper but an approximation.
+      Both are described in \S\ref{sec:euv-shape} --- and with the shipped $Q$
+      table \textbf{neither is ever reached}, because no astrodust band forms
+      below it, so the flag has no effect and the entry describes what would
+      compute a band rather than what computes one.
 \item \textbf{PAH / carbonaceous.} Above \SI{21.4}{\electronvolt}
       ($1/\lambda = 17.25\ \mu\mathrm{m}^{-1}$) the DL07 PAH cross section is
       zero by construction, so graphite is the \emph{whole} carbonaceous
@@ -711,7 +731,10 @@ covers that band, so the astrodust EUV path is unreachable --- which is the
 point: no host has to link the T-matrix any more. The route is kept because it
 is what would compute a band if a future dielectric function reached further
 than the table built from it, and because the timings below are the measurement
-that justified moving the work into the table.
+that justified moving the work into the table. In particular \textbf{the
+volume-equivalent-sphere substitution described here is used nowhere in the
+shipped astrodust products}: every wavelength of every one of them is read off
+the $Q$ table, and no argument to \code{build\_astrodust} can change that.
 
 The $Q$ table is a random-orientation T-matrix solution for an oblate spheroid
 of axial ratio $b/a = 1.4$. \textbf{By default the extended band is the same
@@ -858,9 +881,10 @@ by up to $4.6\%$ and in albedo by up to $5.1\%$, and wrong in $\langle\cos
 sphere keeps a forward-scattering asymmetry the spheroid's geometric-optics
 limit does not. $C_{\rm ext}$ moved least, by $0.72\%$. Regenerating costs
 about five minutes on 64 threads
-(\code{OMP\_NUM\_THREADS=64 ./calc\_kext.x astrodust euv}); pass
-\code{euv\_tmatrix=.false.} to \code{build\_astrodust} first if the sphere
-route is wanted instead.
+(\code{OMP\_NUM\_THREADS=64 ./calc\_kext.x astrodust euv}). \textbf{The sphere
+route can no longer be selected here}: the table covers the band, so
+\code{build\_astrodust} forms no band for \code{euv\_tmatrix} to steer, and the
+comparison above cannot be reproduced without shortening the table first.
 
 \subsection{The single-photon ceiling comes from the field}\label{sec:euv-ceiling}
 
@@ -1129,7 +1153,11 @@ the files written here \emph{are} the optics that host gets in memory.
 grid down to whatever the model's own dielectric function covers; an explicit
 number requests a specific floor in \um. \code{zubko} defaults to
 \code{formula}. \code{from\_files} takes the descriptor path, and the data
-directory defaults to the descriptor's own directory.
+directory defaults to the descriptor's own directory. For astrodust the
+\code{euv} floor now falls inside the $Q$ table, so
+\code{./calc\_kext.x astrodust} and \code{./calc\_kext.x astrodust euv} cover
+the same grid and write the same curve; only the field widths and the header
+differ.
 
 Columns are
 \begin{center}
@@ -1330,8 +1358,9 @@ The line is the same whether or not the T-matrix was built in
 needs no OpenMP runtime of its own --- the threading is on the SEDust side ---
 so \code{-fopenmp} is required only because \code{libsedust.a} uses it.
 
-Only the astrodust EUV band (\S\ref{sec:euv-shape}) ever reaches the T-matrix,
-and it reaches it through a procedure the host registers rather than a compiled
+Only an astrodust EUV band (\S\ref{sec:euv-shape}) ever reaches the T-matrix ---
+and the shipped $Q$ table leaves no such band to compute --- and it reaches it
+through a procedure the host registers rather than a compiled
 dependency, which is why the plain archive links without one. A host with its
 own spheroid solver can register that instead: \code{sed\_register\_euv\_band\_optics}
 takes any procedure matching the abstract interface \code{euv\_band\_optics\_i}
@@ -1372,9 +1401,10 @@ Model data lives under \code{SEDust/data/}:
       (\code{../tmatrix/output/q\_astrodust\_*.dat}) and the HD23 release size
       distribution (\code{../data/release/size\_distribution.dat}).
 \item dielectric functions: \code{../data/dielectric/} --- the DH21 astrodust
-      index \code{index\_DH21Ad\_P0.20\_0.00\_1.400} (which supplies the
-      astrodust EUV band), the D03 astrosilicate and graphite indices, and the
-      D16 turbostratic-graphite sphere table.
+      index \code{index\_DH21Ad\_P0.20\_0.00\_1.400} (which the $Q$ table was
+      computed from, and which fixes how far \code{lam\_min} may reach), its
+      wavelength axis \code{DH21\_wave\_to\_12keV}, the D03 astrosilicate and
+      graphite indices, and the D16 turbostratic-graphite sphere table.
 \item Zubko: \code{../data/zubko/} --- the ZDA config/formula, the tabulated
       size distributions, the DustEM $Q$-tables, and the calorimetry tables
       from the Camps et al.\ 2015 benchmark; a ready descriptor is

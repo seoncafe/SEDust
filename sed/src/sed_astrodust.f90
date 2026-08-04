@@ -1873,18 +1873,25 @@ contains
 
    subroutine euv_extended_lambda_grid(lam_out, lam_min, n_extra)
       ! Model wavelength grid = the T-matrix Q table's grid, optionally carried
-      ! into the extreme ultraviolet below its short-wavelength end (0.0912 um
-      ! = 13.6 eV, the Lyman limit).  A photoionization RT host transports
-      ! 6-100 eV, so half of that band lies off the table.
+      ! below its short-wavelength end.  That end is now 1.0e-4 um (12398 eV):
+      ! the ionizing band a photoionization RT host transports is INSIDE the
+      ! astrodust table, so nothing is prepended for it any more.  For that
+      ! model nothing can be: the DH21 dielectric function stops at
+      ! 1.000032e-4 um, longward of the table's own first wavelength, so every
+      ! lam_min a caller may legally ask for lands inside the table.  DL07 is
+      ! where this still does something -- its D03 optical constants reach
+      ! 6.205e-5 um, past the table.
       !
-      ! When lam_min is shorter than the table's first wavelength, log-spaced
+      ! When lam_min IS shorter than the table's first wavelength, log-spaced
       ! points are prepended from lam_min up to just below it.  Their spacing
-      ! is at most the table's own spacing at its short-wavelength end
-      ! (dln lam = 0.01156), so the extension is never coarser than the grid it
-      ! joins.  lam_out(1) is set to lam_min exactly, so the caller's requested
-      ! floor is covered rather than approached.  n_extra = 0 (and the plain
-      ! table grid) when lam_min is absent, non-positive, or not shorter than
-      ! the table -- which is what keeps the unextended model bit-identical.
+      ! is at most the table's own spacing at its short-wavelength end, taken
+      ! from the table itself (dln lam = 0.00794 on the current axis, where the
+      ! nodes below 0.0912 um are the dielectric function's own), so the
+      ! extension is never coarser than the grid it joins.  lam_out(1) is set
+      ! to lam_min exactly, so the caller's requested floor is covered rather
+      ! than approached.  n_extra = 0 (and the plain table grid) when lam_min is
+      ! absent, non-positive, or not shorter than the table -- which is what
+      ! keeps the unextended model bit-identical.
       real(wp), allocatable, intent(out) :: lam_out(:)
       real(wp), optional,    intent(in)  :: lam_min
       ! Number of points prepended; 0 when the grid is the plain table grid.
