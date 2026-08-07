@@ -5,7 +5,7 @@ prototyping and verification. Use the Fortran library
 (`sed/main_astrodust.x`) when running the full size-distribution sum.
 
 `sedust_h5` reads the optics products themselves -- the wavelength axis, the
-cross-section tables and the extinction curve of `data/sedust_<model>.h5` --
+cross-section tables and the extinction curve of `data/<model>/sedust_<model>.h5` --
 and is the counterpart of `sed/src/sedust_product.f90`. It needs h5py; the
 rest of this package does not, so it is imported lazily and a tree without
 h5py keeps working.

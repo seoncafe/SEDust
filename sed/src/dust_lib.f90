@@ -165,35 +165,41 @@ module dust_lib
    ! scattering-weighted asymmetry <cos>; optional albedo is Csca/Cext, 0 where
    ! Cext underflows.
    !
-   ! What it returns is the PRECOMPUTED size-integrated curve of a
-   ! data/kext_*.dat table, interpolated onto m%lam -- log(lambda)-log(C) for
-   ! the cross sections, linear in log(lambda) for <cos>, and the table value
-   ! itself wherever a model wavelength coincides with a table wavelength.
+   ! What it returns is the PRECOMPUTED size-integrated curve the model was
+   ! built with -- /kext of data/<model>/sedust_<model>.h5, or a kext_*.dat
+   ! table -- interpolated onto m%lam: log(lambda)-log(C) for the cross
+   ! sections, linear in log(lambda) for <cos>, and the table value itself
+   ! wherever a model wavelength coincides with a table wavelength.
    ! Nothing is integrated over grain size at call time. The size integral is
-   ! size_integrated_extinction, which is what wrote those tables and is what
+   ! size_integrated_extinction, which is what wrote those products and is what
    ! the standalone calc_kext.x calls; it is re-exported here for a host that
    ! wants to redo the integral rather than read the product.
    !
-   ! The BUILDER loads the table, not dust_extinction, because the table paths
-   ! are relative to the sed/ directory and a host is free to change directory
-   ! once the model is built. Each builder takes an optional kext_path:
-   !   call build_astrodust(m, qtab, sizedist, NT, T_lo, T_hi, &
-   !                        kext_path='../data/astrodust/kext_astrodust_MW.dat')
+   ! The BUILDER loads the table, not dust_extinction, because the paths are
+   ! relative to the sed/ directory and a host is free to change directory once
+   ! the model is built. build_dust and each builder take an optional kext_path:
+   !   call build_dust(m, 'astrodust', '../data', &
+   !                   kext_path='../data/astrodust/sedust_astrodust.h5')
    ! A file named that way is a contract: if it cannot be read the build FAILS.
-   ! Omitting it falls to the model's default table --
-   !   astrodust   ../data/kext_astrodust_MW_euv.dat
-   !   dl07        ../data/kext_dl07_MW_euv.dat
-   !   zubko       ../data/kext_zubko_BARE_GR_S_euv.dat
+   ! Omitting it falls to the model's default, which is the HDF5 product --
+   !   astrodust   ../data/astrodust/sedust_astrodust.h5
+   !   dl07        ../data/dl07/sedust_dl07.h5
+   !   zubko       ../data/zubko/sedust_zubko.h5
    !   from_files  none
-   ! -- and a default that cannot be read leaves the model with no extinction
-   ! to serve (dust_extinction then reports status 2) but does NOT fail the
-   ! build, so a driver that only wants emission still runs.
+   ! -- with the model's EUV text table behind it for a tree built without
+   ! HDF5, or one whose product carries no /kext. A default that cannot be read
+   ! either way leaves the model with no extinction to serve (dust_extinction
+   ! then reports status 2) but does NOT fail the build, so a driver that only
+   ! wants emission still runs.
    !
-   ! The defaults are the EUV products because their wavelength range CONTAINS
-   ! the plain grid's: the two are the same size integral on the same optics,
-   ! and their nodes coincide over the overlap. One default therefore covers a
-   ! host that transports ionizing radiation and one that does not. It is the
-   ! NARROWER table that has to be named explicitly -- for astrodust 1129 nodes
+   ! The HDF5 product holds ONE axis and the index i_lyman at which it crosses
+   ! the Lyman limit, so include_euv picks the view rather than the file. The
+   ! text defaults are the EUV products for the same reason: their wavelength
+   ! range CONTAINS the plain grid's, the two being the same size integral on
+   ! the same optics with nodes that coincide over the overlap. One default
+   ! therefore covers a host that transports ionizing radiation and one that
+   ! does not. It is the NARROWER table that has to be named explicitly -- for
+   ! astrodust 1129 nodes
    ! from 0.0912 um against 1762 from 1.0e-4 um, for DL07 the same 1129 against
    ! 1823 from 6.205e-5 um, and for zubko 865 from 0.0912 um against the 1201 of
    ! its own optics tables, from 1.0e-3 um. A model grid reaching outside the

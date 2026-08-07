@@ -49,8 +49,11 @@ program calc_kext
    ! Keep the two scalar Q products separate.  The plain product is the
    ! historical, non-ionizing grid; the _euv product prepends the DH21 nodes
    ! below the Lyman limit.  Select the latter only for an explicit EUV run.
-   character(len=*), parameter :: F_QT  = '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400.dat'
-   character(len=*), parameter :: F_QT_EUV = '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400_euv.dat'
+   ! Each model's own product carries ONE wavelength axis and the index where
+   ! the non-ionizing part of it begins, so `euv` selects a view of the same
+   ! file rather than a second one.
+   character(len=*), parameter :: F_QT   = '../data/astrodust/sedust_astrodust.h5'
+   character(len=*), parameter :: F_QT_DL = '../data/dl07/sedust_dl07.h5'
    character(len=*), parameter :: F_SD  = '../data/release/size_distribution.dat'
    character(len=*), parameter :: F_EXT = '../data/release/extinction.dat'
    character(len=*), parameter :: F_SCA = '../data/release/scattering.dat'
@@ -120,7 +123,8 @@ program calc_kext
          write(*,'(a,es12.5,a,es12.5,a)') ' DH21 astrodust dielectric function covers ', &
             lam_lo, ' - ', lam_hi, ' um'
          write(*,'(a,es12.5,a)') ' requested lam_min = ', lam_min, ' um'
-         call build_astrodust(m, F_QT_EUV, F_SD, NT_IN, T_LO, T_HI, lam_min=lam_min)
+         call build_astrodust(m, F_QT, F_SD, NT_IN, T_LO, T_HI, lam_min=lam_min, &
+                              include_euv=.true.)
          fout = '../data/astrodust/kext_astrodust_MW_euv.dat'
       else
          call build_astrodust(m, F_QT, F_SD, NT_IN, T_LO, T_HI)
@@ -147,11 +151,11 @@ program calc_kext
          lam_lo = max(lam_lo, lam_lo2)
          if (lam_min <= 0.0_wp) lam_min = dl07_euv_lambda_floor()
          write(*,'(a,es12.5,a)') ' requested lam_min = ', lam_min, ' um'
-         call build_dl07(m, F_QT_EUV, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI, &
-                         lam_min=lam_min)
+         call build_dl07(m, F_QT_DL, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI, &
+                         lam_min=lam_min, include_euv=.true.)
          fout = '../data/dl07/kext_dl07_MW_euv.dat'
       else
-         call build_dl07(m, F_QT, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI)
+         call build_dl07(m, F_QT_DL, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI)
          fout = '../data/dl07/kext_dl07_MW.dat'
       end if
 
@@ -248,7 +252,7 @@ program calc_kext
    write(*,'(a,a)') ' wrote ', trim(fout)
 
    ! ---- the same curve into the model's HDF5 file ------------------------
-   ! Only the WIDE run of a coded model writes: data/sedust_<model>.h5 holds
+   ! Only the WIDE run of a coded model writes: data/<model>/sedust_<model>.h5 holds
    ! one wavelength axis, and a reader asked for the non-ionizing part slices
    ! it at /grid/i_lyman.  The narrow text product is that slice, so writing it
    ! here as well would be a second copy of the same numbers on a shorter axis.
@@ -376,7 +380,7 @@ contains
 
    ! ===================================================================
    subroutine write_kext_h5(model)
-      ! Append the size-integrated curve to ../data/sedust_<model>.h5, beside
+      ! Append the size-integrated curve to ../data/<model>/sedust_<model>.h5, beside
       ! the (lambda, a_eff) tables make_qtable.x wrote into the same file.
       !
       ! The file holds ONE wavelength axis and every wavelength-indexed array
@@ -573,7 +577,7 @@ contains
       call add_note('# Optics:')
       call add_note('#   astrodust : the random-orientation T-matrix Q table, read at EVERY')
       call add_note('#     wavelength of the range stated below, the ionizing band included:')
-      call add_note('#     ' // F_QT_EUV)
+      call add_note('#     ' // F_QT)
       call add_note('#     (oblate spheroid b/a = 1.4, porosity P = 0.20, f_Fe = 0, on the')
       call add_note('#     Draine & Hensley (2021) dielectric function,')
       call add_note('#     ' // trim(get_astrodust_index_path()) // ').')

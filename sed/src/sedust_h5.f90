@@ -4,7 +4,7 @@ module sedust_h5
    ! polarized branch -- the orientation-resolved and scattering-matrix
    ! products.  One file per dust model,
    !
-   !   data/sedust_astrodust.h5   data/sedust_dl07.h5   data/sedust_zubko.h5
+   !   data/astrodust/sedust_astrodust.h5   data/dl07/sedust_dl07.h5   data/zubko/sedust_zubko.h5
    !
    ! because the models do not share a wavelength grid, a radius grid or a
    ! component list, and because a host ships only the models it runs.
@@ -60,8 +60,8 @@ module sedust_h5
    public :: h5_begin, h5_end
    public :: h5_create_file, h5_open_file, h5_open_rw, h5_close_file
    public :: h5_group, h5_group_open, h5_group_close, h5_unlink
-   public :: h5_write_1d, h5_write_2d, h5_write_3d
-   public :: h5_read_1d, h5_read_2d, h5_read_3d
+   public :: h5_write_1d, h5_write_2d, h5_write_3d, h5_write_6d
+   public :: h5_read_1d, h5_read_2d, h5_read_3d, h5_read_6d
    public :: h5_dims
    public :: h5_put_attr_d, h5_put_attr_i, h5_put_attr_s
    public :: h5_get_attr_d, h5_get_attr_i, h5_get_attr_s
@@ -223,7 +223,25 @@ contains
       call write_real(loc, name, d, reshape(a, [size(a)]), units, long_name)
    end subroutine h5_write_3d
 
-   subroutine write_real(loc, name, d, flat, units, long_name)
+   subroutine h5_write_6d(loc, name, a, units, long_name)
+      ! The aligned phase matrix, (n_ti, n_ts, n_phi, 4, 4, n_band).  Its chunk
+      ! is ONE band: a host reads a band at a time, and the whole array as a
+      ! single chunk would be tens of megabytes through the chunk cache for
+      ! every such read.
+      integer(h5id_k),   intent(in) :: loc
+      character(len=*), intent(in) :: name
+      real(real64),     intent(in) :: a(:,:,:,:,:,:)
+      character(len=*), intent(in), optional :: units, long_name
+      integer(hsize_t) :: d(6), ch(6)
+      integer :: k
+      do k = 1, 6
+         d(k) = int(size(a,k), hsize_t)
+      end do
+      ch = d;  ch(6) = 1_hsize_t
+      call write_real(loc, name, d, reshape(a, [size(a)]), units, long_name, chunk=ch)
+   end subroutine h5_write_6d
+
+   subroutine write_real(loc, name, d, flat, units, long_name, chunk)
       ! One writer for every rank: chunked and deflated, with the units and a
       ! one-line description attached to the dataset rather than to a README
       ! that can drift away from it.
@@ -232,6 +250,9 @@ contains
       integer(hsize_t), intent(in) :: d(:)
       real(real64),     intent(in) :: flat(:)
       character(len=*), intent(in), optional :: units, long_name
+      ! Chunk shape, when the default -- blocks along the first (wavelength)
+      ! axis and the whole of the others -- is the wrong one for this array.
+      integer(hsize_t), intent(in), optional :: chunk(:)
       integer(h5id_k)   :: sid, did, dcpl
       integer(hsize_t) :: ch(size(d))
       integer :: e, r
@@ -239,6 +260,7 @@ contains
       call h5screate_simple_f(r, d, sid, e)
       ch = d
       if (ch(1) > int(LAM_CHUNK, hsize_t)) ch(1) = int(LAM_CHUNK, hsize_t)
+      if (present(chunk)) ch = chunk
       call h5pcreate_f(H5P_DATASET_CREATE_F, dcpl, e)
       call h5pset_chunk_f(dcpl, r, ch, e)
       call h5pset_shuffle_f(dcpl, e)
@@ -350,6 +372,31 @@ contains
       call h5sclose_f(msid, e);  call h5sclose_f(sid, e);  call h5dclose_f(did, e)
       ok = (e == 0)
    end subroutine h5_read_3d
+
+   subroutine h5_read_6d(loc, name, a, ok)
+      ! The aligned phase matrix, (n_ti, n_ts, n_phi, 4, 4, n_band).  No i0:
+      ! this array has no wavelength axis to cut -- its last dimension is the
+      ! handful of bands the aligned table was computed in.
+      integer(h5id_k),  intent(in)  :: loc
+      character(len=*), intent(in)  :: name
+      real(real64), allocatable, intent(out) :: a(:,:,:,:,:,:)
+      logical,          intent(out) :: ok
+      integer(hsize_t), allocatable :: d(:)
+      integer(hsize_t) :: cnt(6)
+      integer(h5id_k)  :: did
+      integer :: e, k
+      ok = .false.
+      call h5_dims(loc, name, d, ok);  if (.not. ok) return
+      if (size(d) /= 6) then;  ok = .false.;  return;  end if
+      do k = 1, 6
+         cnt(k) = d(k)
+      end do
+      allocate(a(cnt(1), cnt(2), cnt(3), cnt(4), cnt(5), cnt(6)))
+      call h5dopen_f(loc, trim(name), did, e)
+      call h5dread_f(did, H5T_NATIVE_DOUBLE, a, cnt, e)
+      call h5dclose_f(did, e)
+      ok = (e == 0)
+   end subroutine h5_read_6d
 
 
    ! ---- attributes ----------------------------------------------------
@@ -490,6 +537,11 @@ contains
       real(real64), intent(in) :: a(:,:,:)
       character(len=*), intent(in), optional :: units, long_name
    end subroutine
+   subroutine h5_write_6d(loc, name, a, units, long_name)
+      integer(h5id_k), intent(in) :: loc;  character(len=*), intent(in) :: name
+      real(real64), intent(in) :: a(:,:,:,:,:,:)
+      character(len=*), intent(in), optional :: units, long_name
+   end subroutine
    subroutine h5_dims(loc, name, d, ok)
       integer(h5id_k), intent(in) :: loc;  character(len=*), intent(in) :: name
       integer(int64), allocatable, intent(out) :: d(:)
@@ -512,6 +564,11 @@ contains
       integer(h5id_k), intent(in) :: loc;  character(len=*), intent(in) :: name
       real(real64), allocatable, intent(out) :: a(:,:,:);  logical, intent(out) :: ok
       integer, intent(in), optional :: i0
+      ok = .false.
+   end subroutine
+   subroutine h5_read_6d(loc, name, a, ok)
+      integer(h5id_k), intent(in) :: loc;  character(len=*), intent(in) :: name
+      real(real64), allocatable, intent(out) :: a(:,:,:,:,:,:);  logical, intent(out) :: ok
       ok = .false.
    end subroutine
    subroutine h5_put_attr_d(loc, name, v)

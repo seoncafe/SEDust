@@ -71,7 +71,7 @@ use dust_lib
 type(dust_model_t)    :: m
 real(wp), allocatable :: J_lam(:), lamI_total(:)
 
-call build_astrodust(m, qtab, sizedist, 200, 2.7_wp, 5.0e3_wp)   ! once
+call build_dust(m, 'astrodust', '../data')                       ! once
 allocate(J_lam(m%NLAM), lamI_total(m%NLAM))
 do icell = 1, ncells
    ! ... assemble J_lam(:) (mean intensity on the grid m%lam) for this cell ...
@@ -173,7 +173,7 @@ point --- it takes the model by name and a data directory and resolves the rest
 from the HDF5 products (\S\ref{sec:hdf5}); the four builders below it stay
 exported so that a host naming its own files keeps working:
 \begin{lstlisting}
-call build_dust     (m, model, data_dir, NT, T_lo, T_hi [, include_euv] &
+call build_dust     (m, model, data_dir [, NT, T_lo, T_hi] [, include_euv] &
                      [, status] [, lam_min] [, kext_path] [, sd_index] [, u_isrf] &
                      [, sizedist_path] [, config_path] [, astrodust_index_path] &
                      [, euv_tmatrix])
@@ -1552,19 +1552,29 @@ computed zero.}
 
 \begin{lstlisting}
 use dust_lib, only: dust_model_t, build_dust
-call build_dust(m, 'zubko', '../data', 100, 1.0d0, 3000.0d0, &
-                include_euv = .false., status = st)
+call build_dust(m, 'zubko', '../data', include_euv = .false., status = st)
 \end{lstlisting}
 
 \noindent One call for \code{'astrodust'}, \code{'dl07'}, \code{'zubko'} and
 \code{'from\_files'}, built from one directory and one flag:
 
 \begin{lstlisting}
-call build_dust(m, model, data_dir, NT, T_lo, T_hi [, include_euv] [, status] &
+call build_dust(m, model, data_dir [, NT, T_lo, T_hi] [, include_euv] [, status] &
                 [, lam_min] [, kext_path] [, sd_index] [, u_isrf] &
                 [, sizedist_path] [, config_path] [, astrodust_index_path] &
                 [, euv_tmatrix])
 \end{lstlisting}
+
+\code{NT}, \code{T\_lo} and \code{T\_hi} are the internal temperature grid
+and are optional, defaulting to \code{200, 2.7, 5000} --- the values the rest of
+this manual quotes as typical. They are what the EMISSION is solved on: the
+enthalpy $H(T,a)$ and the Planck-averaged opacity $\kappa_B(T,a)$ are tabulated
+on that grid, \code{calc\_Teq} interpolates $T_{\rm eq}$ in it, and the
+stochastic solver's window is CLAMPED to $[T_{\rm lo}, T_{\rm hi}]$ rather than
+extrapolated past it --- so the range must bracket the temperatures the field
+produces, and \code{NT} sets how finely $T_{\rm eq}$ is resolved. The extinction
+reads none of it, so a host that only wants \code{dust\_extinction} can leave
+all three out.
 
 \code{data\_dir} is the SEDust data directory. The optics come from
 \code{data\_dir/<model>/sedust\_<model>.h5} --- the wavelength axis, the cross-section

@@ -9,7 +9,7 @@
 # Optics:
 #   astrodust : the random-orientation T-matrix Q table, read at EVERY
 #     wavelength of the range stated below, the ionizing band included:
-#     ../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400_euv.dat
+#     ../data/astrodust/sedust_astrodust.h5
 #     (oblate spheroid b/a = 1.4, porosity P = 0.20, f_Fe = 0, on the
 #     Draine & Hensley (2021) dielectric function,
 #     ../data/dielectric/index_DH21Ad_P0.20_0.00_1.400).

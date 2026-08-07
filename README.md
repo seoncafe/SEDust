@@ -124,15 +124,18 @@ Outputs are plain ASCII `.dat` files written to each subdirectory's `output/`;
 
 ## The ionizing band
 
-Two scalar T-matrix Q tables ship side by side.  The default
-`q_astrodust_P0.20_Fe0.00_1.400.dat` is the historical non-ionizing grid
-(1129 wavelengths, 0.0912--39810 um).  Explicit EUV commands use
-`q_astrodust_P0.20_Fe0.00_1.400_euv.dat` (1762 wavelengths,
-1.0e-4--39810 um).  The latter is the whole sweep `run_tmatrix.x` writes; the
-former is that file with every wavelength shortward of the Lyman limit dropped
-(`make lyman_cut`), row selection only, so the two agree cell for cell over the
-1129 they share.  Select the EUV product deliberately through
-`calc_kext.x ... euv`; ordinary SED and MC runs retain the historical grid.
+The HDF5 product holds ONE wavelength axis and the index `i_lyman` at which it
+crosses the Lyman limit, so `include_euv` picks the view rather than the file:
+`.false.` (the default) returns `lambda(i_lyman:)` and the same rows of every
+wavelength-indexed array.  For astrodust that is 1129 wavelengths
+(0.0912--39810 um) out of 1762 (1.0e-4--39810 um), for DL07 1129 out of 1823,
+for Zubko 865 out of 1201.
+
+The scalar T-matrix text pair behind it, `q_astrodust_P0.20_Fe0.00_1.400.dat`
+and `..._euv.dat`, is the same split as two files: the EUV one is the whole
+sweep `run_tmatrix.x` writes and the other is that file with every wavelength
+shortward of the Lyman limit dropped (`make lyman_cut`), row selection only, so
+they agree cell for cell over the 1129 they share.
 
 Below 0.0912 um the `_euv` table's wavelengths are the DH21 dielectric
 function's own energy nodes rather than a resampling of them, so every
@@ -175,8 +178,10 @@ no T-matrix.
 
 ### Stored Q tables
 
-Every model now ships both wavelength sets of its `(lambda, a_eff)` cross
-sections, not just astrodust:
+Every model's `(lambda, a_eff)` cross sections are in `/qtable` of its HDF5
+product, which is what ships.  `make_qtable.x` writes them as text beside it as
+well, and those files are what the table below names; they are regenerable, so
+they are not tracked:
 
 | model | non-EUV | EUV | a_eff grid |
 |---|---|---|---|
@@ -201,7 +206,13 @@ their provenance in `where_draine_eps.txt`). Over the wavelengths the dielectric
 files cover, our silicate table agrees with the shipped one to a mean 3.5% in
 Q_abs and 4.7% in Q_sca, with `<cos>` to 0.05; longward of 1e3 um the
 dielectric functions run out and the two extension laws differ, which the file
-headers state. Nothing reads these tables at run time — they are stored products.
+headers state.
+
+The one text table anything still opens is the astrodust scalar pair. It is the
+INPUT `make_qtable.x` reads to write the HDF5 product, so that program cannot
+read it back out of its own output; it is also the route a tree built without
+HDF5 falls to. Everything else — the drivers, `libsedust.a`, the `rt_example`
+consumers, the Python reader — opens the `.h5`.
 
 No floor is a free choice: each is the shortest wavelength the data the model is
 made of actually covers, and a shorter request is refused rather than served
@@ -335,4 +346,4 @@ Kwang-il Seon (KASI/UST)
 
 ---
 
-Last updated: 2026-08-07 09:27 KST
+Last updated: 2026-08-07 12:02 KST

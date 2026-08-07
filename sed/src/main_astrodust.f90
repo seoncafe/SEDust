@@ -48,10 +48,10 @@ program main_astrodust
    ! below the Lyman limit, so the 633 extra wavelengths carry no photon and
    ! only cost solver time.  `euv` is there for a run that wants the band
    ! resolved anyway, and tags its output files with it.
-   character(len=*), parameter :: F_QTAB =  &
-      '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400.dat'
-   character(len=*), parameter :: F_QTAB_EUV =  &
-      '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400_euv.dat'
+   ! This model's own product: it carries ONE wavelength axis and the index
+   ! where the non-ionizing part of it begins, so `euv` selects a view of the
+   ! same file rather than a second one.
+   character(len=*), parameter :: F_QTAB = '../data/astrodust/sedust_astrodust.h5'
    character(len=*), parameter :: F_SIZE = '../data/release/size_distribution.dat'
    character(len=8), parameter :: STAGES(2) = ['S1      ', 'S2      ']
    character(len=*), parameter :: OUTDIR = 'output/astrodust_irem_ours_'
@@ -149,11 +149,8 @@ program main_astrodust
    write(*,'(a)') '=========================================================='
    write(*,'(a)') ' main_astrodust: production driver'
    write(*,'(a)') '=========================================================='
-   if (use_euv_grid) then
-      write(*,'(a,a)') ' Q table     : ', F_QTAB_EUV
-   else
-      write(*,'(a,a)') ' Q table     : ', F_QTAB
-   end if
+   write(*,'(a,a)')  ' Q table     : ', F_QTAB
+   write(*,'(a,l1)') ' include_euv : ', use_euv_grid
    write(*,'(a,a)')    ' size_dist   : ', F_SIZE
    write(*,'(a,f8.3)') ' U_mathis    : ', U_MATHIS
    write(*,'(a,i0)')   ' NT (T grid) : ', NT_IN
@@ -166,7 +163,7 @@ program main_astrodust
 
    call use_tmatrix_euv_band_optics()
    if (use_euv_grid) then
-      call sed_init(F_QTAB_EUV, F_SIZE, NT_IN, T_LO, T_HI)
+      call sed_init(F_QTAB, F_SIZE, NT_IN, T_LO, T_HI, include_euv=.true.)
    else
       call sed_init(F_QTAB, F_SIZE, NT_IN, T_LO, T_HI)
    end if

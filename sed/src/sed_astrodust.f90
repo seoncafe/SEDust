@@ -895,7 +895,7 @@ contains
    ! grain-charging model (pah_ionfrac) at intensity u_isrf.
    ! =====================================================================
    subroutine sed_init_dl07(qtable_path, sizedist_path, sd_index, u_isrf, &
-                            NT_in, T_lo, T_hi, status, lam_min, lam_axis)
+                            NT_in, T_lo, T_hi, status, lam_min, lam_axis, include_euv)
       character(len=*), intent(in) :: qtable_path, sizedist_path
       integer,          intent(in) :: sd_index, NT_in
       real(wp),         intent(in) :: u_isrf, T_lo, T_hi
@@ -919,16 +919,21 @@ contains
       ! grid from qtable_path -- its optics are Mie on the D03 dielectric
       ! functions at every wavelength -- so a caller that already has the axis
       ! passes it here and qtable_path is not read at all.  That is how the
-      ! HDF5 product is used: data/sedust_dl07.h5 carries this model's own
+      ! HDF5 product is used: data/dl07/sedust_dl07.h5 carries this model's own
       ! /grid/lambda, so a host running DL07 alone needs no astrodust file to
       ! borrow a grid from.  lam_min is then ignored: the axis is final.
       real(wp), optional, intent(in) :: lam_axis(:)
+      ! Which wavelength axis to take when qtable_path names an HDF5 product.
+      ! This model's own product carries its own /grid/lambda, so naming
+      ! data/dl07/sedust_dl07.h5 here is the same as handing the axis through
+      ! lam_axis.  Ignored for a text table, and by lam_axis when that is given.
+      logical, optional, intent(in) :: include_euv
 
       integer  :: i, ja, jw, jt, n_euv
       real(wp) :: a_um, t, da, qabs1, Q_neu, Q_ion
       real(wp) :: geo, qext1, qsca1, gsca1
       real(wp) :: sil_lam_lo, sil_lam_hi, gra_lam_lo, gra_lam_hi, d03_lam_lo
-      real(wp), allocatable :: fion(:), lna(:), lam_grid(:)
+      real(wp), allocatable :: fion(:), lna(:), lam_grid(:), lam_base(:)
       ! Stored cross sections of the four DL07 populations, when tables for
       ! this grid exist; got_* says whether each was found.
       real(wp), allocatable :: tQa(:,:), tQs(:,:), tGg(:,:)
@@ -947,12 +952,35 @@ contains
       ! log grid built below -- NOT the size-dist file, whose dn columns are
       ! unused here (dn/da comes from grain_dist_dl07, the WD01 analytic model).
       if (present(status)) status = 0
-      if (present(lam_axis)) then
-         ! The axis is given, so the Q table is not opened at all.
-         allocate(lam_grid(size(lam_axis)))
-         lam_grid = lam_axis
+      if (present(lam_axis) .or. is_hdf5_path(qtable_path)) then
+         ! The axis is given outright, or read from the product that carries
+         ! it; either way no text Q table is opened.
+         if (present(lam_axis)) then
+            allocate(lam_grid(size(lam_axis)))
+            lam_grid = lam_axis
+         else
+            call read_sedust_grid(qtable_path, euv_asked(include_euv), lam_grid, i, rok)
+            if (.not. rok) then
+               if (present(status)) then
+                  status = 1;  return
+               else
+                  write(*,'(a,a)') ' sed_init_dl07: cannot read /grid/lambda from ', &
+                                   trim(qtable_path)
+                  stop 1
+               end if
+            end if
+         end if
+         ! lam_min still applies.  The product's axis is where this model's grid
+         ! STARTS, not a ceiling on what the caller may ask for: a host that
+         ! wants wavelengths shortward of the first node gets them prepended
+         ! here, exactly as on the text route below.  Skipping this dropped
+         ! lam_min on the floor whenever the axis came from HDF5.
+         call move_alloc(lam_grid, lam_base)
+         call euv_extended_lambda_grid(lam_grid, lam_min, base=lam_base)
+         deallocate(lam_base)
          ! Everything shortward of the Q table's own 0.0912 um end is EUV here,
-         ! and the coverage check below must see it as such.
+         ! and the coverage check below must see it as such.  Counted after the
+         ! extension, since every point it prepends is shortward of that end.
          n_euv = count(lam_grid < LAM_LYMAN_UM)
       else if (present(status)) then
          call load_q_table(qtable_path, ok=rok)
@@ -967,7 +995,9 @@ contains
          call load_size_dist(sizedist_path)
       end if
 
-      if (.not. present(lam_axis)) &
+      ! Only the TEXT route needs the grid built here: the two branches above
+      ! already have the axis, and neither loaded a Q table for this to read.
+      if (.not. present(lam_axis) .and. .not. is_hdf5_path(qtable_path)) &
          call euv_extended_lambda_grid(lam_grid, lam_min, n_extra=n_euv)
 
       ! This model's optics are Mie on the D03 dielectric functions throughout,
@@ -2160,7 +2190,7 @@ contains
    end function astrodust_euv_lambda_floor
 
 
-   subroutine euv_extended_lambda_grid(lam_out, lam_min, n_extra)
+   subroutine euv_extended_lambda_grid(lam_out, lam_min, n_extra, base)
       ! Model wavelength grid = the T-matrix Q table's grid, optionally carried
       ! below its short-wavelength end.  Where that end is depends on which of
       ! the two shipped tables the caller passed: 0.0912 um (13.6 eV, the Lyman
@@ -2188,29 +2218,41 @@ contains
       real(wp), optional,    intent(in)  :: lam_min
       ! Number of points prepended; 0 when the grid is the plain table grid.
       integer,  optional,    intent(out) :: n_extra
+      ! Axis to prepend onto.  Absent means the loaded text Q table's own, the
+      ! only axis there is on that route; a model whose axis came from the HDF5
+      ! product passes it here, no text table having been opened for qt_lam to
+      ! hold.
+      real(wp), optional,    intent(in)  :: base(:)
+      real(wp), allocatable :: b(:)
       real(wp) :: dln_qt, dln_ext, span
       integer  :: j, nx
 
+      if (present(base)) then
+         allocate(b(size(base)));  b = base
+      else
+         allocate(b(qt_n_lam));    b = qt_lam
+      end if
+
       nx = 0
       if (present(lam_min)) then
-         if (lam_min > 0.0_wp .and. lam_min < qt_lam(1)) then
-            span   = log(qt_lam(1) / lam_min)
-            dln_qt = log(qt_lam(2) / qt_lam(1))
+         if (lam_min > 0.0_wp .and. lam_min < b(1)) then
+            span   = log(b(1) / lam_min)
+            dln_qt = log(b(2) / b(1))
             ! span > 0 inside this branch, so the ceiling is already >= 1.
             nx     = ceiling(span / dln_qt)
          end if
       end if
       if (present(n_extra)) n_extra = nx
 
-      allocate(lam_out(nx + qt_n_lam))
+      allocate(lam_out(nx + size(b)))
       if (nx > 0) then
-         dln_ext = log(qt_lam(1) / lam_min) / real(nx, wp)
+         dln_ext = log(b(1) / lam_min) / real(nx, wp)
          do j = 1, nx
-            lam_out(j) = qt_lam(1) * exp(-real(nx - j + 1, wp) * dln_ext)
+            lam_out(j) = b(1) * exp(-real(nx - j + 1, wp) * dln_ext)
          end do
          lam_out(1) = lam_min
       end if
-      lam_out(nx+1:) = qt_lam
+      lam_out(nx+1:) = b
    end subroutine euv_extended_lambda_grid
 
 
@@ -2526,7 +2568,8 @@ contains
    ! Build the DL07 model into m. Channels: SIL, CARB (carbonaceous =
    ! neutral + cation summed). Reuses sed_init_dl07 to set the globals.
    subroutine build_dl07(m, qtable_path, sizedist_path, sd_index, u_isrf, &
-                         NT_in, T_lo, T_hi, status, lam_min, kext_path, lam_axis)
+                         NT_in, T_lo, T_hi, status, lam_min, kext_path, lam_axis, &
+                         include_euv)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: qtable_path, sizedist_path
       integer,            intent(in)  :: sd_index, NT_in
@@ -2551,6 +2594,9 @@ contains
       ! qtable_path; see sed_init_dl07.  This is how the HDF5 product supplies
       ! this model's own grid.
       real(wp), optional, intent(in) :: lam_axis(:)
+      ! Which axis to take when qtable_path names an HDF5 product; see
+      ! sed_init_dl07.
+      logical, optional, intent(in) :: include_euv
       logical :: kok
       character(len=512) :: kpath
 
@@ -2561,7 +2607,8 @@ contains
       nc_coeff = 470.0d0;  nc_integer = .true.;  qpah_use_d03_graphite = .true.
       gd_apply_d03_reduction = .true.
       call sed_init_dl07(qtable_path, sizedist_path, sd_index, u_isrf, NT_in, T_lo, T_hi, &
-                         status=status, lam_min=lam_min, lam_axis=lam_axis)
+                         status=status, lam_min=lam_min, lam_axis=lam_axis, &
+                         include_euv=include_euv)
       if (present(status)) then
          if (status /= 0) return
       end if
@@ -2749,11 +2796,11 @@ contains
                ' build_zubko: optics read from ', trim(stored_q_h5)
          end if
          if (use_stored_q_tables .and. .not. rok) then
-            call load_q_component('../data/zubko/q_zubko_'//trim(gt(ic))//'_euv.dat', &
+            call load_q_component(trim(data_dir)//'q_zubko_'//trim(gt(ic))//'_euv.dat', &
                                   nwave, nsize, lam_opt, a_opt, qa, qs, gg, rok, rho=rho)
-            if (rok .and. sed_verbose) write(*,'(a,a,a)') &
+            if (rok .and. sed_verbose) write(*,'(a,a,a,a)') &
                ' build_zubko: ', trim(gt(ic)), &
-               ' optics read from the stored tables under ../data/zubko/'
+               ' optics read from the stored tables under ', trim(data_dir)
          end if
          if (.not. rok) then
             ! Per COMPONENT, not once for the first: a table that is missing,
@@ -3310,8 +3357,16 @@ contains
       ! 'astrodust' | 'dl07' | 'zubko' | 'from_files'
       character(len=*),   intent(in)  :: model
       character(len=*),   intent(in)  :: data_dir
-      integer,            intent(in)  :: NT_in
-      real(wp),           intent(in)  :: T_lo, T_hi
+      ! The internal temperature grid: NT points, log-spaced over [T_lo, T_hi].
+      ! It is what the EMISSION side is solved on -- the enthalpy H(T, a) and
+      ! the Planck-averaged opacity kappB(T, a) are tabulated on it, calc_Teq
+      ! interpolates T_eq in that table, and the stochastic solver's window is
+      ! clamped to [T_lo, T_hi] rather than extrapolated past it.  So the range
+      ! must BRACKET the grain temperatures the field produces, and NT sets how
+      ! finely T_eq is resolved.  The extinction never reads any of it: a host
+      ! that only wants dust_extinction can leave all three out.
+      integer,  optional, intent(in)  :: NT_in
+      real(wp), optional, intent(in)  :: T_lo, T_hi
       ! Carry the ionizing band.  Default .false.
       logical,  optional, intent(in)  :: include_euv
       ! 0 = success.  Non-zero codes are the ones the model's own builder
@@ -3335,6 +3390,8 @@ contains
       logical,  optional, intent(in)  :: euv_tmatrix
 
       character(len=512) :: h5, sd, cfg, ddir, kext
+      integer  :: nt
+      real(wp) :: tlo, thi
       real(wp), allocatable :: lam_h5(:)
       integer  :: sdi, i_lyman
       real(wp) :: uisrf
@@ -3342,6 +3399,12 @@ contains
 
       if (present(status)) status = 0
       wide = euv_asked(include_euv)
+      ! Defaults: the grid the manual quotes as typical, wide enough for the
+      ! CMB floor at one end and a stochastically heated small grain at the
+      ! other.
+      nt   = 200;        if (present(NT_in)) nt   = NT_in
+      tlo  = 2.7_wp;     if (present(T_lo))  tlo  = T_lo
+      thi  = 5.0e3_wp;   if (present(T_hi))  thi  = T_hi
       ddir = data_dir
       if (len_trim(ddir) == 0) ddir = '../data'
       h5  = sedust_h5_file(trim(ddir), model)
@@ -3364,7 +3427,7 @@ contains
       case ('astrodust')
          ! The Q table IS the optics here, so the HDF5 path goes straight in;
          ! sed_init reads /qtable/astrodust from it and cuts at i_lyman.
-         call build_astrodust(m, trim(h5), trim(sd), NT_in, T_lo, T_hi, status=status, &
+         call build_astrodust(m, trim(h5), trim(sd), nt, tlo, thi, status=status, &
                               lam_min=lam_min, astrodust_index_path=astrodust_index_path, &
                               kext_path=trim(kext), euv_tmatrix=euv_tmatrix, &
                               include_euv=wide)
@@ -3375,7 +3438,7 @@ contains
          ! no astrodust product to borrow one from.
          call read_sedust_grid(trim(h5), wide, lam_h5, i_lyman, got)
          if (got) then
-            call build_dl07(m, trim(h5), trim(sd), sdi, uisrf, NT_in, T_lo, T_hi, &
+            call build_dl07(m, trim(h5), trim(sd), sdi, uisrf, nt, tlo, thi, &
                             status=status, lam_min=lam_min, kext_path=trim(kext), &
                             lam_axis=lam_h5)
             deallocate(lam_h5)
@@ -3383,7 +3446,7 @@ contains
             ! No product to read: the text route, on the astrodust Q table the
             ! model's grid has always come from.
             call build_dl07(m, trim(ddir)//dl07_text_qtable(wide), trim(sd), sdi, uisrf, &
-                            NT_in, T_lo, T_hi, status=status, lam_min=lam_min, &
+                            nt, tlo, thi, status=status, lam_min=lam_min, &
                             kext_path=kext_or_text(kext, KEXT_DL07))
          end if
 
@@ -3391,7 +3454,7 @@ contains
          cfg = trim(sedust_dir(trim(ddir), 'zubko'))//'ZDA_BARE_GR_S_Config.dat'
          if (present(config_path)) cfg = config_path
          call build_zubko(m, trim(cfg), trim(sedust_dir(trim(ddir), 'zubko')), &
-                          NT_in, T_lo, T_hi, &
+                          nt, tlo, thi, &
                           status=status, kext_path=kext_or_text(kext, KEXT_ZUBKO), &
                           lam_min=zubko_floor(wide, lam_min))
 
@@ -3405,7 +3468,7 @@ contains
             end if
             stored_q_h5 = '';  return
          end if
-         call build_from_files(m, config_path, trim(ddir), NT_in, T_lo, T_hi, &
+         call build_from_files(m, config_path, trim(ddir), nt, tlo, thi, &
                                status=status, kext_path=kext_path, lam_min=lam_min)
 
       case default

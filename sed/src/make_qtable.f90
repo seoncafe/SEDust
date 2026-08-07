@@ -3,7 +3,7 @@ program make_qtable
    ! two forms: the text products under data/qtable/, one on the non-ionizing
    ! grid and one carried into the ionizing band, and one HDF5 file per model,
    !
-   !   data/sedust_astrodust.h5   data/sedust_dl07.h5   data/sedust_zubko.h5
+   !   data/astrodust/sedust_astrodust.h5   data/dl07/sedust_dl07.h5   data/zubko/sedust_zubko.h5
    !
    ! which holds the WIDER of the two wavelength axes once, together with the
    ! index at which the non-ionizing part of it begins (see sedust_h5.f90).
@@ -59,6 +59,13 @@ program make_qtable
    use enthalpy_astrodust_mod, only: RHO_AD, RHO_PAH
    implicit none
 
+   ! This program WRITES data/astrodust/sedust_astrodust.h5, so it cannot read
+   ! the astrodust Q from it -- it would be reading back its own output.  It
+   ! reads the text table beside it, which the T-matrix sweep produces
+   ! (cd tmatrix && make && ./run_tmatrix.x, then make lyman_cut, and install
+   ! the two files here).  That table is not shipped, for the reason
+   ! .gitignore states; a checkout that only RUNS the models never needs it,
+   ! because every other program reads the HDF5 product.
    character(len=*), parameter :: F_QT  = '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400.dat'
    character(len=*), parameter :: F_QT_EUV = '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400_euv.dat'
    character(len=*), parameter :: F_SD  = '../data/release/size_distribution.dat'

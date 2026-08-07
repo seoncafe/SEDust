@@ -30,13 +30,13 @@ program main_dl07
 
    ! The DL07 optics are Mie on the D03 dielectric functions, but the model's
    ! wavelength grid still comes from the astrodust Q table, so which of the two
-   ! shipped tables this driver reads decides how far the SED reaches.  Default
-   ! is the non-ionizing one: the Mathis field is zero below the Lyman limit, so
-   ! the 633 extra wavelengths of the _euv table carry no photon.
-   character(len=*), parameter :: F_QTAB =  &
-      '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400.dat'
-   character(len=*), parameter :: F_QTAB_EUV =  &
-      '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400_euv.dat'
+   ! part of the axis this driver solves on decides how far the SED reaches.
+   ! Default is the non-ionizing part: the Mathis field is zero below the Lyman
+   ! limit, so the extra wavelengths below it carry no photon.
+   ! This model's own product: it carries ONE wavelength axis and the index
+   ! where the non-ionizing part of it begins, so `euv` selects a view of the
+   ! same file rather than a second one.
+   character(len=*), parameter :: F_QTAB = '../data/dl07/sedust_dl07.h5'
    character(len=*), parameter :: F_SIZE = '../data/release/size_distribution.dat'
    real(wp),         parameter :: U_ISRF = 1.0_wp        ! DL07 reference: U = 1
    real(wp),         parameter :: T_LO = 2.7_wp, T_HI = 5.0e3_wp
@@ -118,11 +118,9 @@ program main_dl07
    write(*,'(a,f6.1,a,l1)') ' Nc_coeff      : ', nc_coeff, '   Nc_integer: ', nc_integer
    write(*,'(a,a)')     ' solver        : ', trim(stoch_method)
 
-   if (use_euv_grid) then
-      call sed_init_dl07(F_QTAB_EUV, F_SIZE, sd_index, U_ISRF, NT_IN, T_LO, T_HI)
-   else
-      call sed_init_dl07(F_QTAB, F_SIZE, sd_index, U_ISRF, NT_IN, T_LO, T_HI)
-   end if
+   ! One product, two views: include_euv picks which part of its axis.
+   call sed_init_dl07(F_QTAB, F_SIZE, sd_index, U_ISRF, NT_IN, T_LO, T_HI, &
+                      include_euv=use_euv_grid)
    write(*,'(a,i0,a)') ' sed_init_dl07 done. NLAM=', NLAM, '.'
 
    allocate(J_lam(NLAM), lamI_tot(NLAM), lamI_sil(NLAM), lamI_carb(NLAM))

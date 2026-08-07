@@ -1,5 +1,5 @@
 module sedust_product_mod
-   ! Reads the SEDust optics products out of data/sedust_<model>.h5 -- the
+   ! Reads the SEDust optics products out of data/<model>/sedust_<model>.h5 -- the
    ! wavelength axis, the (lambda, a_eff) cross-section tables, and the
    ! size-integrated extinction curve.  sedust_h5.f90 knows HDF5; this knows
    ! where SEDust puts things inside one, and is the only place that does on

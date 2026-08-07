@@ -13,7 +13,7 @@
 #
 # Run (from this directory; data paths are relative to ../):
 #   ./make_enthalpy.x
-#   ./make_qtable.x                    # -> ../data/qtable/ (DL07 + Zubko Q tables)
+#   ./make_qtable.x                    # -> ../data/<model>/ (all three models' Q tables)
 #   ./main_astrodust.x                 # GD solver (default)
 #   ./main_astrodust.x qm              # energy-space, thermal-discrete
 #   ./main_astrodust.x qm_dbcon        # energy-space, thermal-continuous
@@ -158,7 +158,7 @@ make_enthalpy.x: $(SRC_ENTH)
 # model, computed by this tree's own optics routines.
 make_qtable.x: $(SRC_PIPE) src/make_qtable.f90
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
-	@echo 'Built: ./make_qtable.x     (writes ../data/qtable/)'
+	@echo 'Built: ./make_qtable.x     (writes ../data/<model>/)'
 
 main_astrodust.x: $(SRC_PIPE) $(SRC_EUVTM) src/main_astrodust.f90 | $(TMARCH)
 	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
@@ -234,13 +234,20 @@ libsedust.a: $(LIB_SRC)
 
 endif
 
+# rt_example: built AS AN EXTERNAL host would -- against libsedust.a and the
+# .mod search path, not from the pipeline sources.  Build and run from sed/,
+# since the data paths inside are relative to ../.
+use_dustlib.x: libsedust.a rt_example/use_dustlib.f90
+	$(FC) $(FFLAGS) -I. rt_example/use_dustlib.f90 libsedust.a $(H5LIBS) -o $@
+	@echo 'Built: ./use_dustlib.x'
+
 clean:
 	rm -f *.o *.mod
 	rm -rf tmarch.d
 
 cleanall: clean
 	rm -f *.a make_enthalpy.x main_astrodust.x main_dl07.x main_zubko.x calc_kext.x
-	rm -f make_qtable.x check_build_dust.x
+	rm -f make_qtable.x check_build_dust.x use_dustlib.x
 	rm -f output/astrodust_irem_ours_*.dat output/enthalpy_*.dat
 
 .PHONY: all clean cleanall

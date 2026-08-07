@@ -5,7 +5,7 @@ program check_build_dust
    !   ./check_build_dust.x [astrodust | dl07 | zubko | all]
    !
    ! For each model and each wavelength set, this builds the model twice --
-   ! once through build_dust on data/sedust_<model>.h5 and once through the
+   ! once through build_dust on data/<model>/sedust_<model>.h5 and once through the
    ! model's own builder on the text files -- and compares the grid, the size
    ! integral (C_ext, C_abs, C_sca, <cos>), the dust mass per H, and the
    ! extinction curve dust_extinction serves.
@@ -24,6 +24,11 @@ program check_build_dust
    implicit none
 
    character(len=*), parameter :: DDIR   = '../data'
+   ! The TEXT side of the comparison.  Everything else in the tree now reads the
+   ! HDF5 product, which is exactly what this program checks the text against,
+   ! so these two are among the last readers of the text tables.  They are not
+   ! shipped: run sed/make_qtable.x (and the T-matrix sweep for the astrodust
+   ! pair) before this test.
    character(len=*), parameter :: F_QT   = '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400.dat'
    character(len=*), parameter :: F_QT_E = '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400_euv.dat'
    character(len=*), parameter :: F_SD   = '../data/release/size_distribution.dat'

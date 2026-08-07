@@ -38,7 +38,7 @@ FC=${FC:-ifort}
 TMDIR=${TMDIR:-../tmatrix}
 
 # ---- HDF5 ------------------------------------------------------------
-# build_dust reads the optics products out of data/sedust_<model>.h5, so the
+# build_dust reads the optics products out of data/<model>/sedust_<model>.h5, so the
 # archive carries the HDF5 layer.  ON by default, and switched off for a host
 # that has no HDF5 or wants a text-only archive:
 #

@@ -78,18 +78,19 @@ program use_dustlib
    ! linking the library arrive at the same opacity.
    use constants, only: wp
    use radfield,  only: J_Mathis
-   use dust_lib,  only: dust_model_t, build_astrodust, build_dl07, &
+   use dust_lib,  only: dust_model_t, build_dust, &
                         dust_emission, dust_extinction, dust_mass_per_H, &
                         dust_nlam, dust_n_channel
    implicit none
-   ! This example is the ionizing-band host path; ordinary SED/MC drivers use
-   ! the historical non-EUV file without the `_euv` suffix.
-   character(len=*), parameter :: QTAB  = '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400_euv.dat'
-   character(len=*), parameter :: SIZED = '../data/release/size_distribution.dat'
-   ! Size-integrated extinction table this host transports with; see step (1).
-   character(len=*), parameter :: KEXT_MW = '../data/kext_astrodust_MW_euv.dat'
+   ! One data directory is all a host names.  build_dust resolves the model's
+   ! optics from data_dir/<model>/ -- its wavelength axis, cross sections and
+   ! extinction curve -- so there is no file here to keep in step with the
+   ! library.  This example is the ionizing-band host path, which is what
+   ! include_euv = .true. asks for; leaving it out gives the non-ionizing grid.
+   character(len=*), parameter :: DATA = '../data'
    ! Thermal-table grid: it fixes H(T,a) and kappB, which the extinction never
-   ! touches, but both builders need one.
+   ! touches.  build_dust defaults to exactly these three when they are left
+   ! out; they are stated here because this example also reports on them.
    integer,  parameter :: NT_IN = 200
    real(wp), parameter :: T_LO = 2.7_wp, T_HI = 5.0e3_wp
    ! A wavelength in the ionizing band to report at; 0.0124 um = 100 eV.
@@ -127,10 +128,10 @@ program use_dustlib
    ! table.  The historical 1129-point product remains available for an
    ! ordinary non-ionizing host; this example intentionally exercises the
    ! wider ionizing grid.
-   call build_astrodust(m, QTAB, SIZED, NT_IN, T_LO, T_HI, status=st, &
-                        kext_path=KEXT_MW)
+   call build_dust(m, 'astrodust', DATA, NT_IN, T_LO, T_HI, &
+                   include_euv=.true., status=st)
    if (st /= 0) then
-      print '(a,i0)', ' build_astrodust failed, status = ', st
+      print '(a,i0)', ' build_dust(astrodust) failed, status = ', st
       stop 1
    end if
    n = dust_nlam(m)
@@ -221,10 +222,11 @@ program use_dustlib
    ! 3, because that table starts at the Q table's 1.0e-4 um while the grid now
    ! runs below it, and the library extrapolates no optics past a table's end.
    ! Widening a model's grid means naming a table that covers the wider grid.
-   call build_dl07(m_dl07, QTAB, SIZED, SD_INDEX_DL07, U_ISRF_DL07, &
-                   NT_IN, T_LO, T_HI, status=st, lam_min=LAM_MIN_DL07)
+   call build_dust(m_dl07, 'dl07', DATA, NT_IN, T_LO, T_HI, &
+                   include_euv=.true., status=st, lam_min=LAM_MIN_DL07, &
+                   sd_index=SD_INDEX_DL07, u_isrf=U_ISRF_DL07)
    if (st /= 0) then
-      print '(a,i0)', ' build_dl07 failed, status = ', st
+      print '(a,i0)', ' build_dust(dl07) failed, status = ', st
       stop 1
    end if
    n2 = dust_nlam(m_dl07)
