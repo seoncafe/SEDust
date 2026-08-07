@@ -1,7 +1,7 @@
 module kext_table_mod
    ! Reader and wavelength interpolant for the size-integrated extinction
    ! tables calc_kext.x writes into data/ (kext_astrodust_MW*.dat,
-   ! kext_dl07_MW*.dat, kext_zubko_BARE_GR_S.dat, kext_<model>.dat).
+   ! kext_dl07_MW*.dat, kext_zubko_BARE_GR_S*.dat, kext_<model>.dat).
    !
    ! These files ARE the transport optics of a dust model: extinction,
    ! absorption and scattering cross section per H nucleon, the scattering

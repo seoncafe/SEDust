@@ -81,10 +81,11 @@ program test_euv_extension
    use dust_lib,  only: dust_model_t, build_astrodust, build_dl07, &
                         size_integrated_extinction, &
                         dust_has_polarized_optics, dust_nlam
+   use sed_astrodust_mod, only: use_stored_q_tables
    implicit none
 
    character(len=*), parameter :: QTAB  = &
-      '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat'
+      '../data/astrodust/sedust_astrodust.h5'
    character(len=*), parameter :: SIZED = '../data/release/size_distribution.dat'
    ! Our own orientation-resolved run, used instead of the implicit default
    ! because it carries the 4th (forward-amplitude real-part) block: with the
@@ -92,8 +93,8 @@ program test_euv_extension
    ! tell "zeroed in the EUV block" from "never built at all".
    character(len=*), parameter :: QPOL  = &
       '../tmatrix/output/q_astrodust_jori_P0.20_Fe0.00_1.400.dat.gz'
-   character(len=*), parameter :: QWAVE = '../data/dielectric/DH21_wave'
-   character(len=*), parameter :: QAEFF = '../data/dielectric/DH21_aeff'
+   character(len=*), parameter :: QWAVE = '../data/astrodust/DH21_wave'
+   character(len=*), parameter :: QAEFF = '../data/astrodust/DH21_aeff'
 
    integer,  parameter :: NT_IN = 100
    real(wp), parameter :: T_LO = 2.7_wp, T_HI = 5.0e3_wp
@@ -274,6 +275,14 @@ program test_euv_extension
    call check_euv_dichroism(nfail)
 
    ! ---- DL07 builds, last: they reset the module globals ---------------
+   ! Both from the dielectric functions, not from the stored tables.  Check 6
+   ! asks whether the EXTENSION leaves the table block untouched, and that is a
+   ! question about the grid, not about where the optics were read: a stored
+   ! table matches the unextended grid and not the extended one, so with them on
+   ! the two builds would take different routes and differ by the tables' seven
+   ! written digits (1e-7) for a reason check 6 is not about.  The stored route
+   ! has its own comparison, in check_build_dust.x.
+   use_stored_q_tables = .false.
    call build_dl07(m_dl_base, QTAB, SIZED, SD_INDEX, U_ISRF, NT_IN, T_LO, T_HI, status=st)
    if (st /= 0) then
       write(*,'(a,i0)') ' FATAL: DL07 unextended build failed, status = ', st
@@ -286,6 +295,7 @@ program test_euv_extension
       stop 2
    end if
    call check_dl07(nfail)
+   use_stored_q_tables = .true.
 
    write(*,'(a)') '-------------------------------------------------------------------'
    if (nfail == 0) then

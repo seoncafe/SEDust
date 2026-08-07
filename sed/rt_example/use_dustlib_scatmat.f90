@@ -85,7 +85,7 @@ program use_dustlib_scatmat
    ! for WRITING a table (what calc_kext.x does), or for a host generating a
    ! product on a lam_min grid of its own.
    use constants, only: wp, deg2rad, rad2deg, fourpi
-   use dust_lib,  only: dust_model_t, build_astrodust, dust_extinction, &
+   use dust_lib,  only: dust_model_t, build_dust, dust_extinction, &
                         scatmat_band, extinction_matrix_aligned, &
                         mueller_matrix_random, mueller_matrix_total, &
                         scattering_cross_sections, scm_loaded, &
@@ -93,15 +93,13 @@ program use_dustlib_scatmat
                         scm_theta_s, scm_phi, scm_cext_ref, scm_csca_tot, scm_csca_ref
    implicit none
 
+   ! The aligned scattering matrix lives under /polarized of the same product
+   ! the model is built from, so this is the model file again.  It stays an
+   ! explicit argument because it is a large table and nothing loads it unasked.
    character(len=*), parameter :: SCATMAT_DEF = &
-      '../tmatrix/output/scatmat_aligned_astrodust_P0.20_Fe0.00_1.400.test.dat'
-   character(len=*), parameter :: QTAB = &
-      '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat'
-   character(len=*), parameter :: QPOL = &
-      '../tmatrix/output/q_astrodust_jori_P0.20_Fe0.00_1.400.dat.gz'
-   character(len=*), parameter :: QWAVE = '../data/dielectric/DH21_wave'
-   character(len=*), parameter :: QAEFF = '../data/dielectric/DH21_aeff'
-   character(len=*), parameter :: SIZED = '../data/release/size_distribution.dat'
+      '../data/astrodust/sedust_astrodust.h5'
+   ! One data directory.
+   character(len=*), parameter :: DATA = '../data'
    real(wp), parameter :: CM2_TO_UM2 = 1.0e8_wp
 
    character(len=512) :: scatmat
@@ -124,11 +122,10 @@ program use_dustlib_scatmat
    end if
 
    ! ---- initialize ONCE: model + aligned scattering table ----
-   call build_astrodust(m, QTAB, SIZED, 100, 2.7_wp, 5.0e3_wp, status=st, &
-                        qpol_path=QPOL, qpol_wave_path=QWAVE, qpol_aeff_path=QAEFF, &
-                        scatmat_path=trim(scatmat))
+   call build_dust(m, 'astrodust', DATA, 100, 2.7_wp, 5.0e3_wp, status=st, &
+                   scatmat_path=trim(scatmat))
    if (st /= 0) then
-      print '(a,i0)', ' build_astrodust failed, status = ', st
+      print '(a,i0)', ' build_dust(astrodust) failed, status = ', st
       stop 1
    end if
    if (.not. scm_loaded) then
@@ -140,7 +137,8 @@ program use_dustlib_scatmat
    allocate(Cext(n), Cabs(n), Csca(n), Cpol_ext(n), Cbir_ext(n))
    ! One call, two routes: Cext/Cabs/Csca are served from the extinction table
    ! the builder attached (kext_path was omitted above, so it is this model's
-   ! default, ../data/kext_astrodust_MW_euv.dat), while Cpol_ext and Cbir_ext are
+   ! default, /kext of ../data/astrodust/sedust_astrodust.h5), while Cpol_ext
+   ! and Cbir_ext are
    ! computed here and now under the alignment the model currently holds.
    call dust_extinction(m, Cext, Cabs, Csca, Cpol_ext=Cpol_ext, Cbir_ext=Cbir_ext)
 

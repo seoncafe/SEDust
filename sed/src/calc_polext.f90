@@ -31,9 +31,9 @@ program calc_polext
    use size_dist_mod,    only: load_size_dist, n_size, a_dist, dn_ad
    implicit none
 
-   character(len=*), parameter :: F_Q    = '../data/dielectric/q_DH21Ad_P0.20_Fe0.00_1.400.dat.gz'
-   character(len=*), parameter :: F_WAVE = '../data/dielectric/DH21_wave'
-   character(len=*), parameter :: F_AEFF = '../data/dielectric/DH21_aeff'
+   character(len=*), parameter :: F_Q    = '../data/astrodust/q_DH21Ad_P0.20_Fe0.00_1.400.dat.gz'
+   character(len=*), parameter :: F_WAVE = '../data/astrodust/DH21_wave'
+   character(len=*), parameter :: F_AEFF = '../data/astrodust/DH21_aeff'
    character(len=*), parameter :: F_SD   = '../data/release/size_distribution.dat'
    character(len=*), parameter :: F_REF  = '../data/release/polarized_extinction.dat'
    character(len=*), parameter :: F_OUT  = 'output/polarized_extinction_ours.dat'

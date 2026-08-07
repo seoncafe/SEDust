@@ -51,6 +51,10 @@ module scatmat_aligned_mod
    use, intrinsic :: iso_fortran_env, only: error_unit, int64
    use, intrinsic :: iso_c_binding,   only: c_int
    use constants, only: wp, deg2rad, rad2deg, pi, fourpi
+   use sedust_h5, only: h5id_k, h5_begin, h5_end, h5_open_file, h5_close_file, &
+                        h5_group_open, h5_group_close, h5_has, &
+                        h5_read_1d, h5_read_2d, h5_read_3d, h5_read_6d, &
+                        h5_get_attr_d, h5_get_attr_s
    implicit none
    private
 
@@ -131,7 +135,9 @@ contains
    ! ====================================================================
 
    subroutine load_scatmat_aligned(path, status)
-      ! Parse the aligned-scattering ASCII table into module storage.
+      ! Read the aligned-scattering table into module storage, from the model's
+      ! HDF5 product (/polarized) or from the ASCII table the T-matrix driver
+      ! writes.  The suffix picks the route: the two hold the same numbers.
       !
       ! status (0 = success); errors follow the dust_lib convention -- reported
       ! through the argument, never a STOP inside the library:
@@ -142,12 +148,20 @@ contains
       character(len=*), intent(in)  :: path
       integer,          intent(out) :: status
 
-      integer :: u, ios
+      integer :: u, ios, n
       logical :: gz, sub_ok
       character(len=512) :: read_path
 
       status = 0
       call free_scatmat_aligned()
+
+      n = len_trim(path)
+      if (n > 3) then
+         if (path(n-2:n) == '.h5') then
+            call read_scatmat_aligned_h5(path, status)
+            return
+         end if
+      end if
 
       ! A compressed table is expanded to a scratch copy, read, then removed;
       ! a path that does not end in .gz is opened directly.
@@ -369,6 +383,140 @@ contains
 
       if (iband /= scm_nband) status = 2
    end subroutine read_bands
+
+
+   subroutine read_scatmat_aligned_h5(path, status)
+      ! The same table out of /polarized of the model's HDF5 product.  The two
+      ! groups are read together because the module holds one state: the
+      ! aligned Z and K block from scatmat_aligned, the random-orientation F
+      ! matrices and the per-band scalars from scatmat_random.  Either missing
+      ! is a structure error, not a partial load.
+      !
+      ! Status codes match the ASCII route: 1 the file will not open, 2 the
+      ! groups are absent or their grids disagree, 3 a dataset will not read.
+      character(len=*), intent(in)  :: path
+      integer,          intent(out) :: status
+
+      integer(h5id_k) :: fid, gal, gran
+      logical  :: ok, have
+
+      status = 1
+      call h5_begin(ok);        if (.not. ok) return
+      call h5_open_file(path, fid, ok)
+      if (.not. ok) then;  call h5_end();  return;  end if
+
+      status = 2
+      have = h5_has(fid, 'polarized/scatmat_aligned')
+      if (have) have = h5_has(fid, 'polarized/scatmat_random')
+      if (.not. have) then
+         call h5_close_file(fid);  call h5_end();  return
+      end if
+      call h5_group_open(fid, 'polarized/scatmat_aligned', gal, ok)
+      if (.not. ok) then;  call h5_close_file(fid);  call h5_end();  return;  end if
+      call h5_group_open(fid, 'polarized/scatmat_random', gran, ok)
+      if (.not. ok) then
+         call h5_group_close(gal);  call h5_close_file(fid);  call h5_end();  return
+      end if
+
+      ! ---- grids, which fix every array shape below --------------------
+      status = 3
+      call take_1d(gal, 'band_lambda', scm_lambda,    ok);  if (.not. ok) goto 99
+      call take_1d(gal, 'theta_i',     scm_theta_i,   ok);  if (.not. ok) goto 99
+      call take_1d(gal, 'theta_s',     scm_theta_s,   ok);  if (.not. ok) goto 99
+      call take_1d(gal, 'phi',         scm_phi,       ok);  if (.not. ok) goto 99
+      call take_1d(gran, 'theta',      scm_theta_ran, ok);  if (.not. ok) goto 99
+      scm_nband  = size(scm_lambda)
+      scm_nti    = size(scm_theta_i)
+      scm_nts    = size(scm_theta_s)
+      scm_nphi   = size(scm_phi)
+      scm_ntheta = size(scm_theta_ran)
+
+      ! ---- the K block and the aligned phase matrix --------------------
+      call take_2d(gal, 'C_ext_al',     scm_cext_al,     ok);  if (.not. ok) goto 99
+      call take_2d(gal, 'C_pol_al',     scm_cpol_al,     ok);  if (.not. ok) goto 99
+      call take_2d(gal, 'C_bir_al',     scm_cbir_al,     ok);  if (.not. ok) goto 99
+      call take_2d(gal, 'C_sca_al',     scm_csca_al,     ok);  if (.not. ok) goto 99
+      call take_2d(gal, 'C_sca_pol_al', scm_csca_pol_al, ok);  if (.not. ok) goto 99
+      call h5_read_6d(gal, 'Z', scm_Z, ok);                    if (.not. ok) goto 99
+
+      ! ---- the random-orientation side ---------------------------------
+      call take_3d(gran, 'F_tot', scm_F_tot, ok);  if (.not. ok) goto 99
+      call take_3d(gran, 'F_ref', scm_F_ref, ok);  if (.not. ok) goto 99
+      call take_1d(gran, 'C_sca_tot', scm_csca_tot, ok);  if (.not. ok) goto 99
+      call take_1d(gran, 'C_sca_ref', scm_csca_ref, ok);  if (.not. ok) goto 99
+      call take_1d(gran, 'C_ext_tot', scm_cext_tot, ok);  if (.not. ok) goto 99
+      call take_1d(gran, 'C_ext_ref', scm_cext_ref, ok);  if (.not. ok) goto 99
+
+      ! ---- shapes have to agree with the grids, as in the ASCII route ---
+      status = 2
+      if (size(scm_Z,1) /= scm_nti  .or. size(scm_Z,2) /= scm_nts .or. &
+          size(scm_Z,3) /= scm_nphi .or. size(scm_Z,6) /= scm_nband .or. &
+          size(scm_cext_al,1) /= scm_nti .or. size(scm_cext_al,2) /= scm_nband .or. &
+          size(scm_F_tot,1) /= scm_ntheta .or. size(scm_F_tot,3) /= scm_nband) goto 99
+
+      ! ---- the alignment profile the table was integrated under ---------
+      ! A missing attribute leaves the field at what free_scatmat_aligned set,
+      ! which is what alignment_matches_scatmat reads as "no profile recorded".
+      call h5_get_attr_s(gal, 'profile_name', scm_profile_name, ok)
+      if (.not. ok) scm_profile_name = ''
+      call h5_get_attr_d(gal, 'f_max',   scm_fmax,    ok);  if (.not. ok) scm_fmax    = 0.0_wp
+      call h5_get_attr_d(gal, 'a_align', scm_a_align, ok);  if (.not. ok) scm_a_align = 0.0_wp
+      call h5_get_attr_d(gal, 'alpha',   scm_alpha,   ok);  if (.not. ok) scm_alpha   = 0.0_wp
+
+      call h5_group_close(gran);  call h5_group_close(gal)
+      call h5_close_file(fid);    call h5_end()
+
+      allocate(scm_cos_theta_s(scm_nts))
+      scm_cos_theta_s = cos(scm_theta_s * deg2rad)
+      ! Csca,pol is stored, so unlike the ASCII route this does NOT recompute
+      ! the Z12 integral -- reading it back is what makes the two routes the
+      ! same numbers rather than two integrations of the same table.
+      scm_loaded = .true.
+      scm_bytes  = storage_bytes()
+      status = 0
+      return
+
+99    call h5_group_close(gran);  call h5_group_close(gal)
+      call h5_close_file(fid);    call h5_end()
+      call free_scatmat_aligned()
+   end subroutine read_scatmat_aligned_h5
+
+
+   ! The three shape-preserving takes below exist because the module storage is
+   ! `protected` and h5_read_* returns an allocatable of its own; assigning
+   ! through a local keeps the module arrays allocated on move, not aliased.
+   subroutine take_1d(loc, name, dst, ok)
+      integer(h5id_k),  intent(in)  :: loc
+      character(len=*), intent(in)  :: name
+      real(wp), allocatable, intent(inout) :: dst(:)
+      logical,  intent(out) :: ok
+      real(wp), allocatable :: t(:)
+      call h5_read_1d(loc, name, t, ok)
+      if (.not. ok) return
+      call move_alloc(t, dst)
+   end subroutine take_1d
+
+   subroutine take_2d(loc, name, dst, ok)
+      integer(h5id_k),  intent(in)  :: loc
+      character(len=*), intent(in)  :: name
+      real(wp), allocatable, intent(inout) :: dst(:,:)
+      logical,  intent(out) :: ok
+      real(wp), allocatable :: t(:,:)
+      call h5_read_2d(loc, name, t, ok)
+      if (.not. ok) return
+      call move_alloc(t, dst)
+   end subroutine take_2d
+
+   subroutine take_3d(loc, name, dst, ok)
+      integer(h5id_k),  intent(in)  :: loc
+      character(len=*), intent(in)  :: name
+      real(wp), allocatable, intent(inout) :: dst(:,:,:)
+      logical,  intent(out) :: ok
+      real(wp), allocatable :: t(:,:,:)
+      call h5_read_3d(loc, name, t, ok)
+      if (.not. ok) return
+      call move_alloc(t, dst)
+   end subroutine take_3d
 
 
    subroutine allocate_storage()

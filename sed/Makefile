@@ -30,6 +30,37 @@
 #   ./calc_kext.x from_files <descriptor> [data_dir]
 
 FC      = gfortran
+
+# ---- HDF5 -------------------------------------------------------------
+# The optics products (kext curves, Q tables, and in v1.20 the polarized
+# matrices) are written and read as HDF5; the text products are still written
+# beside them, for reading with an eye and for diff.  HDF5 is therefore ON by
+# default and can be switched off for a build that has no library:
+#
+#   make HDF5=0                      text only; the HDF5 paths compile out
+#   make HDF5_PREFIX=/somewhere      a different installation
+#
+# The prefix must hold include/hdf5.mod built by THIS compiler -- a .mod from
+# another gfortran release is not readable, which is the usual failure here.
+HDF5        ?= 1
+ifeq ($(FC),ifort)
+   HDF5_PREFIX ?= /data/opt/hdf5_intel
+else
+   HDF5_PREFIX ?= /data/opt/hdf5_gfortran
+endif
+ifneq ($(HDF5),0)
+   H5FLAGS = -DSEDUST_HDF5 -I$(HDF5_PREFIX)/include
+   H5LIBS  = $(HDF5_PREFIX)/lib/libhdf5_fortran.a $(HDF5_PREFIX)/lib/libhdf5.a \
+             -lsz -lz -ldl -lm
+else
+   H5FLAGS =
+   H5LIBS  =
+endif
+# The HDF5 layer and the reader that knows the SEDust layout inside a file.
+# Both are always compiled: without -DSEDUST_HDF5 every entry point reports
+# "not available" and the callers fall through to the text products, so no
+# consumer carries an #ifdef of its own.
+SRC_H5 = src/sedust_h5.f90 src/sedust_product.f90
 # Portable baseline by default so libsedust.a runs on any node it is copied
 # to.  Uncomment the -march=native line for a host-optimized build (results
 # can differ in the last digits through FMA contraction).
@@ -40,7 +71,7 @@ FC      = gfortran
 #   do-subscript: false positives from the guarded trapezoid loops.
 WARN    = -Wall -Wextra -Wno-compare-reals -Wno-unused-dummy-argument \
           -Wno-unused-parameter -Wno-do-subscript
-FFLAGS  = -O3 -ffree-line-length-none $(WARN)
+FFLAGS  = -O3 -ffree-line-length-none -cpp $(WARN) $(H5FLAGS)
 # FFLAGS  = -O3 -march=native -ffree-line-length-none $(WARN)
 FFLAGS += -fopenmp
 # Local variables belong on the run-time stack, not in static storage: the EUV
@@ -93,7 +124,9 @@ SRC_DL07MOD = src/pah_ioniz.f90 src/grain_dist.f90 src/q_silicate.f90 \
               src/pah_ld01.f90
 
 # Everything the SED pipeline needs, minus the driver.
-SRC_PIPE    = $(SRC_BASE) src/enthalpy_v2.f90 \
+# SRC_H5 sits after SRC_BASE because src/sedust_product.f90 uses constants,
+# and before src/q_table.f90, which reads the astrodust table through it.
+SRC_PIPE    = $(SRC_BASE) $(SRC_H5) src/enthalpy_v2.f90 \
               src/size_dist.f90 src/q_table.f90 src/q_table_jori.f90 \
               src/enthalpy_astrodust.f90 \
               src/mie.f90 src/q_astrodust.f90 \
@@ -102,7 +135,7 @@ SRC_PIPE    = $(SRC_BASE) src/enthalpy_v2.f90 \
               src/radfield.f90 src/p_sub.f90 \
               src/stoch_qm.f90 $(SRC_DL07MOD) \
               src/scatmat_aligned.f90 src/dust_model_mod.f90 src/zubko_io.f90 \
-              src/kext_table.f90 src/sed_astrodust.f90
+              src/kext_table.f90 src/q_component.f90 src/sed_astrodust.f90
 
 SRC_ENTH    = $(SRC_BASE) src/enthalpy_v2.f90 \
               src/enthalpy_astrodust.f90 src/make_enthalpy.f90
@@ -118,26 +151,33 @@ $(TMARCH):
 	@false
 
 make_enthalpy.x: $(SRC_ENTH)
-	$(FC) $(FFLAGS) $^ -o $@
+	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./make_enthalpy.x'
 
+# Stored (lambda, a_eff) cross-section tables for the DL07 and Zubko models,
+# the counterpart of tmatrix/output/q_astrodust_*.dat.  Both grids of each
+# model, computed by this tree's own optics routines.
+make_qtable.x: $(SRC_PIPE) src/make_qtable.f90
+	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
+	@echo 'Built: ./make_qtable.x     (writes ../data/<model>/)'
+
 main_astrodust.x: $(SRC_PIPE) $(SRC_EUVTM) src/main_astrodust.f90 | $(TMARCH)
-	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) -o $@
+	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
 	@echo 'Built: ./main_astrodust.x'
 
 # DL07 emission. Its own optics are Mie on the D03 dielectric functions, which
 # already run to 6.2e-5 um, so this driver reaches no astrodust EUV band and
 # needs no T-matrix.
 main_dl07.x: $(SRC_PIPE) src/main_dl07.f90
-	$(FC) $(FFLAGS) $^ -o $@
+	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./main_dl07.x'
 
-# Zubko/ZDA emission.  Its optics grid (1.0e-3 um, from the DustEM tables)
+# Zubko/ZDA emission.  Its optics grid (1.0e-3 um, from the ZDA optics tables)
 # reaches far past the illuminated band, so it is the one that exercises the
 # difference between "hardest photon the field carries" and "short end of the
 # grid".
 main_zubko.x: $(SRC_PIPE) src/main_zubko.f90
-	$(FC) $(FFLAGS) $^ -o $@
+	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./main_zubko.x'
 
 # Size-integrated transport optics (lambda, albedo, <cos>, C_ext/C_abs/C_sca
@@ -147,7 +187,7 @@ main_zubko.x: $(SRC_PIPE) src/main_zubko.f90
 # very ones dust_extinction reads back for an RT host.  The astrodust product
 # also carries the dichroic C_polext/H column.
 calc_kext.x: $(SRC_PIPE) $(SRC_EUVTM) src/calc_kext.f90 | $(TMARCH)
-	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) -o $@
+	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
 	@echo 'Built: ./calc_kext.x'
 
 # Polarized extinction per H from the orientation-resolved DH21 spheroid
@@ -155,8 +195,18 @@ calc_kext.x: $(SRC_PIPE) $(SRC_EUVTM) src/calc_kext.f90 | $(TMARCH)
 SRC_POLEXT = $(SRC_BASE) src/size_dist.f90 src/q_table_jori.f90 \
              src/calc_polext.f90
 
+# The /polarized groups of data/sedust_astrodust.h5: the orientation-resolved
+# cross sections and the two scattering matrices.  It APPENDS, so run it after
+# make_qtable.x (which replaces the file) and calc_kext.x.
+SRC_POLH5 = $(SRC_BASE) $(SRC_H5) src/q_table_jori.f90 src/scatmat_aligned.f90 \
+            src/make_polarized.f90
+
+make_polarized.x: $(SRC_POLH5)
+	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
+	@echo 'Built: ./make_polarized.x   (writes /polarized into ../data/sedust_astrodust.h5)'
+
 calc_polext.x: $(SRC_POLEXT)
-	$(FC) $(FFLAGS) $^ -o $@
+	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./calc_polext.x'
 
 # Aligned-scattering interface checks: reader round-trip, symmetry
@@ -165,7 +215,7 @@ calc_polext.x: $(SRC_POLEXT)
 SRC_TSCAT = $(SRC_PIPE) src/dust_lib.f90 src/test_scatmat_aligned.f90
 
 test_scatmat_aligned.x: $(SRC_TSCAT)
-	$(FC) $(FFLAGS) $^ -o $@
+	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./test_scatmat_aligned.x'
 
 # Scalar-only build mode checks: a scalar (load_polarized_optics=.false.) and a
@@ -175,7 +225,7 @@ test_scatmat_aligned.x: $(SRC_TSCAT)
 SRC_TSCALAR = $(SRC_PIPE) src/dust_lib.f90 src/test_scalar_mode.f90
 
 test_scalar_mode.x: $(SRC_TSCALAR)
-	$(FC) $(FFLAGS) $^ -o $@
+	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./test_scalar_mode.x'
 
 # EUV grid-extension checks (build_astrodust's optional lam_min): the extended
@@ -185,7 +235,7 @@ test_scalar_mode.x: $(SRC_TSCALAR)
 SRC_TEUV = $(SRC_PIPE) src/dust_lib.f90 src/test_euv_extension.f90
 
 test_euv_extension.x: $(SRC_TEUV)
-	$(FC) $(FFLAGS) $^ -o $@
+	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./test_euv_extension.x'
 
 # ---- libsedust.a: the model-agnostic dust-emission library, for a Fortran
@@ -232,8 +282,16 @@ endif
 # would -- against libsedust.a and the .mod search path, not from the pipeline
 # sources. Build and run from sed/ (data paths are relative to ../).
 use_dustlib_scatmat.x: libsedust.a rt_example/use_dustlib_scatmat.f90
-	$(FC) $(FFLAGS) -I. rt_example/use_dustlib_scatmat.f90 libsedust.a -o $@
+	$(FC) $(FFLAGS) -I. rt_example/use_dustlib_scatmat.f90 libsedust.a $(H5LIBS) -o $@
 	@echo 'Built: ./use_dustlib_scatmat.x'
+
+use_dustlib.x: libsedust.a rt_example/use_dustlib.f90
+	$(FC) $(FFLAGS) -I. rt_example/use_dustlib.f90 libsedust.a $(H5LIBS) -o $@
+	@echo 'Built: ./use_dustlib.x'
+
+use_dustlib_pol.x: libsedust.a rt_example/use_dustlib_pol.f90
+	$(FC) $(FFLAGS) -I. rt_example/use_dustlib_pol.f90 libsedust.a $(H5LIBS) -o $@
+	@echo 'Built: ./use_dustlib_pol.x'
 
 clean:
 	rm -f *.o *.mod
@@ -243,7 +301,7 @@ cleanall: clean
 	rm -f *.a make_enthalpy.x main_astrodust.x main_dl07.x main_zubko.x \
 	      calc_kext.x calc_polext.x \
 	      test_scatmat_aligned.x test_scalar_mode.x test_euv_extension.x \
-	      use_dustlib_scatmat.x
+	      use_dustlib_scatmat.x use_dustlib.x use_dustlib_pol.x
 	rm -f output/astrodust_irem_ours_*.dat output/enthalpy_*.dat
 
 .PHONY: all clean cleanall

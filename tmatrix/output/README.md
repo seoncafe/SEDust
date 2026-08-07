@@ -1,16 +1,25 @@
-# tmatrix/output -- precomputed astrodust optics
+# tmatrix/output -- what the T-matrix drivers write
 
-The products in this directory are what `../driver/run_*.f90` writes and what
-the SED solver and the polarized radiative-transfer API read back. They are
-tracked, so regenerating them is optional.
+The products here are what `../driver/run_*.f90` writes: the output of a sweep,
+tracked so that regenerating one is optional.
+
+**This is not where the solver reads them from.** Everything a dust model owns
+lives in that model's own directory, so the installed copies the SED solver and
+the polarized radiative-transfer API read are under `../../data/astrodust/`.
+A sweep produces a file here; installing it means copying it there. The two can
+therefore differ, and do: `q_astrodust_jori_P0.20_Fe0.00_1.400.dat.gz` here is
+SEDust's own regenerated orientation-resolved table (opt-in through
+`qpol_path`, and the only one with a birefringence block), while the default
+`../../data/astrodust/q_DH21Ad_P0.20_Fe0.00_1.400.dat.gz` is the HD23 release
+table.
 
 ## The two wavelength axes do not match, and that is deliberate
 
 | product | wavelength axis | length |
 |---|---|---|
-| `q_astrodust_P0.20_Fe0.00_1.400.dat` | `../../data/dielectric/DH21_wave` | 1129 |
-| `q_astrodust_P0.20_Fe0.00_1.400_euv.dat` | `../../data/dielectric/DH21_wave_to_12keV` | 1762 |
-| `q_astrodust_jori_P0.20_Fe0.00_1.400.dat.gz` | `../../data/dielectric/DH21_wave` | 1129 |
+| `q_astrodust_P0.20_Fe0.00_1.400.dat` | `../../data/astrodust/DH21_wave` | 1129 |
+| `q_astrodust_P0.20_Fe0.00_1.400_euv.dat` | `../../data/astrodust/DH21_wave_to_12keV` | 1762 |
+| `q_astrodust_jori_P0.20_Fe0.00_1.400.dat.gz` | `../../data/astrodust/DH21_wave` | 1129 |
 
 The two SCALAR products are deliberately separate.  The plain file preserves
 the 1129-wavelength non-ionizing grid.  The `_euv` file prepends the Draine &

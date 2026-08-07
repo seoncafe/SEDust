@@ -60,12 +60,14 @@ program run_tmatrix
    ! Wavelength axis.  DH21_wave stops at 0.0912 um (13.6 eV); DH21_wave_to_12keV
    ! is that grid with the dielectric-function's own energy nodes below it
    ! prepended, carrying the table to 1.0e-4 um (12398 eV).  Those nodes are
-   ! reused rather than resampled because the 21 absorption edges in this band
-   ! are tabulated as steps across ~1e-4 in relative energy: a uniform
-   ! 200-per-decade axis would average each edge into a ramp and lose, for
-   ! instance, the +211% jump of k at the Fe K edge.  On those nodes interp_m
-   ! below evaluates at zero interpolation weight and reproduces the tabulated
-   ! index exactly on both sides of every edge.
+   ! reused rather than resampled because that band is full of absorption edges
+   ! tabulated as steps across a close pair of energies: counting them takes a
+   ! threshold, and there are 23 places where k jumps by more than 0.5% across a
+   ! pair closer than 5e-4 in relative energy, 14 of them closer than 1e-4.  A
+   ! uniform 200-per-decade axis would average each edge into a ramp and lose,
+   ! for instance, the +211% jump of k at Fe K (7124 eV).  On the tabulated
+   ! nodes interp_m below evaluates at zero interpolation weight and reproduces
+   ! the tabulated index exactly on both sides of every edge.
    !
    ! One point of the axis is an exception: 0.0912*(1 - 1e-4), just below the
    ! Lyman limit, is NOT a dielectric-table node, so interp_m interpolates it.
@@ -83,10 +85,16 @@ program run_tmatrix
       '../data/dielectric/DH21_wave_to_12keV'
    character(len=*), parameter :: f_index = &
       '../data/dielectric/index_DH21Ad_P0.20_0.00_1.400'
+   ! This driver sweeps the whole f_wave axis, so what it writes is the EUV
+   ! product.  The 1129-wavelength companion that ships beside it,
+   ! output/q_astrodust_P0.20_Fe0.00_1.400.dat, is this file with every
+   ! wavelength shortward of the Lyman limit dropped -- row selection only, no
+   ! value recomputed -- and `make lyman_cut` in tmatrix/ is what makes it.
+   ! Regenerating the table therefore takes both steps.
    character(len=*), parameter :: f_out_full = &
-      'output/q_astrodust_P0.20_Fe0.00_1.400.dat'
+      'output/q_astrodust_P0.20_Fe0.00_1.400_euv.dat'
    character(len=*), parameter :: f_out_test = &
-      'output/q_astrodust_P0.20_Fe0.00_1.400.test.dat'
+      'output/q_astrodust_P0.20_Fe0.00_1.400_euv.test.dat'
 
    real(wp), parameter :: EPS_BA  = 1.4_wp
    real(wp), parameter :: DDELT   = 1.0e-3_wp

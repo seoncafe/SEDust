@@ -4,8 +4,12 @@ module zubko_io
    ! (SHG_Benchmark/DustModel). Three pieces, each a separate file format:
    !
    !   1. Size distribution -- ZDA log-polynomial FORMULA in an INI-style
-   !      config (ZDA_BARE_GR_S_Config.dat), or the tabulated SzDist files.
-   !   2. Optics -- DustEM/Zubko Q-tables (one block for each radius).
+   !      config (ZDA_BARE_GR_S_Config.dat, in the format DIRTY reads, which is
+   !      what its own paths and the benchmark's README say), or the tabulated
+   !      SzDist files.
+   !   2. Optics -- the ZDA optics tables (one block for each radius).  These
+   !      are Zubko's own calculation, converted by Misselt; they are NOT DustEM
+   !      products, and DustEM's own distribution carries no ZDA model at all.
    !   3. Calorimetry -- specific enthalpy/heat-capacity tables.
    !
    ! All three readers live here: read_zda_config + zda_gofa for the formula
@@ -151,13 +155,23 @@ contains
 
 
    ! ------------------------------------------------------------------
-   ! DustEM/Zubko Q-table reader. Header (NSIZE, NWAVE, density), then
+   ! ZDA optics-table reader. Header (NSIZE, NWAVE, density), then
    ! one block for each radius: "<a> = radius (micron)", a column-header line, and
    ! NWAVE rows of  x  lambda[um]  Q_abs  Q_sca  Q_ext  g.
    ! Returns a_um(nsize), lam_um(nwave) [um], qabs/qsca(nwave,nsize), rho[g/cm^3].
    ! The optional gpar(nwave,nsize) is the scattering asymmetry <cos> of the
    ! last column, which an RT host needs alongside Q_sca.
    ! ------------------------------------------------------------------
+   ! PROVENANCE NOTE.  The silicate and graphite files say in their own headers
+   ! "Scattering parameters computed from eps_Sil" / "... eps_Gra", naming
+   ! Draine's 1993/2000 optical constants.  That label does not survive a check.
+   ! Mie on Draine's 2003 revision (index_silD03, index_Cpa/CpeD03, which this
+   ! tree carries) reproduces the silicate table to a mean relative 2.4e-6 over
+   ! all 121 x 1201 cells, while eps_Sil leaves 3.5%; and eps_Sil stops at
+   ! 1e3 um whereas these tables run to 1e4, which only the D03 files reach.
+   ! So the tables were computed on D03 and the header label is stale.  Nothing
+   ! here depends on it -- the reader takes the numbers, not the label -- but a
+   ! later reader should not go looking for eps_Sil to reproduce them.
    subroutine read_zubko_optics(path, nsize, nwave, a_um, lam_um, qabs, qsca, rho, ok, gpar)
       character(len=*),      intent(in)  :: path
       integer,               intent(out) :: nsize, nwave

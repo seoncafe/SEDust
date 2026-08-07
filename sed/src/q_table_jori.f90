@@ -3,7 +3,7 @@ module q_table_jori_mod
    ! spheroid, plus the polarized cross sections and the grain-alignment
    ! efficiency they feed.
    !
-   ! Input file: data/dielectric/q_DH21Ad_P0.20_Fe0.00_1.400.dat.gz
+   ! Input file: data/astrodust/q_DH21Ad_P0.20_Fe0.00_1.400.dat.gz
    !
    !   12 header lines, then free-format values in the order
    !     ((Q(jw,jr,jori), jw=0,1128), jr=0,168), jori=1,3
@@ -19,8 +19,8 @@ module q_table_jori_mod
    !   jori=3: k perp a, E perp a
    !
    ! The wavelength and size axes are NOT parsed out of the header; they are
-   ! read from the companion grid files data/dielectric/DH21_wave and
-   ! data/dielectric/DH21_aeff, which list the same nodes the table was
+   ! read from the companion grid files data/astrodust/DH21_wave and
+   ! data/astrodust/DH21_aeff, which list the same nodes the table was
    ! computed on.
    !
    ! Derived quantities, for a grain whose symmetry axis is perpendicular to
@@ -38,7 +38,7 @@ module q_table_jori_mod
    !
    ! THE EXTREME-ULTRAVIOLET COMPANION TABLE.  load_q_table_jori_euv reads a
    ! second file of exactly the same stream format computed on the wavelength
-   ! axis data/dielectric/DH21_wave_euv, which runs from 0.0124 um (100 eV) up
+   ! axis data/astrodust/DH21_wave_euv, which runs from 0.0124 um (100 eV) up
    ! to the 0.0912 um (13.6 eV) node where the table above starts.  It is a
    ! separate entry point with its own module state (nj_*_euv, lam_j_euv,
    ! qpol_*_euv, qbir_ext_euv) because the two tables have different grid
@@ -73,6 +73,11 @@ module q_table_jori_mod
    end interface
 
    public :: load_q_table_jori, falign_hd23, falign_powerlaw
+   ! The raw orientation-resolved arrays, before the dichroic and
+   ! random-orientation combinations are formed from them.  Exposed so that
+   ! sed/make_polarized.x can store what the table actually holds rather
+   ! than a quantity derived from it.
+   public :: read_jori_stream
    public :: nj_lam, nj_aeff, lam_j, aeff_j
    public :: qpol_ext, qpol_abs, qran_ext, qran_abs, qran_sca
    public :: qbir_ext, has_bir
@@ -509,7 +514,7 @@ contains
       !
       ! The record is consumed in fixed-size chunks with a non-advancing read
       ! rather than in one plain read: a grid file may put its whole axis on a
-      ! single line (data/dielectric/DH21_wave puts all 1129 values on an
+      ! single line (data/astrodust/DH21_wave puts all 1129 values on an
       ! 11289-character one), and a plain read into a fixed buffer would
       ! silently drop everything past the buffer and undercount. in_tok carries
       ! across chunks so a token straddling a boundary is counted once.

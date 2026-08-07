@@ -33,7 +33,7 @@ program test_scatmat_aligned
                                scm_nband, scm_nti, scm_nts, scm_nphi, scm_ntheta, scm_bytes, &
                                scm_lambda, scm_theta_i, scm_theta_s, scm_phi, scm_theta_ran, &
                                scm_cext_al, scm_cpol_al, scm_cbir_al, scm_csca_al, &
-                               scm_csca_pol_al, scm_csca_tot, scm_csca_ref, &
+                               scm_csca_tot, scm_csca_ref, &
                                scm_F_tot, scm_F_ref, scm_Z, &
                                scm_profile_name, scm_fmax, scm_a_align, scm_alpha
    use q_table_jori_mod, only: nj_lam, nj_aeff, lam_j, aeff_j, qpol_ext, qbir_ext, &
@@ -44,11 +44,11 @@ program test_scatmat_aligned
    character(len=*), parameter :: TEST_TAB = &
       '../tmatrix/output/scatmat_aligned_astrodust_P0.20_Fe0.00_1.400.test.dat'
    character(len=*), parameter :: QTAB = &
-      '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat'
+      '../data/astrodust/sedust_astrodust.h5'
    character(len=*), parameter :: QPOL = &
       '../tmatrix/output/q_astrodust_jori_P0.20_Fe0.00_1.400.dat.gz'
-   character(len=*), parameter :: QWAVE = '../data/dielectric/DH21_wave'
-   character(len=*), parameter :: QAEFF = '../data/dielectric/DH21_aeff'
+   character(len=*), parameter :: QWAVE = '../data/astrodust/DH21_wave'
+   character(len=*), parameter :: QAEFF = '../data/astrodust/DH21_aeff'
    character(len=*), parameter :: SIZED = '../data/release/size_distribution.dat'
 
    real(wp), parameter :: CM2_TO_UM2 = 1.0e8_wp    ! 1 cm^2 = 1e8 um^2

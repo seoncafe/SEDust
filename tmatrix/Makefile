@@ -215,7 +215,30 @@ run_tmatrix.x: libtmatrix.a $(OBJ_BASE) spheroid_optics.o run_tmatrix.o
 	@echo
 	@echo 'Built: ./run_tmatrix.x'
 	@echo 'Smoke test:  ./run_tmatrix.x test'
-	@echo 'Full sweep:  ./run_tmatrix.x'
+	@echo 'Full sweep:  ./run_tmatrix.x   then   make lyman_cut'
+
+# The two scalar Q tables that ship in output/ are one calculation.  The sweep
+# above covers the whole DH21_wave_to_12keV axis and writes the EUV product;
+# this target writes the other one, by dropping every wavelength shortward of
+# the Lyman limit from it.  Row selection only -- no value is recomputed -- so
+# the two agree cell for cell wherever both carry a row, and the wavelength
+# count in the header is recounted rather than assumed.  (The
+# orientation-resolved table is not part of this: it stays on the
+# 1129-wavelength DH21_wave axis and has nothing to cut.)
+Q_EUV   = output/q_astrodust_P0.20_Fe0.00_1.400_euv.dat
+Q_LYMAN = output/q_astrodust_P0.20_Fe0.00_1.400.dat
+lyman_cut: $(Q_EUV)
+	@n=`awk '$$0 !~ /^#/ && NF >= 8 && $$1+0 >= 0.0912 { print $$1 }' $(Q_EUV) \
+	     | sort -u -g | wc -l`; \
+	awk -v n=$$n 'NR==1 { print; next } \
+	     /^#/ { if ($$0 ~ /lambda stride/) sub(/of [0-9]+/, "of " n); \
+	            if ($$0 ~ /^#   lambda\[um\]/) { \
+	              print "# Wavelengths shortward of 0.0912 um (the Lyman limit) dropped from"; \
+	              print "#   q_astrodust_P0.20_Fe0.00_1.400_euv.dat.  Row selection only: no value is"; \
+	              print "#   recomputed, so every row here is the row that file carries." } \
+	            print; next } \
+	     (NF >= 8 && $$1+0 >= 0.0912) { print }' $(Q_EUV) > $(Q_LYMAN); \
+	echo "Wrote $(Q_LYMAN)  ($$n wavelengths, 0.0912 um and longward)"
 
 run_scatmat.o: driver/run_scatmat.f90 tmatrix_api.o tmatrix_status.o scattering_matrix_expansion.o read_index.o asymptotic_optics.o size_dist.o
 	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
@@ -329,7 +352,7 @@ cleanall: clean
 	      compare_birefringence.x compare_scatmat_aligned.x run_scatmat_aligned.x \
 	      euv_polarized_optics.x
 
-.PHONY: all all-compare clean cleanall
+.PHONY: all all-compare clean cleanall lyman_cut
 
 # Module files are emitted into this directory.  Serialize until the project
 # has a dedicated object/module build tree.

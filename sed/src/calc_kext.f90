@@ -6,7 +6,7 @@ program calc_kext
    !
    !   ./calc_kext.x astrodust [euv | <lam_min in um>]
    !   ./calc_kext.x dl07      [euv | <lam_min in um>]
-   !   ./calc_kext.x zubko     [formula | table]
+   !   ./calc_kext.x zubko     [formula | table] [euv]
    !   ./calc_kext.x from_files <descriptor> [data_dir]
    !
    ! Every model goes through the same two calls -- one build_* to set the
@@ -22,9 +22,11 @@ program calc_kext
    ! for a host that transports ionizing radiation.  The floor is never
    ! hard-coded: it is asked of the dielectric function that will supply the
    ! optics there, because past its own tabulation the refractive index would
-   ! freeze at the boundary value.  The Zubko model has no such extension --
-   ! its optics table IS the model definition and already reaches 0.001 um
-   ! (1.24 keV), so no extension is needed or possible.
+   ! freeze at the boundary value.  The Zubko model needs no such extension and
+   ! could not have one -- its optics table IS the model definition and already
+   ! reaches 0.001 um (1.24 keV) -- so for it `euv` means the opposite: it keeps
+   ! the whole tabulated range, while the default cuts the grid at the Lyman
+   ! limit, where an interstellar radiation field stops carrying photons.
    !
    ! MASS ABSORPTION COEFFICIENT.  Every product carries K_abs [cm^2/g] =
    ! C_abs/H divided by the model's dust mass per H, which the model itself
@@ -38,25 +40,26 @@ program calc_kext
    ! read it; it comes from the same size_integrated_extinction call, as
    ! Cpol_ext.  (No column of it is read back by dust_extinction, which keeps
    ! computing the polarized optics from the model so that they follow the
-   ! host's runtime alignment state.)  The `_euv` products do not carry the
-   ! column at all.  That is a difference of COLUMNS, not of wavelength
-   ! coverage: the scalar Q table reaches 1.0e-4 um, so every astrodust
-   ! product now spans the same grid.
+   ! host's runtime alignment state.)  Both astrodust products carry it, on the
+   ! 1129-wavelength grid and on the 1762-wavelength one; no other model has
+   ! polarized optics, so no other product has the column.
    !
    ! The orientation-resolved table the column comes from stops at 0.0912 um,
    ! and the companion that would carry the band below it (run_q_jori.x euv)
-   ! is not shipped, so build_Cpol leaves those rows at zero and announces the
-   ! deficit on stderr at every run.  The eighth column therefore holds a run
-   ! of zeros at its short-wavelength end that is an omission, not a physical
-   ! value.  Letting a reader mistake it for a measurement would be exactly
-   ! the laundering these products refuse, so header_astrodust_qtable_grid
-   ! states the wavelengths and the row count of that run, taken at run time
-   ! from the polarized table's own coverage.
+   ! is not shipped, so on the _euv grid build_Cpol leaves the 633 rows below
+   ! that wavelength at zero and announces the deficit on stderr at every run.
+   ! That zero is an omission, not a physical value.  Letting a reader mistake
+   ! it for a measurement would be exactly the laundering these products
+   ! refuse, so header_polarized_column states the wavelengths and the row
+   ! count of that run, taken at run time from the polarized table's own
+   ! coverage.  On the non-EUV grid there is no such run: the model grid and
+   ! the polarized table are the same 1129 wavelengths.
    !====================================================================
    use constants,         only: wp
    use sed_astrodust_mod, only: build_astrodust, build_dl07, build_zubko, &
                                 build_from_files, size_integrated_extinction, &
-                                dust_mass_per_H, dust_model_t
+                                dust_mass_per_H, dust_model_t, &
+                                dl07_euv_lambda_floor, astrodust_euv_lambda_floor
    use q_astrodust_mod,   only: astrodust_index_lambda_range, get_astrodust_index_path
    use q_silicate_mod,    only: silicate_index_lambda_range
    use q_graphite_mod,    only: graphite_index_lambda_range
@@ -74,14 +77,18 @@ program calc_kext
    ! table shipped with this release already reaches into the ionizing band,
    ! so with it nothing is left for this route to solve.
    use euv_astrodust_tmatrix, only: use_tmatrix_euv_band_optics
+   use sedust_h5
    implicit none
 
    ! ---- model inputs shared with the SED drivers -------------------------
    ! The plain product preserves the historical non-ionizing wavelength grid.
    ! The _euv product prepends DH21 nodes below the Lyman limit and is used
    ! only when the caller explicitly asks for the EUV table.
-   character(len=*), parameter :: F_QT  = '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat'
-   character(len=*), parameter :: F_QT_EUV = '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400_euv.dat'
+   ! Each model's own product carries ONE wavelength axis and the index where
+   ! the non-ionizing part of it begins, so `euv` selects a view of the same
+   ! file rather than a second one.
+   character(len=*), parameter :: F_QT   = '../data/astrodust/sedust_astrodust.h5'
+   character(len=*), parameter :: F_QT_DL = '../data/dl07/sedust_dl07.h5'
    character(len=*), parameter :: F_SD  = '../data/release/size_distribution.dat'
    character(len=*), parameter :: F_EXT = '../data/release/extinction.dat'
    character(len=*), parameter :: F_SCA = '../data/release/scattering.dat'
@@ -98,10 +105,9 @@ program calc_kext
    ! touches; the builders need it all the same.
    integer,  parameter :: NT_IN = 100
    real(wp), parameter :: T_LO = 1.0_wp, T_HI = 3000.0_wp
-   ! A model refuses a grid floor below its dielectric function's own shortest
-   ! wavelength.  Asking for exactly that value puts the request on the rounding
-   ! boundary of the refusal test, so stand this factor above it.
-   real(wp), parameter :: LAM_LO_MARGIN = 1.001_wp
+   ! The Lyman limit, 13.6 eV.  It is where the non-ionizing products stop,
+   ! because an interstellar radiation field is exactly zero below it.
+   real(wp), parameter :: LAM_LYMAN = 0.0912_wp
 
    integer, parameter :: MAXNOTE = 120
    character(len=200) :: note(MAXNOTE)
@@ -114,10 +120,10 @@ program calc_kext
    ! product writes it out.
    real(wp), allocatable :: Cpolext(:)
    real(wp) :: lam_min, lam_lo, lam_hi, lam_lo2, Mdust_H
-   integer  :: narg, ios, nlam_out
+   integer  :: narg, ios, nlam_out, iarg
    logical  :: euv, zubko_formula
    character(len=32)  :: model
-   character(len=256) :: opt, fout, desc, ddir
+   character(len=256) :: opt, fout, desc, ddir, arg
 
    call use_tmatrix_euv_band_optics()
 
@@ -152,15 +158,16 @@ program calc_kext
          ! already cover would have to be computed from that function, and past
          ! its tabulation (n, k) would freeze at the boundary value.
          call astrodust_index_lambda_range(lam_lo, lam_hi)
-         if (lam_min <= 0.0_wp) lam_min = LAM_LO_MARGIN * lam_lo
+         if (lam_min <= 0.0_wp) lam_min = astrodust_euv_lambda_floor()
          write(*,'(a,es12.5,a,es12.5,a)') ' DH21 astrodust dielectric function covers ', &
             lam_lo, ' - ', lam_hi, ' um'
          write(*,'(a,es12.5,a)') ' requested lam_min = ', lam_min, ' um'
-         call build_astrodust(m, F_QT_EUV, F_SD, NT_IN, T_LO, T_HI, lam_min=lam_min)
-         fout = '../data/kext_astrodust_MW_euv.dat'
+         call build_astrodust(m, F_QT, F_SD, NT_IN, T_LO, T_HI, lam_min=lam_min, &
+                              include_euv=.true.)
+         fout = '../data/astrodust/kext_astrodust_MW_euv.dat'
       else
          call build_astrodust(m, F_QT, F_SD, NT_IN, T_LO, T_HI)
-         fout = '../data/kext_astrodust_MW.dat'
+         fout = '../data/astrodust/kext_astrodust_MW.dat'
       end if
 
    ! ===================================================================
@@ -181,33 +188,48 @@ program calc_kext
          write(*,'(a,es12.5,a)') ' D03 silicate dielectric function starts at ', lam_lo,  ' um'
          write(*,'(a,es12.5,a)') ' D03 graphite dielectric function starts at ', lam_lo2, ' um'
          lam_lo = max(lam_lo, lam_lo2)
-         if (lam_min <= 0.0_wp) lam_min = LAM_LO_MARGIN * lam_lo
+         if (lam_min <= 0.0_wp) lam_min = dl07_euv_lambda_floor()
          write(*,'(a,es12.5,a)') ' requested lam_min = ', lam_min, ' um'
-         call build_dl07(m, F_QT_EUV, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI, &
-                         lam_min=lam_min)
-         fout = '../data/kext_dl07_MW_euv.dat'
+         call build_dl07(m, F_QT_DL, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI, &
+                         lam_min=lam_min, include_euv=.true.)
+         fout = '../data/dl07/kext_dl07_MW_euv.dat'
       else
-         call build_dl07(m, F_QT, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI)
-         fout = '../data/kext_dl07_MW.dat'
+         call build_dl07(m, F_QT_DL, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI)
+         fout = '../data/dl07/kext_dl07_MW.dat'
       end if
 
    ! ===================================================================
    case ('zubko')
       ! Two routes to the same ZDA BARE-GR-S model, differing only in where the
       ! size distribution comes from; the optics tables are the same files.
-      if (len_trim(opt) > 0) then
-         select case (trim(opt))
+      ! Orthogonal to that, `euv` keeps the whole ZDA range and its absence cuts
+      ! the grid at the Lyman limit, exactly as for the other two models -- with
+      ! the difference that here the wide product is the tables' own range and
+      ! the narrow one is that range cut, rather than the other way round.
+      do iarg = 2, narg
+         call get_command_argument(iarg, arg)
+         select case (trim(arg))
          case ('formula');  zubko_formula = .true.
          case ('table');    zubko_formula = .false.
+         case ('euv');      euv = .true.
          case default;      call print_usage();  stop 1
          end select
-      end if
-      if (zubko_formula) then
-         call build_zubko(m, F_ZDA_CFG, D_ZUBKO, NT_IN, T_LO, T_HI)
+      end do
+      if (euv) then
+         if (zubko_formula) then
+            call build_zubko(m, F_ZDA_CFG, D_ZUBKO, NT_IN, T_LO, T_HI)
+         else
+            call build_from_files(m, F_ZDA_DESC, D_ZUBKO, NT_IN, T_LO, T_HI)
+         end if
+         fout = '../data/zubko/kext_zubko_BARE_GR_S_euv.dat'
       else
-         call build_from_files(m, F_ZDA_DESC, D_ZUBKO, NT_IN, T_LO, T_HI)
+         if (zubko_formula) then
+            call build_zubko(m, F_ZDA_CFG, D_ZUBKO, NT_IN, T_LO, T_HI, lam_min=LAM_LYMAN)
+         else
+            call build_from_files(m, F_ZDA_DESC, D_ZUBKO, NT_IN, T_LO, T_HI, lam_min=LAM_LYMAN)
+         end if
+         fout = '../data/zubko/kext_zubko_BARE_GR_S.dat'
       end if
-      fout = '../data/kext_zubko_BARE_GR_S.dat'
 
    ! ===================================================================
    case ('from_files')
@@ -219,7 +241,7 @@ program calc_kext
          ddir = dirname_of(desc)
       end if
       call build_from_files(m, trim(desc), trim(ddir), NT_IN, T_LO, T_HI)
-      fout = '../data/kext_' // trim(m%name) // '.dat'
+      fout = '../data/' // trim(m%name) // '/kext_' // trim(m%name) // '.dat'
 
    case default
       call print_usage();  stop 1
@@ -260,16 +282,27 @@ program calc_kext
    ! M_dust/N_H the column is normalized by. The normalization is one
    ! wavelength-independent constant, as well defined in the EUV as in the
    ! optical. The tracked ../data/kext_astrodust_MW.dat is a regression
-   ! reference, so it alone keeps the original narrow-field format, and with it
-   ! the dichroic C_polext column the other products have no polarized optics
-   ! for; every other product uses the wider default fields.
+   ! reference, so it alone keeps the original narrow-field format; every other
+   ! product uses the wider default fields. The dichroic C_polext column goes on
+   ! BOTH astrodust products, because astrodust is the only model with polarized
+   ! optics and the quantity is defined over its whole grid -- where the
+   ! orientation-resolved table does not reach, the header states the deficit
+   ! rather than leaving the reader to infer it from a missing column.
    if (Mdust_H > 0.0_wp) then
       call write_kext_curve(trim(fout), kabs_norm=Mdust_H, &
-                            legacy_format=(trim(model) == 'astrodust' .and. .not. euv))
+                            legacy_format=(trim(model) == 'astrodust' .and. .not. euv), &
+                            with_polext_column=(trim(model) == 'astrodust'))
    else
       call write_kext_curve(trim(fout))
    end if
    write(*,'(a,a)') ' wrote ', trim(fout)
+
+   ! ---- the same curve into the model's HDF5 file ------------------------
+   ! Only the WIDE run of a coded model writes: data/<model>/sedust_<model>.h5 holds
+   ! one wavelength axis, and a reader asked for the non-ionizing part slices
+   ! it at /grid/i_lyman.  The narrow text product is that slice, so writing it
+   ! here as well would be a second copy of the same numbers on a shorter axis.
+   if (euv) call write_kext_h5(trim(model))
 
    ! ---- checks -----------------------------------------------------------
    call check_internal_consistency()
@@ -285,13 +318,15 @@ contains
       write(*,'(a)') ' usage:'
       write(*,'(a)') '   ./calc_kext.x astrodust [euv | <lam_min in um>]'
       write(*,'(a)') '   ./calc_kext.x dl07      [euv | <lam_min in um>]'
-      write(*,'(a)') '   ./calc_kext.x zubko     [formula | table]'
+      write(*,'(a)') '   ./calc_kext.x zubko     [formula | table] [euv]'
       write(*,'(a)') '   ./calc_kext.x from_files <descriptor> [data_dir]'
       write(*,'(a)') ''
       write(*,'(a)') ' Writes lambda / albedo / <cos> / C_ext per H (+ C_abs, C_sca, and'
       write(*,'(a)') ' K_abs = C_abs/H normalized by the model dust mass per H) under'
-      write(*,'(a)') ' ../data/.  `euv` asks for the ionizing band, down to'
-      write(*,'(a)') ' whatever the model dielectric function itself covers.'
+      write(*,'(a)') ' ../data/.  `euv` asks for the ionizing band: for astrodust and'
+      write(*,'(a)') ' dl07 it extends the grid down to whatever the model dielectric'
+      write(*,'(a)') ' function itself covers; for zubko, whose own tables already reach'
+      write(*,'(a)') ' 1.24 keV, it keeps the band that the default cuts at the Lyman limit.'
       write(*,'(a)') ' kext_astrodust_MW.dat alone also carries the dichroic C_polext/H.'
    end subroutine print_usage
 
@@ -328,7 +363,7 @@ contains
    ! and uses lambda, albedo and C_ext.  A trailing K_abs [cm^2/g] column is
    ! added when the model supplies its dust mass per H, and the frozen format
    ! adds C_polext/H after it.
-   subroutine write_kext_curve(path, kabs_norm, legacy_format)
+   subroutine write_kext_curve(path, kabs_norm, legacy_format, with_polext_column)
       character(len=*),   intent(in) :: path
       ! Dust mass per H [g/H]; when present a K_abs = C_abs/H / this column is added.
       real(wp), optional, intent(in) :: kabs_norm
@@ -337,9 +372,17 @@ contains
       ! product carrying the dichroic C_polext/H column.  Everything else uses
       ! the wider default fields.
       logical,  optional, intent(in) :: legacy_format
+      ! Write the dichroic C_polext/H as an eighth column.  Every astrodust
+      ! product carries it: the quantity is defined over the whole grid, and
+      ! where the orientation-resolved table does not reach, the header says so
+      ! in as many words rather than leaving the reader to infer it from a
+      ! missing column.
+      logical,  optional, intent(in) :: with_polext_column
       integer :: u, jw
-      logical :: legacy, with_kabs
+      logical :: legacy, with_kabs, with_polext
       legacy    = .false.;  if (present(legacy_format)) legacy = legacy_format
+      with_polext = legacy
+      if (present(with_polext_column)) with_polext = with_polext_column
       with_kabs = present(kabs_norm)
       if (legacy .and. .not. with_kabs) then
          write(*,'(a)') ' calc_kext: the frozen format carries K_abs and so needs' // &
@@ -370,6 +413,16 @@ contains
                m%lam(jw), alb(jw), gbar(jw), Cext(jw), Cabs(jw), Csca(jw), &
                Cabs(jw)/kabs_norm, Cpolext(jw)
          end do
+      else if (with_kabs .and. with_polext) then
+         write(u,'(a1,a19,7(1x,a20))') '#', 'lambda', 'albedo', '<cos>', &
+              'C_ext/H', 'C_abs/H', 'C_sca/H', 'K_abs', 'C_polext/H'
+         write(u,'(a1,a19,7(1x,a20))') '#', '(micron)', ' ', ' ', &
+              '(cm^2/H)', '(cm^2/H)', '(cm^2/H)', '(cm^2/g)', '(cm^2/H)'
+         do jw = 1, nlam_out
+            write(u,'(es20.12e3,7(1x,es20.12e3))') &
+               m%lam(jw), alb(jw), gbar(jw), Cext(jw), Cabs(jw), Csca(jw), &
+               Cabs(jw)/kabs_norm, Cpolext(jw)
+         end do
       else if (with_kabs) then
          write(u,'(a1,a19,6(1x,a20))') '#', 'lambda', 'albedo', '<cos>', &
               'C_ext/H', 'C_abs/H', 'C_sca/H', 'K_abs'
@@ -391,6 +444,139 @@ contains
       end if
       close(u)
    end subroutine write_kext_curve
+
+
+   ! ===================================================================
+   subroutine write_kext_h5(model)
+      ! Append the size-integrated curve to ../data/<model>/sedust_<model>.h5, beside
+      ! the (lambda, a_eff) tables make_qtable.x wrote into the same file.
+      !
+      ! The file holds ONE wavelength axis and every wavelength-indexed array
+      ! is filed against it, so this refuses to write unless the grid the size
+      ! integral just ran on IS that axis.  A curve stored under a wavelength
+      ! it was not computed at is precisely the stale label this format carries
+      ! provenance attributes to prevent, and the two grids are built by two
+      ! programs, so the check is worth its cost.
+      character(len=*), intent(in) :: model
+      character(len=256) :: path, sdfile
+      integer(h5id_k)    :: fid, gid
+      logical  :: ok
+      real(wp), allocatable :: gl(:), kabs(:)
+      real(wp) :: dmax
+      integer  :: jw
+
+      if (.not. sedust_has_hdf5) then
+         write(*,'(a)') ' calc_kext: built without HDF5, wrote the text product only'
+         return
+      end if
+      select case (model)
+      case ('astrodust', 'dl07')
+         sdfile = F_SD
+      case ('zubko')
+         ! Two routes to the same model: the ZDA size-distribution formula from
+         ! the config, or the tabulated dn/da the descriptor names.
+         if (zubko_formula) then
+            sdfile = F_ZDA_CFG
+         else
+            sdfile = desc
+         end if
+      case default
+         return                      ! from_files: no shipped file to extend
+      end select
+
+      path = '../data/'//model//'/sedust_'//model//'.h5'
+      call h5_begin(ok);  if (.not. ok) return
+      call h5_open_rw(trim(path), fid, ok)
+      if (.not. ok) then
+         write(*,'(a,a)') ' calc_kext: no HDF5 file to extend at ', trim(path)
+         write(*,'(a,a)') '            write it first with  ./make_qtable.x ', model
+         call h5_end();  return
+      end if
+
+      call h5_read_1d(fid, 'grid/lambda', gl, ok)
+      if (.not. ok) then
+         write(*,'(a,a)') ' calc_kext: no /grid/lambda in ', trim(path)
+         call h5_close_file(fid);  call h5_end();  return
+      end if
+      if (size(gl) /= nlam_out) then
+         write(*,'(a,i0,a,i0,a)') ' calc_kext: /grid/lambda has ', size(gl), &
+            ' points and this curve has ', nlam_out, ' -- not written'
+         deallocate(gl);  call h5_close_file(fid);  call h5_end();  return
+      end if
+      dmax = 0.0_wp
+      do jw = 1, nlam_out
+         dmax = max(dmax, abs(m%lam(jw)/gl(jw) - 1.0_wp))
+      end do
+      deallocate(gl)
+      ! Both grids come from the same construction in the same library, so they
+      ! agree to the last bit or they are not the same grid at all.
+      if (dmax > 1.0e-12_wp) then
+         write(*,'(a,es9.2,a)') ' calc_kext: this curve''s grid differs from ' // &
+            '/grid/lambda by ', dmax, ' -- not written'
+         call h5_close_file(fid);  call h5_end();  return
+      end if
+
+      if (h5_has(fid, 'kext')) call h5_unlink(fid, 'kext')
+      call h5_group(fid, 'kext', gid, ok)
+      if (.not. ok) then
+         write(*,'(a,a)') ' calc_kext: cannot create /kext in ', trim(path)
+         call h5_close_file(fid);  call h5_end();  return
+      end if
+      call h5_write_1d(gid, 'albedo', alb,  units='1', &
+                       long_name='scattering albedo C_sca/C_ext')
+      call h5_write_1d(gid, 'g',      gbar, units='1', &
+                       long_name='scattering asymmetry <cos>')
+      call h5_write_1d(gid, 'C_ext',  Cext, units='cm^2/H', &
+                       long_name='extinction cross section per H nucleon')
+      call h5_write_1d(gid, 'C_abs',  Cabs, units='cm^2/H', &
+                       long_name='absorption cross section per H nucleon')
+      call h5_write_1d(gid, 'C_sca',  Csca, units='cm^2/H', &
+                       long_name='scattering cross section per H nucleon')
+      ! The dichroic term, which only the astrodust model has: the extinction
+      ! difference an aligned grain presents to the two linear polarizations.
+      ! It is written for that model alone rather than as a column of zeros,
+      ! so that a reader can tell a model that has no polarized optics from one
+      ! whose polarization happens to vanish.
+      if (model == 'astrodust') then
+         call h5_write_1d(gid, 'C_polext', Cpolext, units='cm^2/H', &
+              long_name='polarized (dichroic) extinction cross section per H nucleon')
+         call h5_put_attr_d(gid, 'pol_valid_from', pol_valid_from())
+      end if
+      if (Mdust_H > 0.0_wp) then
+         allocate(kabs(nlam_out))
+         kabs = Cabs / Mdust_H
+         call h5_write_1d(gid, 'K_abs', kabs, units='cm^2/g', &
+                          long_name='absorption mass opacity, C_abs/H / (M_dust/N_H)')
+         deallocate(kabs)
+         call h5_put_attr_d(gid, 'M_dust_per_H', Mdust_H)
+      end if
+      call h5_put_attr_s(gid, 'size_dist_file', trim(sdfile))
+      call h5_put_attr_s(gid, 'text_product', trim(fout))
+      call h5_put_attr_s(gid, 'generator', 'SEDust sed/calc_kext.x')
+      call h5_put_attr_s(gid, 'method', &
+           'size integral over the built model''s populations, ' // &
+           'the same call dust_extinction serves from')
+      call h5_group_close(gid)
+      call h5_close_file(fid)
+      call h5_end()
+      write(*,'(a,a)') ' wrote /kext into ', trim(path)
+   end subroutine write_kext_h5
+
+
+   real(wp) function pol_valid_from() result(l0)
+      ! Shortest wavelength at which C_polext is a computed value rather than
+      ! an omitted zero.  Below the orientation-resolved table's own first node
+      ! there is nothing to read, and build_Cpol leaves the rows at zero -- a
+      ! b/a = 1.4 spheroid has a nonzero dichroic extinction there, so that zero
+      ! is an omission and a reader must be able to tell.  An EUV companion
+      ! table fills the band, and then the whole grid is valid.
+      if (nj_lam > 0 .and. nj_lam_euv == 0) then
+         l0 = lam_j(1)
+      else
+         l0 = m%lam(1)
+      end if
+   end function pol_valid_from
+
 
 
    subroutine header_common_format_and_scope(density_source)
@@ -456,9 +642,6 @@ contains
       ! file carried a polarized column; do not reword them.  The C_polext/H
       ! block below them describes the eighth column and is not frozen.
       character(len=200) :: s
-      ! Rows whose C_polext/H is zero only because the orientation-resolved
-      ! table does not reach them.
-      integer :: npol0
       call add_note('# Extinction, albedo, and scattering asymmetry for the')
       call add_note('# Hensley & Draine (2023) astrodust+PAH Milky-Way model.')
       call add_note('#')
@@ -474,6 +657,21 @@ contains
            ' g/H  (rho_Ad=2.74, rho_PAH=2.0 g/cm^3; K_abs = C_abs/H / this).'
       call add_note(trim(s))
       call add_note('#')
+      call header_polarized_column()
+      call add_note('#')
+   end subroutine header_astrodust_qtable_grid
+
+
+   subroutine header_polarized_column()
+      ! The C_polext/H column, described the same way in both astrodust
+      ! products.  Whether it ends in a DEFICIT paragraph depends on the grid:
+      ! the model grid is the polarized table's own wavelength axis, optionally
+      ! carried shortward, and the rows below that table's first node are the
+      ! ones build_Cpol cannot fill.  On the non-EUV grid there are none; on the
+      ! EUV grid there are 633, unless an EUV companion table (nj_lam_euv > 0)
+      ! filled them.
+      character(len=200) :: s
+      integer :: npol0
       call add_note('# Column 8, C_polext/H, is the dichroic (polarized) extinction')
       call add_note('#   sum_a dn_Ad(a) * C_pol,ext(lambda,a) * f_align(a), with')
       call add_note('#   C_pol,ext = 0.5*(Q_ext(E perp a) - Q_ext(E || a)) * pi a^2 at')
@@ -485,11 +683,6 @@ contains
       call add_note('#   and before any turbulent depolarization. A radiative transfer')
       call add_note('#   host must apply both. Codes that read only the first seven')
       call add_note('#   columns are unaffected.')
-      ! The same count build_Cpol works from: the model grid is the polarized
-      ! table's own wavelength axis extended shortward, so the rows below that
-      ! table's first node are the ones it cannot fill.  An EUV companion table
-      ! (nj_lam_euv > 0) fills them, and then there is no run of zeros to warn
-      ! about.
       npol0 = 0
       if (nj_lam > 0 .and. nj_lam_euv == 0) npol0 = max(nlam_out - nj_lam, 0)
       if (npol0 > 0) then
@@ -511,8 +704,7 @@ contains
          call add_note('#   `lam L1 L2 ...` for selected wavelengths) and hand it to')
          call add_note('#   sed_init through qpol_euv_path / qpol_euv_wave_path.')
       end if
-      call add_note('#')
-   end subroutine header_astrodust_qtable_grid
+   end subroutine header_polarized_column
 
 
    subroutine header_astrodust_euv()
@@ -528,7 +720,7 @@ contains
       call add_note('# Optics:')
       call add_note('#   astrodust : the random-orientation T-matrix Q table, read at EVERY')
       call add_note('#     wavelength of the range stated below, the ionizing band included:')
-      call add_note('#     ' // F_QT_EUV)
+      call add_note('#     ' // F_QT)
       call add_note('#     (oblate spheroid b/a = 1.4, porosity P = 0.20, f_Fe = 0, on the')
       call add_note('#     Draine & Hensley (2021) dielectric function,')
       call add_note('#     ' // trim(get_astrodust_index_path()) // ').')
@@ -562,6 +754,8 @@ contains
       call add_note('#   functions, random-orientation 1/3 parallel + 2/3 perpendicular.')
       call header_common_format_and_scope('Densities: rho_Ad = 2.74, ' // &
            'rho_PAH = 2.0 g/cm^3 (HD23 conventions).')
+      call add_note('#')
+      call header_polarized_column()
       call add_note('#')
    end subroutine header_astrodust_euv
 
@@ -618,18 +812,30 @@ contains
 
 
    subroutine header_zubko()
-      call add_note('# model = zubko_BARE_GR_S')
+      if (euv) then
+         call add_note('# model = zubko_BARE_GR_S_euv')
+      else
+         call add_note('# model = zubko_BARE_GR_S')
+      end if
       call add_note('# Size-integrated extinction, albedo and scattering asymmetry per H')
       call add_note('# for the Zubko, Dwek & Arendt (2004) BARE-GR-S dust model.')
       call add_note('#')
       call add_note('# Model definition: ZDA 2004, ApJS 152, 211, bare grains, PAH +')
       call add_note('#   graphite + silicate; the files are the copies distributed with the')
       call add_note('#   Camps et al. (2015) radiative-transfer benchmark.')
-      call add_note('# Optics (all three components): the DustEM/Zubko Q tables')
+      call add_note('# Optics (all three components): the ZDA optics tables')
       call add_note('#   ' // D_ZUBKO // 'PAH_28_1201_neu.dat, Gra_121_1201.dat, suvSil_121_1201.dat')
-      call add_note('#   These are the authors'' own multilayer-sphere solution, so Q_sca and')
-      call add_note('#   <cos> are read from the same file as Q_abs rather than recomputed')
-      call add_note('#   from a dielectric function this model does not supply.')
+      call add_note('#   A HOMOGENEOUS-SPHERE Mie calculation: ZDA 2004 sec. 3 says so for')
+      call add_note('#   the bare grains (that paper''s effective-medium step belongs to its')
+      call add_note('#   COMPOSITE models), and each file names the dielectric function it')
+      call add_note('#   came from -- Draine''s eps_Sil and eps_Gra.  The PAH file is not Mie:')
+      call add_note('#   it names the Li & Draine (2001) / Draine & Li (2007) cross sections.')
+      call add_note('#   Checked against Bohren-Huffman Mie on the published eps_Sil: at')
+      call add_note('#   fixed wavelength the Q ratio is radius-independent to 4 digits over')
+      call add_note('#   3.55e-4 - 100 um and <cos> agrees to ~1e-4, leaving a 0.5-2% infrared')
+      call add_note('#   residual that lies in the refractive index (the published file is on')
+      call add_note('#   a different wavelength grid).  So Q_sca and <cos> are read from the')
+      call add_note('#   same file as Q_abs rather than recomputed.')
       if (zubko_formula) then
          call add_note('# Size distribution: the ZDA log-polynomial FORMULA evaluated on the')
          call add_note('#   optics-table radii, with the coefficients read from')
@@ -639,14 +845,25 @@ contains
          call add_note('#   optics-table radii, as listed by')
          call add_note('#   ' // F_ZDA_DESC)
       end if
-      call header_wavelength_range('The range is the ZDA optics table itself, ' // &
-           '1.24 keV down to 1.24e-4 eV.')
-      call add_note('#   This model has no EUV extension and needs none: its tabulated')
-      call add_note('#   optics already cover the whole ionizing band, and those tables ARE')
-      call add_note('#   the model definition, so there is no dielectric function to extend')
-      call add_note('#   them with.')
+      if (euv) then
+         call header_wavelength_range('The range is the ZDA optics table itself, ' // &
+              '1.24 keV down to 1.24e-4 eV.')
+         call add_note('#   This model needs no EUV EXTENSION and could not have one: its')
+         call add_note('#   tabulated optics already cover the whole ionizing band, and those')
+         call add_note('#   tables ARE the model definition, so there is no dielectric')
+         call add_note('#   function to extend them with.')
+      else
+         call header_wavelength_range('The ZDA optics table cut at the Lyman limit, ' // &
+              '13.6 eV down to 1.24e-4 eV.')
+         call add_note('#   The tables reach 1.24 keV; the wavelengths shortward of')
+         call add_note('#   0.0912 um are dropped, table row by table row, because an')
+         call add_note('#   interstellar radiation field carries no photon there.  Nothing is')
+         call add_note('#   recomputed: every row here is the row kext_zubko_BARE_GR_S_euv.dat')
+         call add_note('#   carries.  Use that file for a host that transports ionizing')
+         call add_note('#   radiation.')
+      end if
       call header_common_format_and_scope('Densities: the Density entry in the ' // &
-           'header of each component''s own DustEM optics table.')
+           'header of each component''s own ZDA optics table.')
       call add_note('#')
    end subroutine header_zubko
 
@@ -658,7 +875,7 @@ contains
       call add_note('#')
       call add_note('# Descriptor: ' // trim(desc))
       call add_note('# Data directory: ' // trim(ddir))
-      call add_note('# The descriptor names, for each population, its DustEM Q table')
+      call add_note('# The descriptor names, for each population, its ZDA optics table')
       call add_note('# (optics), its dn/da table (size distribution) and its calorimetry')
       call add_note('# table; it is reproduced verbatim below.')
       call add_note('#')

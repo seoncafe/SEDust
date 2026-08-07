@@ -89,13 +89,14 @@ program use_dustlib_pol
    ! unaffected: their extinction table covers the whole grid.
    use constants, only: wp
    use radfield,  only: J_Mathis
-   use dust_lib,  only: dust_model_t, build_astrodust, dust_emission, &
+   use dust_lib,  only: dust_model_t, build_dust, dust_emission, &
                         dust_extinction, dust_set_alignment, dust_nlam
    implicit none
    ! The scalar example grid is the EUV companion table.  The historical
    ! non-EUV table remains the default for ordinary SED/MC runs.
-   character(len=*), parameter :: QTAB  = '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400_euv.dat'
-   character(len=*), parameter :: SIZED = '../data/release/size_distribution.dat'
+   ! One data directory: build_dust resolves this model's scalar optics AND
+   ! its orientation-resolved table from data_dir/astrodust/.
+   character(len=*), parameter :: DATA = '../data'
    real(wp), parameter :: DEG   = acos(-1.0_wp)/180.0_wp
    ! --- cell geometry: the host's numbers, not SEDust's ---
    real(wp), parameter :: GAMMA = 90.0_wp * DEG   ! field vs. line of sight; 90 deg = max
@@ -111,8 +112,8 @@ program use_dustlib_pol
 
    ! --- load a model once ---
    ! kext_path is omitted, so the scalar outputs of dust_extinction come from
-   ! this model's default table, ../data/kext_astrodust_MW_euv.dat.
-   call build_astrodust(m, QTAB, SIZED, 200, 2.7_wp, 5.0e3_wp)
+   ! /kext of this model's own product, read on the whole wavelength axis.
+   call build_dust(m, 'astrodust', DATA, 200, 2.7_wp, 5.0e3_wp, include_euv=.true.)
    n = dust_nlam(m)
    allocate(J(n), total(n), pol(n), total2(n), pol2(n))
    allocate(Cext(n), Cabs(n), Csca(n), Cpol_ext(n))
@@ -178,7 +179,7 @@ program use_dustlib_pol
    print '(a)', ' --- division of labor ---'
    print '(a)', '   SEDust: size integral, f_align(a) weight, lamI_pol, Cpol_ext'
    print '(a)', '   RT code: sin^2(gamma), F_turb, position angle, Stokes transport'
-   print '(a)', '   scalars from ../data/kext_*.dat; Cpol_ext, Cbir_ext computed per call'
+   print '(a)', '   scalars from /kext of the model product; Cpol_ext, Cbir_ext computed per call'
 
 contains
 

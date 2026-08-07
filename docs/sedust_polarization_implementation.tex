@@ -102,7 +102,7 @@ $\exp(-K\tau)$ transfer step, none of which is a SEDust responsibility.
 Everything polarized derives from one file, the orientation-resolved
 Draine \& Hensley (2021) astrodust spheroid table:
 \begin{lstlisting}[style=sh]
-data/dielectric/q_DH21Ad_P0.20_Fe0.00_1.400.dat.gz
+data/astrodust/q_DH21Ad_P0.20_Fe0.00_1.400.dat.gz
 \end{lstlisting}
 (porosity $P=0.20$, iron fraction $f_{\rm Fe}=0$, axial ratio $b/a=1.400$).
 Its layout is not self-describing, so it is recorded here
@@ -120,8 +120,8 @@ repeated              & three times: $Q_{\rm ext}$, then $Q_{\rm abs}$, then $Q_
 one record on disk    & the 169 sizes of one $(jw,\,jori)$ pair \\
 records read          & $3~\text{quantities}\times3~\text{orientations}\times1129$ \\
 total values          & $3\times3\times1129\times169 = 1{,}717{,}209$ \\
-wavelength axis       & \code{data/dielectric/DH21\_wave}, 1129 nodes \\
-size axis             & \code{data/dielectric/DH21\_aeff}, 169 nodes \\
+wavelength axis       & \code{data/astrodust/DH21\_wave}, 1129 nodes \\
+size axis             & \code{data/astrodust/DH21\_aeff}, 169 nodes \\
 axis file format      & two title lines, then the values free-format \\
 \bottomrule
 \end{tabular}
@@ -850,7 +850,7 @@ node.
 
 \paragraph{\code{euv} is an axis switch, not a wavelength.} The leading
 \code{euv} keyword selects a wavelength \emph{axis file}
-(\code{data/dielectric/DH21\_wave\_euv}), so it cannot be combined with
+(\code{data/astrodust/DH21\_wave\_euv}), so it cannot be combined with
 \code{lam}, \code{lamfile} or \code{lammerge}, which carry their own axis. The
 driver rejects the combination explicitly.
 
@@ -859,7 +859,7 @@ driver rejects the combination explicitly.
 \Cpol, $C_{\rm pol,ext}$ and $C_{\rm bir,ext}$ are read from an
 orientation-resolved table on the full DH21 wavelength axis, all 1129 nodes from
 $0.0912$ to $39810\um$: by default the release file
-\code{data/dielectric/q\_DH21Ad\_P0.20\_Fe0.00\_1.400.dat.gz}, or, through
+\code{data/astrodust/q\_DH21Ad\_P0.20\_Fe0.00\_1.400.dat.gz}, or, through
 \code{qpol\_path}, the regenerated
 \code{tmatrix/output/q\_astrodust\_jori\_P0.20\_Fe0.00\_1.400.dat.gz}, which adds
 the 4th block and so is the one that makes $C_{\rm bir,ext}$ nonzero. Either way
@@ -1554,7 +1554,7 @@ make calc_polext.x           # standalone polarized-extinction check
                              #    lambda, ours, reference, ratio
 
 make calc_kext.x             # full-pipeline extinction table, all dust models
-./calc_kext.x astrodust      # -> ../data/kext_astrodust_MW.dat, 8 columns
+./calc_kext.x astrodust      # -> ../data/astrodust/kext_astrodust_MW.dat, 8 columns
                              #    ./calc_kext.x astrodust euv       (EUV grid)
                              #    ./calc_kext.x astrodust 0.03      (lam_min [um])
                              #    ./calc_kext.x dl07 | zubko | from_files ...

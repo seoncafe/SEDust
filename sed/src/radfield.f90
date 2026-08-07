@@ -171,17 +171,17 @@ contains
       ! This is a property of the FIELD, not of the wavelength grid it is
       ! sampled on. The distinction is the whole point of this routine. A dust
       ! model's grid is the grid of its optics tables and can reach far past the
-      ! band the transported field occupies, and every shipped model now does.
-      ! The astrodust and DL07 grid is the T-matrix Q table's, which starts at
-      ! 1.0e-4 um (12398 eV) -- 912 times harder than a field illuminated to the
-      ! Lyman limit -- and the Zubko/ZDA DustEM tables start at 1.0e-3 um
-      ! (1.24 keV), 91 times harder, while the field being transported still
-      ! ends at the Lyman limit. Measuring the grid instead of the field raises
-      ! the single-photon bound by that whole factor with no photon to justify
-      ! it, which coarsens the grain-enthalpy bins (umax sets the top of a fixed
-      ! bin count) and shifts the emergent SED: 1-2% for Zubko, and more once
-      ! the astrodust grid reached the X-ray -- see
-      ! docs/EUV_EXTENSION_HOST_REGRESSION.md.
+      ! band the transported field occupies, and every shipped model can. The
+      ! astrodust and DL07 grid is the T-matrix Q table's, which starts at
+      ! 0.0912 um on the default table but at 1.0e-4 um (12398 eV) on the _euv
+      ! one -- 912 times harder than a field illuminated to the Lyman limit --
+      ! and the Zubko/ZDA optics tables start at 1.0e-3 um (1.24 keV), 91 times
+      ! harder, while the field being transported still ends at the Lyman limit.
+      ! Measuring the grid instead of the field raises the single-photon bound
+      ! by that whole factor with no photon to justify it, which coarsens the
+      ! grain-enthalpy bins (umax sets the top of a fixed bin count) and shifts
+      ! the emergent SED: 1-2% for Zubko, and more on any grid that reaches the
+      ! X-ray -- see docs/EUV_EXTENSION_HOST_REGRESSION.md.
       !
       ! J_lam may be in any units: only ratios within the array are used, so the
       ! caller need not convert. lam_um must be in um. The array order is

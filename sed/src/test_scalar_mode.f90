@@ -39,12 +39,12 @@ program test_scalar_mode
    implicit none
 
    character(len=*), parameter :: QTAB  = &
-      '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat'
+      '../data/astrodust/sedust_astrodust.h5'
    character(len=*), parameter :: SIZED = '../data/release/size_distribution.dat'
    ! The default polarized table, passed only to exercise the contradiction
    ! path (its contents are never read there -- the clash is caught first).
    character(len=*), parameter :: QPOL  = &
-      '../data/dielectric/q_DH21Ad_P0.20_Fe0.00_1.400.dat.gz'
+      '../data/astrodust/q_DH21Ad_P0.20_Fe0.00_1.400.dat.gz'
 
    integer,  parameter :: NT_IN = 100
    real(wp), parameter :: T_LO = 2.7_wp, T_HI = 5.0e3_wp

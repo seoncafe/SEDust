@@ -21,9 +21,10 @@ module q_table_mod
 
    use, intrinsic :: iso_fortran_env,  only: real64, error_unit
    use, intrinsic :: ieee_arithmetic,  only: ieee_is_finite
+   use sedust_product_mod,             only: read_sedust_qtable, read_sedust_grid
    implicit none
    private
-   public :: load_q_table, interp_q_in_a
+   public :: load_q_table, load_q_table_h5, interp_q_in_a
    public :: n_lam, n_aeff, lam_t, aeff_t, qext, qabs, qsca, albedo, gpar, flag
 
    integer, parameter :: wp = real64
@@ -284,6 +285,95 @@ contains
       end function row_finite
 
    end subroutine load_q_table
+
+
+   subroutine load_q_table_h5(path, include_euv, ok)
+      ! The same table out of data/astrodust/sedust_astrodust.h5, where make_qtable.x
+      ! wrote it: /grid/lambda cut at i_lyman as include_euv asks, and
+      ! /qtable/astrodust for the cross sections and the regime flag.
+      !
+      ! This is the SAME calculation as the text route, not a second one -- the
+      ! file was written from that table -- so a model built either way is the
+      ! same model.  It differs in two ways worth knowing.  The values are full
+      ! double precision here and seven written digits there, so the HDF5 route
+      ! is the more exact of the two; and the wavelength cut is a hyperslab, so
+      ! a non-ionizing host reads only the rows it keeps.
+      !
+      ! The file carries no albedo dataset: it is C_sca/C_ext, derived here on
+      ! read so that one definition serves both routes.
+      character(len=*),  intent(in)  :: path
+      logical,           intent(in)  :: include_euv
+      logical,           intent(out) :: ok
+      real(wp), allocatable :: lam_in(:), a_in(:)
+      real(wp), allocatable :: qe(:,:), qa(:,:), qs(:,:), gg(:,:)
+      integer,  allocatable :: fl(:,:)
+      real(wp) :: rho
+      integer  :: ja, jw, i_lyman
+
+      ok = .false.
+      call read_sedust_grid(path, include_euv, lam_in, i_lyman, ok)
+      if (.not. ok) return
+      call read_sedust_qtable(path, 'astrodust', include_euv, a_in, qe, qa, qs, gg, &
+                              rho, ok, flag = fl)
+      if (.not. ok) then
+         deallocate(lam_in);  return
+      end if
+      if (size(qe,1) /= size(lam_in) .or. size(qe,2) /= size(a_in)) then
+         call drop_inputs();  call reset_h5_state();  ok = .false.;  return
+      end if
+
+      call reset_h5_state()
+      n_lam  = size(lam_in)
+      n_aeff = size(a_in)
+      allocate(lam_t(n_lam), aeff_t(n_aeff), log_a(n_aeff))
+      allocate(qext(n_lam,n_aeff), qabs(n_lam,n_aeff), qsca(n_lam,n_aeff), &
+               albedo(n_lam,n_aeff), gpar(n_lam,n_aeff), flag(n_lam,n_aeff))
+      lam_t  = lam_in
+      aeff_t = a_in
+      qext = qe;  qabs = qa;  qsca = qs;  gpar = gg
+      if (allocated(fl)) then
+         flag = fl
+      else
+         flag = 0
+      end if
+      do ja = 1, n_aeff
+         do jw = 1, n_lam
+            albedo(jw,ja) = 0.0_wp
+            if (qext(jw,ja) > 0.0_wp) albedo(jw,ja) = qsca(jw,ja) / qext(jw,ja)
+         end do
+         log_a(ja) = log10(aeff_t(ja))
+      end do
+      call drop_inputs()
+
+      ! The axes the text route checks, checked here too: an interpolation that
+      ! brackets in lambda or a_eff needs both strictly increasing.
+      do jw = 2, n_lam
+         if (lam_t(jw) <= lam_t(jw-1)) then;  call reset_h5_state();  ok = .false.;  return;  end if
+      end do
+      do ja = 2, n_aeff
+         if (aeff_t(ja) <= aeff_t(ja-1)) then;  call reset_h5_state();  ok = .false.;  return;  end if
+      end do
+      ok = .true.
+
+   contains
+
+      subroutine drop_inputs()
+         if (allocated(lam_in)) deallocate(lam_in)
+         if (allocated(a_in))   deallocate(a_in)
+         if (allocated(qe))     deallocate(qe)
+         if (allocated(qa))     deallocate(qa)
+         if (allocated(qs))     deallocate(qs)
+         if (allocated(gg))     deallocate(gg)
+         if (allocated(fl))     deallocate(fl)
+      end subroutine drop_inputs
+
+      subroutine reset_h5_state()
+         if (allocated(aeff_t)) deallocate(aeff_t, lam_t, qext, qabs, qsca, &
+                                           albedo, gpar, flag, log_a)
+         n_aeff = 0;  n_lam = 0
+      end subroutine reset_h5_state
+
+   end subroutine load_q_table_h5
 
 
    subroutine interp_q_in_a(jw, a_target, qe, qa, qs)
