@@ -1870,7 +1870,7 @@ contains
       ! grid, which is the grid of the model's optics tables.  The two agree
       ! for astrodust and DL07, whose tables stop at the Lyman limit
       ! (hc/0.0912 um = 13.595 eV < 13.6 eV, so the max() leaves the constant
-      ! selected); they differ by a factor 91 for Zubko/ZDA, whose DustEM
+      ! selected); they differ by a factor 91 for Zubko/ZDA, whose ZDA optics
       ! tables start at 1.0e-3 um while the field carries nothing below the
       ! Lyman limit.  The fixed 13.6 eV is right only for a field that stops
       ! at the Lyman limit; a field carried into the EUV raises the bound.

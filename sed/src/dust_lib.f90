@@ -11,36 +11,47 @@ module dust_lib
    !      call dust_emission(m, J_lam, lamI_total [, lamI_chan])  ! per cell
    !   end do
    !
-   ! EXTREME ULTRAVIOLET. The astrodust model's wavelength grid is the T-matrix
-   ! Q table's, and that table spans 1.0e-4 to 39810 um -- 12398 eV down to
-   ! 0.031 eV -- on 1762 wavelengths. THE IONIZING BAND IS INSIDE IT, computed
-   ! the same way as the rest of it, so a host that transports ionizing
-   ! radiation reads it off the table and needs nothing further. In particular
-   ! it does not have to link libtmatrix.a.
+   ! EXTREME ULTRAVIOLET. The astrodust model's wavelength grid is the grid of
+   ! the T-matrix Q table it was built from, and TWO tables ship side by side:
    !
-   ! Below 0.0912 um the table's wavelengths are the DH21 dielectric function's
-   ! own energy nodes rather than a resampling of them, so each absorption edge
-   ! it carries stays an exact step between adjacent grid points instead of
-   ! being averaged into a ramp. One added point is not a node,
+   !   q_astrodust_P0.20_Fe0.00_1.400.dat      1129 wavelengths, 0.0912-39810 um
+   !   q_astrodust_P0.20_Fe0.00_1.400_euv.dat  1762 wavelengths, 1.0e-4-39810 um
+   !
+   ! The second carries the same calculation below the Lyman limit, to 12398 eV;
+   ! the first is the second with those wavelengths dropped, so over the 1129
+   ! they share they are the same numbers cell for cell. WHICH ONE THE HOST
+   ! PASSES AS qtab DECIDES WHAT ITS MODEL COVERS. Given the _euv table, the
+   ! ionizing band is INSIDE the table, computed the same way as the rest of it,
+   ! so a host that transports ionizing radiation reads it off the table and
+   ! needs nothing further -- in particular it does not have to link
+   ! libtmatrix.a.
+   !
+   ! Below 0.0912 um the _euv table's wavelengths are the DH21 dielectric
+   ! function's own energy nodes rather than a resampling of them, so each
+   ! absorption edge it carries stays an exact step between adjacent grid points
+   ! instead of being averaged into a ramp. One added point is not a node,
    ! 0.0912*(1-1e-4): it resolves the Lyman-limit step of the radiation FIELD,
    ! not anything in the grain.
    !
-   ! build_astrodust and build_dl07 still take the optional lam_min [um]:
+   ! build_astrodust and build_dl07 take the optional lam_min [um]:
    !   call build_dl07(m, qtab, sizedist, NT, T_lo, T_hi, lam_min=6.21e-5_wp)
    ! Log-spaced points are then prepended from lam_min up to the table, no more
-   ! coarsely than the table's own dln(lambda) at its short end (0.00794 on the
-   ! current axis, taken from the table rather than written down), and m%lam is
-   ! that longer grid. OMITTING lam_min, or passing one the table already
-   ! covers, prepends nothing.
+   ! coarsely than the table's own dln(lambda) at its short end (taken from the
+   ! table rather than written down: 0.00794 on the _euv axis, 0.01156 on the
+   ! other), and m%lam is that longer grid. OMITTING lam_min, or passing one the
+   ! table already covers, prepends nothing.
    !
-   ! FOR ASTRODUST THERE IS NOTHING LEFT TO ASK FOR. The DH21 dielectric
-   ! function stops at 1.00003e-4 um, longward of the table's own first
-   ! wavelength, so every legal lam_min either falls inside the table -- no
-   ! band, no work -- or below the dielectric data, where it is refused rather
-   ! than served with a frozen refractive index. DL07 can still be extended, to
-   ! 6.205e-5 um, because the D03 optical constants reach further than the
-   ! table does; its optics are Mie on those functions at every wavelength, so
-   ! that extension needs no T-matrix either.
+   ! WHAT lam_min DOES FOR ASTRODUST DEPENDS ON WHICH TABLE IT WAS GIVEN. On the
+   ! 1129-wavelength table a lam_min below 0.0912 um builds a band, and the
+   ! optics in it come from the injected route described next. On the _euv table
+   ! there is nothing left to ask for: the DH21 dielectric function stops at
+   ! 1.00003e-4 um, longward of that table's own first wavelength, so every legal
+   ! lam_min either falls inside the table -- no band, no work -- or below the
+   ! dielectric data, where it is refused rather than served with a frozen
+   ! refractive index. DL07 can be extended below either table, to 6.205e-5 um,
+   ! because the D03 optical constants reach further than both; its optics are
+   ! Mie on those functions at every wavelength, so that extension needs no
+   ! T-matrix either.
    !
    ! WHAT THE INJECTED ROUTE IS STILL FOR. When a band IS computed (n_euv > 0),
    ! the astrodust optics there come from the DH21 dielectric function by the
@@ -57,10 +68,10 @@ module dust_lib
    ! and it is not compiled in by default. The plain libsedust.a therefore has
    ! no T-matrix in it and links without one; asking it for the spheroid
    ! (euv_tmatrix = .true., the default whenever lam_min is given) is REFUSED
-   ! with status 6 rather than answered with a sphere. With the shipped tables
-   ! no model reaches that refusal, because no model reaches the band. To get
-   ! the spheroid anyway -- for a shorter Q table, or a model whose dielectric
-   ! data outruns its table:
+   ! with status 6 rather than answered with a sphere. A model built on the
+   ! 1129-wavelength table with a lam_min below 0.0912 um reaches that refusal;
+   ! one built on the _euv table never does, because it never forms a band. To
+   ! get the spheroid:
    !
    !   cd tmatrix && make libtmatrix.a
    !   cd sed     && WITH_TMATRIX=1 make libsedust.a     # or ./build_lib.sh
@@ -103,9 +114,10 @@ module dust_lib
    ! grains in the geometric-optics limit rather than on zero, and leaving a
    ! visible step at the seam (median 1.2%, worst 16% in C_abs; <cos> jumps
    ! from 0.9 to 0 for a >~ 1 um). q_astrodust.f90 documents it size by size.
-   ! With the shipped tables the flag selects nothing, for the reason above:
-   ! there is no band to compute, and no shipped astrodust product goes through
-   ! the sphere anywhere.
+   ! On the _euv table the flag selects nothing, for the reason above -- there
+   ! is no band to compute -- and neither shipped kext product goes through the
+   ! sphere either, because calc_kext.x passes no lam_min for astrodust and
+   ! reads the whole range off whichever table it was given.
    !
    ! The carbonaceous optics have no such seam: above the DL07 PAH cutoff
    ! (21.4 eV) they are Mie on the D03 graphite dielectric functions, which
@@ -116,7 +128,7 @@ module dust_lib
    ! material at the seam. build_astrodust takes it as the optional
    ! astrodust_index_path for that reason, and reports the file whenever the
    ! extension is active; omitted, it is the P = 0.20, f_Fe = 0.00, b/a = 1.400
-   ! file that pairs with q_astrodust_P0.20_Fe0.00_1.400.dat. lam_min shorter
+   ! file both shipped Q tables were computed from. lam_min shorter
    ! than that file's own shortest wavelength (1.00003e-4 um = 12.4 keV) is
    ! refused rather than served with a frozen refractive index.
    !
@@ -166,12 +178,12 @@ module dust_lib
    ! are relative to the sed/ directory and a host is free to change directory
    ! once the model is built. Each builder takes an optional kext_path:
    !   call build_astrodust(m, qtab, sizedist, NT, T_lo, T_hi, &
-   !                        kext_path='../data/kext_astrodust_MW.dat')
+   !                        kext_path='../data/astrodust/kext_astrodust_MW.dat')
    ! A file named that way is a contract: if it cannot be read the build FAILS.
    ! Omitting it falls to the model's default table --
    !   astrodust   ../data/kext_astrodust_MW_euv.dat
    !   dl07        ../data/kext_dl07_MW_euv.dat
-   !   zubko       ../data/kext_zubko_BARE_GR_S.dat
+   !   zubko       ../data/kext_zubko_BARE_GR_S_euv.dat
    !   from_files  none
    ! -- and a default that cannot be read leaves the model with no extinction
    ! to serve (dust_extinction then reports status 2) but does NOT fail the
@@ -180,13 +192,12 @@ module dust_lib
    ! The defaults are the EUV products because their wavelength range CONTAINS
    ! the plain grid's: the two are the same size integral on the same optics,
    ! and their nodes coincide over the overlap. One default therefore covers a
-   ! host that transports ionizing radiation and one that does not. Since the Q
-   ! table itself reached 1.0e-4 um the two ASTRODUST products cover the same
-   ! 1762 wavelengths and differ only in field width and header; only DL07
-   ! still has two grids to choose between (1762 nodes from 1.0e-4 um, or 1823
-   ! from 6.205e-5 um), and it is the narrower table that has to be named
-   ! explicitly. A model grid reaching outside the table it was given is
-   ! refused (status 3), never extrapolated.
+   ! host that transports ionizing radiation and one that does not. It is the
+   ! NARROWER table that has to be named explicitly -- for astrodust 1129 nodes
+   ! from 0.0912 um against 1762 from 1.0e-4 um, for DL07 the same 1129 against
+   ! 1823 from 6.205e-5 um, and for zubko 865 from 0.0912 um against the 1201 of
+   ! its own optics tables, from 1.0e-3 um. A model grid reaching outside the
+   ! table it was given is refused (status 3), never extrapolated.
    !
    ! Every model carries its scattering optics, so all four write a physical
    ! albedo into their tables:
@@ -194,7 +205,7 @@ module dust_lib
    !   dl07       Mie on the D03 astrosilicate and graphite dielectric
    !              functions (q_silicate_full / q_graphite_full); the PAH
    !              component scatters negligibly and enters through absorption
-   !   zubko      Q_sca and <cos> columns of the model's own DustEM tables
+   !   zubko      Q_sca and <cos> columns of the model's own ZDA optics tables
    !   from_files same, for whatever tables the descriptor names
    ! A population that genuinely does not scatter leaves its optics unallocated
    ! and contributes zero to the size integral. dust_extinction's status is 0
@@ -213,7 +224,7 @@ module dust_lib
    !   astrodust  rho_Ad = 2.74, rho_PAH = 2.0 g/cm^3 (HD23)
    !   dl07       astrosilicate 3.5, graphite 2.24 g/cm^3 (Draine & Lee 1984,
    !              Weingartner & Draine 2001)
-   !   zubko      each component's density as its own DustEM optics file states it
+   !   zubko      each component's density as its own ZDA optics file states it
    !   from_files the descriptor's rho, or the optics file's when that is 0
    ! It is the same number calc_kext.x normalizes the trailing K_abs column of
    ! every data/kext_*.dat by.
@@ -278,7 +289,7 @@ module dust_lib
    ! table/interpolation layer.
    use constants,         only: wp
    use sed_mathlib,           only: locate
-   use sed_astrodust_mod, only: dust_model_t, &
+   use sed_astrodust_mod, only: dust_model_t, build_dust, &
                                 build_astrodust, build_dl07, build_zubko, build_from_files, &
                                 dust_emission, dust_emission_single_teq, &
                                 dust_extinction, size_integrated_extinction, &
@@ -288,8 +299,12 @@ module dust_lib
    implicit none
    private
 
-   ! Re-exported model API
-   public :: dust_model_t, build_astrodust, build_dl07, build_zubko, build_from_files
+   ! Re-exported model API.  build_dust is the one entry point: it takes the
+   ! model by name and a data directory, and include_euv decides whether the
+   ! grid carries the ionizing band.  The four builders below it stay exported
+   ! so that a host naming its own files keeps working unchanged.
+   public :: dust_model_t, build_dust
+   public :: build_astrodust, build_dl07, build_zubko, build_from_files
    public :: dust_emission, dust_emission_single_teq, dust_extinction
    public :: size_integrated_extinction, dust_mass_per_H
    ! Optics of the astrodust EUV band; see the EXTREME ULTRAVIOLET note above.

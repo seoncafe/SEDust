@@ -15,7 +15,7 @@ solve one cell at a time. Alongside the emission call, `dust_extinction` returns
 the model's size-integrated extinction, scattering, and asymmetry cross sections
 per H on the same wavelength grid, so a transfer code takes its opacity and its
 emission from one model object. Those cross sections come from the precomputed
-`data/kext_*.dat` table the builder loaded, which is the same product
+`data/<model>/kext_*.dat` table the builder loaded, which is the same product
 `calc_kext.x` writes; the size integral behind it is `size_integrated_extinction`.
 Every model builder and solver call takes an
 optional `status` argument, so a missing input file or an invalid model is
@@ -45,11 +45,21 @@ SEDust/
     rt_example/ minimal example of linking libsedust.a into an RT code
   mc/           Draine & Anderson (1985) Monte Carlo solver (independent check)
   tmatrix/      Mishchenko T-matrix engine + driver; writes the Q table
-  data/         dielectric functions, the HD23 public release tables,
-                the Zubko (ZDA BARE-GR-S) optical constants, and the
-                size-integrated `kext_*.dat` transport-optics curves
+  data/         one directory per dust model, plus what the models share
+    astrodust/  everything that model owns: `sedust_astrodust.h5` (the
+    dl07/       primary form -- its wavelength axis, cross-section tables
+    zubko/      and extinction curve in one file), the same as text
+                (`q_*.dat`, `kext_*.dat`), and, where the model IS a set of
+                files, its definition (the ZDA config, optics, calorimetry)
+    dielectric/ shared material data: the D03 / DH21 / D16 optical
+                constants and the PAH cross sections.  A dielectric function
+                is not one model's -- DL07 and Zubko read the same D03
+                astrosilicate -- so it does not live inside a model directory
+    release/    published reference tables (HD23, Draine) and the HD23 size
+                distribution
   docs/         technical reports and the library user manual
-  pyutil/       small Python helpers (radiation fields, SED from Cabs)
+  pyutil/       small Python helpers (radiation fields, SED from Cabs, and
+                sedust_h5 -- the reader for data/<model>/sedust_<model>.h5)
 ```
 
 Everything the code reads at run time ships with the package. There are no
@@ -71,8 +81,10 @@ make                        # make_enthalpy.x main_astrodust.x main_dl07.x
                             # main_zubko.x calc_kext.x
 ./main_astrodust.x          # astrodust+PAH SED at log U = 0.20 -> output/
 ./main_dl07.x               # Draine & Li (2007) SED at U = 1   -> output/
+./main_astrodust.x euv      # ... either driver on the _euv Q table's 1762 grid
 ./main_zubko.x              # Zubko/ZDA SED at U = 1            -> output/
-./main_zubko.x euv          # ... with the field carried into the EUV
+./main_zubko.x euv          # ... on the whole ZDA range, not cut at the Lyman limit
+./main_zubko.x euv hardfield  # ... and with a hard component added to the FIELD
 
 # the library, for embedding in an RT code.  No T-matrix in it: link with
 #   -I. -L. -lsedust
@@ -83,17 +95,28 @@ make libsedust.a
 WITH_TMATRIX=1 make libsedust.a
 
 # size-integrated transport optics: lambda, albedo, <cos>, C_ext/C_abs/C_sca per H
-./calc_kext.x astrodust     # -> ../data/kext_astrodust_MW.dat
+./calc_kext.x astrodust     # -> ../data/astrodust/kext_astrodust_MW.dat
 ./calc_kext.x astrodust euv # the same model carried into the ionizing band
-./calc_kext.x dl07 euv      # -> ../data/kext_dl07_MW_euv.dat
-./calc_kext.x zubko         # -> ../data/kext_zubko_BARE_GR_S.dat
+./calc_kext.x dl07 euv      # -> ../data/dl07/kext_dl07_MW_euv.dat
+./calc_kext.x zubko         # -> ../data/zubko/kext_zubko_BARE_GR_S.dat (cut at the Lyman limit)
+./calc_kext.x zubko euv     # -> ../data/zubko/kext_zubko_BARE_GR_S_euv.dat (the whole ZDA range)
 ./calc_kext.x from_files ../data/zubko/zubko_descriptor.txt
+
+# the optics products.  ORDER MATTERS: make_qtable.x lays down the wavelength
+# axis and replaces data/<model>/sedust_<model>.h5, so it runs first and calc_kext.x
+# puts /kext back.  Both also write the text products beside them.
+./make_qtable.x             # all three models -> ../data/<model>/q_*.dat
+                            #                 -> ../data/<model>/sedust_<model>.h5
+./calc_kext.x astrodust euv # ... then /kext into each of the three files
+./check_build_dust.x        # build_dust on HDF5 vs the builders on text
 
 # the Monte Carlo cross-check
 cd ../mc && make && ./main_mc_sed.x run_sed.nml
 
-# regenerating the T-matrix Q table (optional; the table ships with SEDust)
-cd ../tmatrix && make && ./run_tmatrix.x test   # then ./run_tmatrix.x for the full sweep
+# regenerating the T-matrix Q tables (optional; both tables ship with SEDust)
+cd ../tmatrix && make && ./run_tmatrix.x test   # smoke test -> output/..._euv.test.dat
+./run_tmatrix.x                                 # full sweep -> output/..._euv.dat
+make lyman_cut                                  # -> the 1129-wavelength companion
 ```
 
 Outputs are plain ASCII `.dat` files written to each subdirectory's `output/`;
@@ -105,34 +128,80 @@ Two scalar T-matrix Q tables ship side by side.  The default
 `q_astrodust_P0.20_Fe0.00_1.400.dat` is the historical non-ionizing grid
 (1129 wavelengths, 0.0912--39810 um).  Explicit EUV commands use
 `q_astrodust_P0.20_Fe0.00_1.400_euv.dat` (1762 wavelengths,
-1.0e-4--39810 um).  The latter prepends DH21 dielectric-function nodes below
-the Lyman limit; its 1129 long-wavelength blocks are unchanged.  Select the
-EUV product deliberately through `calc_kext.x ... euv`; ordinary SED and MC
-runs retain the historical grid.
+1.0e-4--39810 um).  The latter is the whole sweep `run_tmatrix.x` writes; the
+former is that file with every wavelength shortward of the Lyman limit dropped
+(`make lyman_cut`), row selection only, so the two agree cell for cell over the
+1129 they share.  Select the EUV product deliberately through
+`calc_kext.x ... euv`; ordinary SED and MC runs retain the historical grid.
 
-Below 0.0912 um the table's wavelengths are the DH21 dielectric function's own
-energy nodes rather than a resampling of them. That band holds 21 absorption
-edges, each tabulated as a step across ~1e-4 in relative energy (k jumps +211%
-at Fe K, +131% at O K); a uniform 200-per-decade axis would average each into a
-ramp. Reusing the nodes keeps every edge an exact step between adjacent
-wavelengths. One point is not a dielectric node: 0.0912*(1-1e-4), placed to
-resolve the Lyman-limit step of the *radiation field* (see below).
+Below 0.0912 um the `_euv` table's wavelengths are the DH21 dielectric
+function's own energy nodes rather than a resampling of them, so every
+absorption edge stays an exact step between adjacent wavelengths instead of
+being averaged into a ramp by a uniform 200-per-decade axis. Counting the edges
+takes a threshold and the answer moves with it: 23 places where k jumps by more
+than 0.5% across a pair of nodes closer than 5e-4 in relative energy, 14 of them
+closer than 1e-4. The largest jumps are +211% at Fe K (7124 eV), +131% at O K
+(538), +67% at Fe L (724) and +30% at C K (291). One point of that band is not a
+dielectric node: 0.0912*(1-1e-4), placed to resolve the Lyman-limit step of the
+*radiation field* (see below).
 
-`build_astrodust` and `build_dl07` still take an optional `lam_min` [um] for a
-host needing something shorter still. It prepends log-spaced points below the
-table, and is refused when it asks for a wavelength the model's own dielectric
-data does not cover. For astrodust that leaves nothing to ask for — the table
-already reaches the dielectric function's short-wavelength end — so `lam_min`
-prepends nothing and the EUV band code does not run. DL07 can still be extended,
-to 6.205e-5 um, because the D03 optical constants reach further than the table.
+`build_astrodust` and `build_dl07` take an optional `lam_min` [um] for a host
+needing to reach below the table it was given. It prepends log-spaced points
+below the table, and is refused when it asks for a wavelength the model's own
+dielectric data does not cover. What that does for astrodust depends on the
+table:
+
+- on the default 1129-wavelength table, a `lam_min` below 0.0912 um **does**
+  build a band. Its optics come from the T-matrix on the same spheroid when
+  `libtmatrix.a` is linked in (`WITH_TMATRIX=1 make libsedust.a`), and are
+  refused with status 6 when it is not — never silently replaced by a sphere
+  unless `euv_tmatrix = .false.` asks for one;
+- on the `_euv` table there is nothing left to ask for: the DH21 dielectric
+  function stops at 1.000032e-4 um, longward of that table's first wavelength,
+  so every legal `lam_min` falls inside the table and prepends nothing.
+
+DL07 can be extended below either table, to 6.205e-5 um, because the D03 optical
+constants reach further than both; its band is Mie on those functions and needs
+no T-matrix.
 
 | product | rows | lambda [um] | what sets the floor |
 |---|---:|---|---|
-| `data/kext_astrodust_MW.dat` | 1129 | 0.0912 - 39810 | non-EUV Q-table grid |
-| `data/kext_astrodust_MW_euv.dat` | 1762 | 1e-4 - 39810 | EUV Q-table grid |
-| `data/kext_dl07_MW.dat` | 1129 | 0.0912 - 39810 | non-EUV Q-table grid |
-| `data/kext_dl07_MW_euv.dat` | 1823 | 6.205e-5 - 39810 | the D03 dielectric functions |
-| `data/kext_zubko_BARE_GR_S.dat` | 1201 | 1e-3 - 1e4 | the ZDA optics table itself |
+| `data/astrodust/kext_astrodust_MW.dat` | 1129 | 0.0912 - 39810 | non-EUV Q-table grid |
+| `data/astrodust/kext_astrodust_MW_euv.dat` | 1762 | 1e-4 - 39810 | EUV Q-table grid |
+| `data/dl07/kext_dl07_MW.dat` | 1129 | 0.0912 - 39810 | non-EUV Q-table grid |
+| `data/dl07/kext_dl07_MW_euv.dat` | 1823 | 6.205e-5 - 39810 | the D03 dielectric functions |
+| `data/zubko/kext_zubko_BARE_GR_S.dat` | 865 | 0.0912 - 1e4 | the ZDA optics table, cut at the Lyman limit |
+| `data/zubko/kext_zubko_BARE_GR_S_euv.dat` | 1201 | 1e-3 - 1e4 | the ZDA optics table itself |
+
+### Stored Q tables
+
+Every model now ships both wavelength sets of its `(lambda, a_eff)` cross
+sections, not just astrodust:
+
+| model | non-EUV | EUV | a_eff grid |
+|---|---|---|---|
+| astrodust | `data/astrodust/q_astrodust_P0.20_Fe0.00_1.400.dat` (1129) | `..._euv.dat` (1762) | 169, from `data/astrodust/DH21_aeff` |
+| DL07 | `data/dl07/q_dl07_{sil,gra,pah_neu,pah_ion}.dat` (1129) | `..._euv.dat` (1823) | 84, Draine's analytic grid, 3.548e-4 - 5.012 um |
+| Zubko | `data/zubko/q_zubko_{sil,gra,pah}.dat` (865) | `..._euv.dat` (1201) | 121 (sil, gra) / 28 (PAH), the ZDA tables' own |
+
+`sed/make_qtable.x` writes all of these, and the HDF5 product of each model
+with them; the astrodust scalar pair is the exception, computed by
+`tmatrix/run_tmatrix.x` plus `make lyman_cut` and installed into
+`data/astrodust/`. Every non-EUV file is the row subset of its EUV counterpart
+that starts at the Lyman limit — verified, not asserted. In the HDF5 product the
+pair is one array and its `i_lyman`, so there is no second file to keep in
+step (§ *The HDF5 optics products* in the manual).
+
+**These are our own tables.** For DL07 they are what the model already computes
+at build time, written down rather than recomputed. For Zubko they are a genuine
+recomputation: the model itself still reads the ZDA optics tables under
+`data/zubko/`, while these are what this tree's Mie gives on the dielectric
+functions those tables name (`data/dielectric/eps_Sil`, `eps_Gra`, added with
+their provenance in `where_draine_eps.txt`). Over the wavelengths the dielectric
+files cover, our silicate table agrees with the shipped one to a mean 3.5% in
+Q_abs and 4.7% in Q_sca, with `<cos>` to 0.05; longward of 1e3 um the
+dielectric functions run out and the two extension laws differ, which the file
+headers state. Nothing reads these tables at run time — they are stored products.
 
 No floor is a free choice: each is the shortest wavelength the data the model is
 made of actually covers, and a shorter request is refused rather than served
@@ -166,7 +235,7 @@ single photon a grain can absorb, `max(13.6 eV, hc/lambda_hard)`, where
 exceeds 1e-12 of its own peak (`hardest_photon_energy` in
 `sed/src/radfield.f90`). **That ceiling is a property of the radiation field,
 not of the wavelength grid**, and every shipped model now depends on the
-distinction. The Q table reaches 1e-4 um (12.4 keV) and the Zubko/ZDA DustEM
+distinction. The Q table reaches 1e-4 um (12.4 keV) and the Zubko/ZDA optics
 tables 1e-3 um (1.24 keV), while a Mathis field carries nothing below 0.0912 um:
 reading the grid instead of the field would raise the single-photon bound by
 factors of 912 and 91 respectively, with no photon to justify either. That
@@ -266,4 +335,4 @@ Kwang-il Seon (KASI/UST)
 
 ---
 
-Last updated: 2026-08-04 10:36 KST
+Last updated: 2026-08-07 09:27 KST

@@ -1,7 +1,7 @@
 module kext_table_mod
    ! Reader for the size-integrated extinction curves that calc_kext.x writes
    ! under data/ (kext_astrodust_MW_euv.dat, kext_dl07_MW_euv.dat,
-   ! kext_zubko_BARE_GR_S.dat, ...).  Such a file is a '#'-commented header
+   ! kext_zubko_BARE_GR_S*.dat, ...).  Such a file is a '#'-commented header
    ! followed by one row per wavelength, in ascending wavelength:
    !
    !   lambda[um]  albedo  <cos>  C_ext/H  C_abs/H  C_sca/H  [K_abs]

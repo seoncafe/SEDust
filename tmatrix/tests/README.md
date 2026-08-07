@@ -58,7 +58,7 @@ numerical/output-format change.
 
 It was last regenerated when the astrodust wavelength axis was carried from
 0.0912 um (13.6 eV) down to 1.0e-4 um (12398 eV), taking the table from 1129 to
-1762 wavelengths (`data/dielectric/DH21_wave_to_12keV`). The subset takes seven
+1762 wavelengths (`data/astrodust/DH21_wave_to_12keV`). The subset takes seven
 samples along each axis, so a longer axis picks different wavelengths — the
 stride moved from 188 to 293 and none of the sampled wavelengths survived. That
 is a change of which points are sampled, not of what the code computes at them:

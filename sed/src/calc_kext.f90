@@ -29,7 +29,8 @@ program calc_kext
    use constants,         only: wp
    use sed_astrodust_mod, only: build_astrodust, build_dl07, build_zubko, &
                                 build_from_files, size_integrated_extinction, &
-                                dust_mass_per_H, dust_model_t
+                                dust_mass_per_H, dust_model_t, &
+                                dl07_euv_lambda_floor, astrodust_euv_lambda_floor
    use q_astrodust_mod,   only: astrodust_index_lambda_range, get_astrodust_index_path
    use q_silicate_mod,    only: silicate_index_lambda_range
    use q_graphite_mod,    only: graphite_index_lambda_range
@@ -41,14 +42,15 @@ program calc_kext
    ! table shipped with this release already reaches into the ionizing band,
    ! so with it nothing is left for this route to solve.
    use euv_astrodust_tmatrix, only: use_tmatrix_euv_band_optics
+   use sedust_h5
    implicit none
 
    ! ---- model inputs shared with the SED drivers -------------------------
    ! Keep the two scalar Q products separate.  The plain product is the
    ! historical, non-ionizing grid; the _euv product prepends the DH21 nodes
    ! below the Lyman limit.  Select the latter only for an explicit EUV run.
-   character(len=*), parameter :: F_QT  = '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat'
-   character(len=*), parameter :: F_QT_EUV = '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400_euv.dat'
+   character(len=*), parameter :: F_QT  = '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400.dat'
+   character(len=*), parameter :: F_QT_EUV = '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400_euv.dat'
    character(len=*), parameter :: F_SD  = '../data/release/size_distribution.dat'
    character(len=*), parameter :: F_EXT = '../data/release/extinction.dat'
    character(len=*), parameter :: F_SCA = '../data/release/scattering.dat'
@@ -65,10 +67,9 @@ program calc_kext
    ! touches; the builders need it all the same.
    integer,  parameter :: NT_IN = 100
    real(wp), parameter :: T_LO = 1.0_wp, T_HI = 3000.0_wp
-   ! A model refuses a grid floor below its dielectric function's own shortest
-   ! wavelength.  Asking for exactly that value puts the request on the rounding
-   ! boundary of the refusal test, so stand this factor above it.
-   real(wp), parameter :: LAM_LO_MARGIN = 1.001_wp
+   ! The Lyman limit, 13.6 eV.  It is where the non-ionizing products stop,
+   ! because an interstellar radiation field is exactly zero below it.
+   real(wp), parameter :: LAM_LYMAN = 0.0912_wp
 
    integer, parameter :: MAXNOTE = 120
    character(len=200) :: note(MAXNOTE)
@@ -77,10 +78,10 @@ program calc_kext
    type(dust_model_t)    :: m
    real(wp), allocatable :: Cext(:), Cabs(:), Csca(:), alb(:), gbar(:)
    real(wp) :: lam_min, lam_lo, lam_hi, lam_lo2, Mdust_H
-   integer  :: narg, ios, nlam_out
+   integer  :: narg, ios, nlam_out, iarg
    logical  :: euv, zubko_formula
    character(len=32)  :: model
-   character(len=256) :: opt, fout, desc, ddir
+   character(len=256) :: opt, fout, desc, ddir, arg
 
    call use_tmatrix_euv_band_optics()
 
@@ -115,15 +116,15 @@ program calc_kext
          ! already cover would have to be computed from that function, and past
          ! its tabulation (n, k) would freeze at the boundary value.
          call astrodust_index_lambda_range(lam_lo, lam_hi)
-         if (lam_min <= 0.0_wp) lam_min = LAM_LO_MARGIN * lam_lo
+         if (lam_min <= 0.0_wp) lam_min = astrodust_euv_lambda_floor()
          write(*,'(a,es12.5,a,es12.5,a)') ' DH21 astrodust dielectric function covers ', &
             lam_lo, ' - ', lam_hi, ' um'
          write(*,'(a,es12.5,a)') ' requested lam_min = ', lam_min, ' um'
          call build_astrodust(m, F_QT_EUV, F_SD, NT_IN, T_LO, T_HI, lam_min=lam_min)
-         fout = '../data/kext_astrodust_MW_euv.dat'
+         fout = '../data/astrodust/kext_astrodust_MW_euv.dat'
       else
          call build_astrodust(m, F_QT, F_SD, NT_IN, T_LO, T_HI)
-         fout = '../data/kext_astrodust_MW.dat'
+         fout = '../data/astrodust/kext_astrodust_MW.dat'
       end if
 
    ! ===================================================================
@@ -144,33 +145,48 @@ program calc_kext
          write(*,'(a,es12.5,a)') ' D03 silicate dielectric function starts at ', lam_lo,  ' um'
          write(*,'(a,es12.5,a)') ' D03 graphite dielectric function starts at ', lam_lo2, ' um'
          lam_lo = max(lam_lo, lam_lo2)
-         if (lam_min <= 0.0_wp) lam_min = LAM_LO_MARGIN * lam_lo
+         if (lam_min <= 0.0_wp) lam_min = dl07_euv_lambda_floor()
          write(*,'(a,es12.5,a)') ' requested lam_min = ', lam_min, ' um'
          call build_dl07(m, F_QT_EUV, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI, &
                          lam_min=lam_min)
-         fout = '../data/kext_dl07_MW_euv.dat'
+         fout = '../data/dl07/kext_dl07_MW_euv.dat'
       else
          call build_dl07(m, F_QT, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI)
-         fout = '../data/kext_dl07_MW.dat'
+         fout = '../data/dl07/kext_dl07_MW.dat'
       end if
 
    ! ===================================================================
    case ('zubko')
       ! Two routes to the same ZDA BARE-GR-S model, differing only in where the
       ! size distribution comes from; the optics tables are the same files.
-      if (len_trim(opt) > 0) then
-         select case (trim(opt))
+      ! Orthogonal to that, `euv` keeps the whole ZDA range and its absence cuts
+      ! the grid at the Lyman limit, exactly as for the other two models -- with
+      ! the difference that here the wide product is the tables' own range and
+      ! the narrow one is that range cut, rather than the other way round.
+      do iarg = 2, narg
+         call get_command_argument(iarg, arg)
+         select case (trim(arg))
          case ('formula');  zubko_formula = .true.
          case ('table');    zubko_formula = .false.
+         case ('euv');      euv = .true.
          case default;      call print_usage();  stop 1
          end select
-      end if
-      if (zubko_formula) then
-         call build_zubko(m, F_ZDA_CFG, D_ZUBKO, NT_IN, T_LO, T_HI)
+      end do
+      if (euv) then
+         if (zubko_formula) then
+            call build_zubko(m, F_ZDA_CFG, D_ZUBKO, NT_IN, T_LO, T_HI)
+         else
+            call build_from_files(m, F_ZDA_DESC, D_ZUBKO, NT_IN, T_LO, T_HI)
+         end if
+         fout = '../data/zubko/kext_zubko_BARE_GR_S_euv.dat'
       else
-         call build_from_files(m, F_ZDA_DESC, D_ZUBKO, NT_IN, T_LO, T_HI)
+         if (zubko_formula) then
+            call build_zubko(m, F_ZDA_CFG, D_ZUBKO, NT_IN, T_LO, T_HI, lam_min=LAM_LYMAN)
+         else
+            call build_from_files(m, F_ZDA_DESC, D_ZUBKO, NT_IN, T_LO, T_HI, lam_min=LAM_LYMAN)
+         end if
+         fout = '../data/zubko/kext_zubko_BARE_GR_S.dat'
       end if
-      fout = '../data/kext_zubko_BARE_GR_S.dat'
 
    ! ===================================================================
    case ('from_files')
@@ -182,7 +198,7 @@ program calc_kext
          ddir = dirname_of(desc)
       end if
       call build_from_files(m, trim(desc), trim(ddir), NT_IN, T_LO, T_HI)
-      fout = '../data/kext_' // trim(m%name) // '.dat'
+      fout = '../data/' // trim(m%name) // '/kext_' // trim(m%name) // '.dat'
 
    case default
       call print_usage();  stop 1
@@ -231,6 +247,13 @@ program calc_kext
    end if
    write(*,'(a,a)') ' wrote ', trim(fout)
 
+   ! ---- the same curve into the model's HDF5 file ------------------------
+   ! Only the WIDE run of a coded model writes: data/sedust_<model>.h5 holds
+   ! one wavelength axis, and a reader asked for the non-ionizing part slices
+   ! it at /grid/i_lyman.  The narrow text product is that slice, so writing it
+   ! here as well would be a second copy of the same numbers on a shorter axis.
+   if (euv) call write_kext_h5(trim(model))
+
    ! ---- checks -----------------------------------------------------------
    call check_internal_consistency()
    select case (trim(model))
@@ -245,13 +268,15 @@ contains
       write(*,'(a)') ' usage:'
       write(*,'(a)') '   ./calc_kext.x astrodust [euv | <lam_min in um>]'
       write(*,'(a)') '   ./calc_kext.x dl07      [euv | <lam_min in um>]'
-      write(*,'(a)') '   ./calc_kext.x zubko     [formula | table]'
+      write(*,'(a)') '   ./calc_kext.x zubko     [formula | table] [euv]'
       write(*,'(a)') '   ./calc_kext.x from_files <descriptor> [data_dir]'
       write(*,'(a)') ''
       write(*,'(a)') ' Writes lambda / albedo / <cos> / C_ext per H (+ C_abs, C_sca, and'
       write(*,'(a)') ' K_abs = C_abs/H normalized by the model dust mass per H) under'
-      write(*,'(a)') ' ../data/.  `euv` asks for the ionizing band, down to'
-      write(*,'(a)') ' whatever the model dielectric function itself covers.'
+      write(*,'(a)') ' ../data/.  `euv` asks for the ionizing band: for astrodust and'
+      write(*,'(a)') ' dl07 it extends the grid down to whatever the model dielectric'
+      write(*,'(a)') ' function itself covers; for zubko, whose own tables already reach'
+      write(*,'(a)') ' 1.24 keV, it keeps the band that the default cuts at the Lyman limit.'
    end subroutine print_usage
 
 
@@ -347,6 +372,113 @@ contains
       end if
       close(u)
    end subroutine write_kext_curve
+
+
+   ! ===================================================================
+   subroutine write_kext_h5(model)
+      ! Append the size-integrated curve to ../data/sedust_<model>.h5, beside
+      ! the (lambda, a_eff) tables make_qtable.x wrote into the same file.
+      !
+      ! The file holds ONE wavelength axis and every wavelength-indexed array
+      ! is filed against it, so this refuses to write unless the grid the size
+      ! integral just ran on IS that axis.  A curve stored under a wavelength
+      ! it was not computed at is precisely the stale label this format carries
+      ! provenance attributes to prevent, and the two grids are built by two
+      ! programs, so the check is worth its cost.
+      character(len=*), intent(in) :: model
+      character(len=256) :: path, sdfile
+      integer(h5id_k)    :: fid, gid
+      logical  :: ok
+      real(wp), allocatable :: gl(:), kabs(:)
+      real(wp) :: dmax
+      integer  :: jw
+
+      if (.not. sedust_has_hdf5) then
+         write(*,'(a)') ' calc_kext: built without HDF5, wrote the text product only'
+         return
+      end if
+      select case (model)
+      case ('astrodust', 'dl07')
+         sdfile = F_SD
+      case ('zubko')
+         ! Two routes to the same model: the ZDA size-distribution formula from
+         ! the config, or the tabulated dn/da the descriptor names.
+         if (zubko_formula) then
+            sdfile = F_ZDA_CFG
+         else
+            sdfile = desc
+         end if
+      case default
+         return                      ! from_files: no shipped file to extend
+      end select
+
+      path = '../data/'//model//'/sedust_'//model//'.h5'
+      call h5_begin(ok);  if (.not. ok) return
+      call h5_open_rw(trim(path), fid, ok)
+      if (.not. ok) then
+         write(*,'(a,a)') ' calc_kext: no HDF5 file to extend at ', trim(path)
+         write(*,'(a,a)') '            write it first with  ./make_qtable.x ', model
+         call h5_end();  return
+      end if
+
+      call h5_read_1d(fid, 'grid/lambda', gl, ok)
+      if (.not. ok) then
+         write(*,'(a,a)') ' calc_kext: no /grid/lambda in ', trim(path)
+         call h5_close_file(fid);  call h5_end();  return
+      end if
+      if (size(gl) /= nlam_out) then
+         write(*,'(a,i0,a,i0,a)') ' calc_kext: /grid/lambda has ', size(gl), &
+            ' points and this curve has ', nlam_out, ' -- not written'
+         deallocate(gl);  call h5_close_file(fid);  call h5_end();  return
+      end if
+      dmax = 0.0_wp
+      do jw = 1, nlam_out
+         dmax = max(dmax, abs(m%lam(jw)/gl(jw) - 1.0_wp))
+      end do
+      deallocate(gl)
+      ! Both grids come from the same construction in the same library, so they
+      ! agree to the last bit or they are not the same grid at all.
+      if (dmax > 1.0e-12_wp) then
+         write(*,'(a,es9.2,a)') ' calc_kext: this curve''s grid differs from ' // &
+            '/grid/lambda by ', dmax, ' -- not written'
+         call h5_close_file(fid);  call h5_end();  return
+      end if
+
+      if (h5_has(fid, 'kext')) call h5_unlink(fid, 'kext')
+      call h5_group(fid, 'kext', gid, ok)
+      if (.not. ok) then
+         write(*,'(a,a)') ' calc_kext: cannot create /kext in ', trim(path)
+         call h5_close_file(fid);  call h5_end();  return
+      end if
+      call h5_write_1d(gid, 'albedo', alb,  units='1', &
+                       long_name='scattering albedo C_sca/C_ext')
+      call h5_write_1d(gid, 'g',      gbar, units='1', &
+                       long_name='scattering asymmetry <cos>')
+      call h5_write_1d(gid, 'C_ext',  Cext, units='cm^2/H', &
+                       long_name='extinction cross section per H nucleon')
+      call h5_write_1d(gid, 'C_abs',  Cabs, units='cm^2/H', &
+                       long_name='absorption cross section per H nucleon')
+      call h5_write_1d(gid, 'C_sca',  Csca, units='cm^2/H', &
+                       long_name='scattering cross section per H nucleon')
+      if (Mdust_H > 0.0_wp) then
+         allocate(kabs(nlam_out))
+         kabs = Cabs / Mdust_H
+         call h5_write_1d(gid, 'K_abs', kabs, units='cm^2/g', &
+                          long_name='absorption mass opacity, C_abs/H / (M_dust/N_H)')
+         deallocate(kabs)
+         call h5_put_attr_d(gid, 'M_dust_per_H', Mdust_H)
+      end if
+      call h5_put_attr_s(gid, 'size_dist_file', trim(sdfile))
+      call h5_put_attr_s(gid, 'text_product', trim(fout))
+      call h5_put_attr_s(gid, 'generator', 'SEDust sed/calc_kext.x')
+      call h5_put_attr_s(gid, 'method', &
+           'size integral over the built model''s populations, ' // &
+           'the same call dust_extinction serves from')
+      call h5_group_close(gid)
+      call h5_close_file(fid)
+      call h5_end()
+      write(*,'(a,a)') ' wrote /kext into ', trim(path)
+   end subroutine write_kext_h5
 
 
    subroutine header_common_format_and_scope(density_source)
@@ -531,18 +663,30 @@ contains
 
 
    subroutine header_zubko()
-      call add_note('# model = zubko_BARE_GR_S')
+      if (euv) then
+         call add_note('# model = zubko_BARE_GR_S_euv')
+      else
+         call add_note('# model = zubko_BARE_GR_S')
+      end if
       call add_note('# Size-integrated extinction, albedo and scattering asymmetry per H')
       call add_note('# for the Zubko, Dwek & Arendt (2004) BARE-GR-S dust model.')
       call add_note('#')
       call add_note('# Model definition: ZDA 2004, ApJS 152, 211, bare grains, PAH +')
       call add_note('#   graphite + silicate; the files are the copies distributed with the')
       call add_note('#   Camps et al. (2015) radiative-transfer benchmark.')
-      call add_note('# Optics (all three components): the DustEM/Zubko Q tables')
+      call add_note('# Optics (all three components): the ZDA optics tables')
       call add_note('#   ' // D_ZUBKO // 'PAH_28_1201_neu.dat, Gra_121_1201.dat, suvSil_121_1201.dat')
-      call add_note('#   These are the authors'' own multilayer-sphere solution, so Q_sca and')
-      call add_note('#   <cos> are read from the same file as Q_abs rather than recomputed')
-      call add_note('#   from a dielectric function this model does not supply.')
+      call add_note('#   A HOMOGENEOUS-SPHERE Mie calculation: ZDA 2004 sec. 3 says so for')
+      call add_note('#   the bare grains (that paper''s effective-medium step belongs to its')
+      call add_note('#   COMPOSITE models), and each file names the dielectric function it')
+      call add_note('#   came from -- Draine''s eps_Sil and eps_Gra.  The PAH file is not Mie:')
+      call add_note('#   it names the Li & Draine (2001) / Draine & Li (2007) cross sections.')
+      call add_note('#   Checked against Bohren-Huffman Mie on the published eps_Sil: at')
+      call add_note('#   fixed wavelength the Q ratio is radius-independent to 4 digits over')
+      call add_note('#   3.55e-4 - 100 um and <cos> agrees to ~1e-4, leaving a 0.5-2% infrared')
+      call add_note('#   residual that lies in the refractive index (the published file is on')
+      call add_note('#   a different wavelength grid).  So Q_sca and <cos> are read from the')
+      call add_note('#   same file as Q_abs rather than recomputed.')
       if (zubko_formula) then
          call add_note('# Size distribution: the ZDA log-polynomial FORMULA evaluated on the')
          call add_note('#   optics-table radii, with the coefficients read from')
@@ -552,14 +696,25 @@ contains
          call add_note('#   optics-table radii, as listed by')
          call add_note('#   ' // F_ZDA_DESC)
       end if
-      call header_wavelength_range('The range is the ZDA optics table itself, ' // &
-           '1.24 keV down to 1.24e-4 eV.')
-      call add_note('#   This model has no EUV extension and needs none: its tabulated')
-      call add_note('#   optics already cover the whole ionizing band, and those tables ARE')
-      call add_note('#   the model definition, so there is no dielectric function to extend')
-      call add_note('#   them with.')
+      if (euv) then
+         call header_wavelength_range('The range is the ZDA optics table itself, ' // &
+              '1.24 keV down to 1.24e-4 eV.')
+         call add_note('#   This model needs no EUV EXTENSION and could not have one: its')
+         call add_note('#   tabulated optics already cover the whole ionizing band, and those')
+         call add_note('#   tables ARE the model definition, so there is no dielectric')
+         call add_note('#   function to extend them with.')
+      else
+         call header_wavelength_range('The ZDA optics table cut at the Lyman limit, ' // &
+              '13.6 eV down to 1.24e-4 eV.')
+         call add_note('#   The tables reach 1.24 keV; the wavelengths shortward of')
+         call add_note('#   0.0912 um are dropped, table row by table row, because an')
+         call add_note('#   interstellar radiation field carries no photon there.  Nothing is')
+         call add_note('#   recomputed: every row here is the row kext_zubko_BARE_GR_S_euv.dat')
+         call add_note('#   carries.  Use that file for a host that transports ionizing')
+         call add_note('#   radiation.')
+      end if
       call header_common_format_and_scope('Densities: the Density entry in the ' // &
-           'header of each component''s own DustEM optics table.')
+           'header of each component''s own ZDA optics table.')
       call add_note('#')
    end subroutine header_zubko
 
@@ -571,7 +726,7 @@ contains
       call add_note('#')
       call add_note('# Descriptor: ' // trim(desc))
       call add_note('# Data directory: ' // trim(ddir))
-      call add_note('# The descriptor names, for each population, its DustEM Q table')
+      call add_note('# The descriptor names, for each population, its ZDA optics table')
       call add_note('# (optics), its dn/da table (size distribution) and its calorimetry')
       call add_note('# table; it is reproduced verbatim below.')
       call add_note('#')

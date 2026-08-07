@@ -152,7 +152,28 @@ run_tmatrix.x: libtmatrix.a $(DRIVER_OBJ)
 	$(FC) $(DRIVER_OBJ) -L. -ltmatrix $(LDFLAGS) -o $@
 	@echo 'Built: ./run_tmatrix.x'
 	@echo 'Smoke test:  TMATRIX_OUTPUT_FILE=/tmp/table.dat ./run_tmatrix.x test'
-	@echo 'Full sweep:  ./run_tmatrix.x'
+	@echo 'Full sweep:  ./run_tmatrix.x   then   make lyman_cut'
+
+# The two scalar Q tables that ship in output/ are one calculation.  The sweep
+# above covers the whole DH21_wave_to_12keV axis and writes the EUV product;
+# this target writes the other one, by dropping every wavelength shortward of
+# the Lyman limit from it.  Row selection only -- no value is recomputed -- so
+# the two agree cell for cell wherever both carry a row, and the wavelength
+# count in the header is recounted rather than assumed.
+Q_EUV   = output/q_astrodust_P0.20_Fe0.00_1.400_euv.dat
+Q_LYMAN = output/q_astrodust_P0.20_Fe0.00_1.400.dat
+lyman_cut: $(Q_EUV)
+	@n=`awk '$$0 !~ /^#/ && NF >= 8 && $$1+0 >= 0.0912 { print $$1 }' $(Q_EUV) \
+	     | sort -u -g | wc -l`; \
+	awk -v n=$$n 'NR==1 { print; next } \
+	     /^#/ { if ($$0 ~ /lambda stride/) sub(/of [0-9]+/, "of " n); \
+	            if ($$0 ~ /^#   lambda\[um\]/) { \
+	              print "# Wavelengths shortward of 0.0912 um (the Lyman limit) dropped from"; \
+	              print "#   q_astrodust_P0.20_Fe0.00_1.400_euv.dat.  Row selection only: no value is"; \
+	              print "#   recomputed, so every row here is the row that file carries." } \
+	            print; next } \
+	     (NF >= 8 && $$1+0 >= 0.0912) { print }' $(Q_EUV) > $(Q_LYMAN); \
+	echo "Wrote $(Q_LYMAN)  ($$n wavelengths, 0.0912 um and longward)"
 
 evaluate_one.x: libtmatrix.a examples/evaluate_one.f90
 	$(FC) $(MODERN_FFLAGS) -I. examples/evaluate_one.f90 -L. -ltmatrix $(LDFLAGS) -o $@
@@ -249,7 +270,7 @@ clean:
 cleanall: clean
 	rm -f run_tmatrix.x evaluate_one.x test_api_regression.x test_api_status.x test_full_direct_regression.x test_parallel_api.x test_parallel_full_direct.x test_parallel_scattering_matrix.x test_parallel_spheroid_optics.x
 
-.PHONY: all clean cleanall example test smoke test-debug test-default-backend test-production-package test-full-direct-parallel test-api-parallel test-scattering-matrix-parallel test-spheroid-optics-parallel
+.PHONY: all clean cleanall example test smoke lyman_cut test-debug test-default-backend test-production-package test-full-direct-parallel test-api-parallel test-scattering-matrix-parallel test-spheroid-optics-parallel
 
 # Module files are emitted into this directory.  Serialize until the project
 # has a dedicated object/module build tree.

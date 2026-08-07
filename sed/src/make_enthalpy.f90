@@ -18,7 +18,7 @@ program make_enthalpy
    !
    ! Grids:
    !   T  - 201 log-spaced points from 2.7 K (CMB floor) to 5000 K
-   !   a  - 169 points read from data/dielectric/DH21_aeff (matches Q grid)
+   !   a  - 169 points read from data/astrodust/DH21_aeff (matches Q grid)
    !
    ! Output (run from sed/, files dropped in sed/output/):
    !   output/enthalpy_S1.dat
@@ -34,7 +34,7 @@ program make_enthalpy
    use enthalpy_astrodust_mod, only: enthalpy_S1, enthalpy_S2
    implicit none
 
-   character(len=*), parameter :: F_AEFF  = '../data/dielectric/DH21_aeff'
+   character(len=*), parameter :: F_AEFF  = '../data/astrodust/DH21_aeff'
    character(len=*), parameter :: F_OUT_S1 = 'output/enthalpy_S1.dat'
    character(len=*), parameter :: F_OUT_S2 = 'output/enthalpy_S2.dat'
 

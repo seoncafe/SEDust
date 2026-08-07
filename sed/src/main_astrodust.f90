@@ -11,6 +11,11 @@ program main_astrodust
    ! Heating: U_mathis = 1.585 (log U = 0.20, HD23 best fit) by default.
    !
    ! Optional CLI arguments (any position):
+   !   euv       solve on the _euv Q table, whose grid runs to 1.0e-4 um
+   !             (12398 eV) instead of stopping at the Lyman limit; tags
+   !             filenames (euv_). The Mathis field is zero below that limit,
+   !             so the added wavelengths carry no photon and change the
+   !             emergent SED only through the quadrature.
    !   logU=X    set U_mathis = 10^X; tags output filenames (logUX_).
    !   qm        use the energy-space transition-matrix stochastic solver
    !             (thermal-discrete) instead of the default GD narrowing
@@ -36,8 +41,17 @@ program main_astrodust
    use euv_astrodust_tmatrix, only: use_tmatrix_euv_band_optics
    implicit none
 
+   ! The two shipped scalar Q tables.  The model's wavelength grid is whichever
+   ! one this driver is given, so the `euv` argument decides whether the SED is
+   ! solved over the ionizing band as well.  Default is the non-ionizing table,
+   ! matching the field this driver illuminates with: J_Mathis is exactly zero
+   ! below the Lyman limit, so the 633 extra wavelengths carry no photon and
+   ! only cost solver time.  `euv` is there for a run that wants the band
+   ! resolved anyway, and tags its output files with it.
    character(len=*), parameter :: F_QTAB =  &
-      '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat'
+      '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400.dat'
+   character(len=*), parameter :: F_QTAB_EUV =  &
+      '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400_euv.dat'
    character(len=*), parameter :: F_SIZE = '../data/release/size_distribution.dat'
    character(len=8), parameter :: STAGES(2) = ['S1      ', 'S2      ']
    character(len=*), parameter :: OUTDIR = 'output/astrodust_irem_ours_'
@@ -52,6 +66,8 @@ program main_astrodust
    character(len=64)     :: arg, suffix, solver_tag
    character(len=24)     :: nstag, nitag, logutag
    logical               :: set_logu, set_nstate, set_nisrf
+   ! Solve over the ionizing band as well, on the _euv Q table.
+   logical               :: use_euv_grid = .false.
 
    ! Parse the optional CLI arguments, then build the filename tag.
    !
@@ -101,6 +117,8 @@ program main_astrodust
          s1_density_corrected = .true.   ! Stage-1 density-corrected prefactor
       else if (trim(arg) == 'mathis_orig') then
          use_mathis_corrected = .false.
+      else if (trim(arg) == 'euv') then
+         use_euv_grid = .true.        ! solve on the _euv Q table's 1762 grid
       end if
    end do
 
@@ -116,7 +134,11 @@ program main_astrodust
    if (set_nstate) write(nstag,   '(a,i0,a)')   'ns',   qm_nstate_default, '_'
    if (set_nisrf)  write(nitag,   '(a,i0,a)')   'nisrf', qm_nisrf_max, '_'
 
-   suffix = trim(solver_tag)
+   ! The wavelength grid comes first: it is the coarsest distinction of all,
+   ! since it decides how many points every other setting is evaluated on.
+   suffix = ''
+   if (use_euv_grid)            suffix = 'euv_'
+   suffix = trim(suffix)//trim(solver_tag)
    if (s1_density_corrected)    suffix = trim(suffix)//'c2_'
    if (.not. use_mathis_corrected) suffix = trim(suffix)//'morig_'
    suffix = trim(suffix)//trim(logutag)
@@ -127,7 +149,11 @@ program main_astrodust
    write(*,'(a)') '=========================================================='
    write(*,'(a)') ' main_astrodust: production driver'
    write(*,'(a)') '=========================================================='
-   write(*,'(a,a)')    ' Q table     : ', F_QTAB
+   if (use_euv_grid) then
+      write(*,'(a,a)') ' Q table     : ', F_QTAB_EUV
+   else
+      write(*,'(a,a)') ' Q table     : ', F_QTAB
+   end if
    write(*,'(a,a)')    ' size_dist   : ', F_SIZE
    write(*,'(a,f8.3)') ' U_mathis    : ', U_MATHIS
    write(*,'(a,i0)')   ' NT (T grid) : ', NT_IN
@@ -139,7 +165,11 @@ program main_astrodust
    write(*,'(a,a,a)')  ' output files: ', OUTDIR, trim(suffix)//'<stage>.dat'
 
    call use_tmatrix_euv_band_optics()
-   call sed_init(F_QTAB, F_SIZE, NT_IN, T_LO, T_HI)
+   if (use_euv_grid) then
+      call sed_init(F_QTAB_EUV, F_SIZE, NT_IN, T_LO, T_HI)
+   else
+      call sed_init(F_QTAB, F_SIZE, NT_IN, T_LO, T_HI)
+   end if
    write(*,'(a,i0,a)') ' sed_init done. NLAM=', NLAM, ' wavelengths cached.'
    write(*,'(a)') ''
 

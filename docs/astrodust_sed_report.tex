@@ -1605,7 +1605,7 @@ builder & model & channels \\
 \end{tabularx}
 
 \noindent The Zubko model exercises the design's generality: a neutral-only
-PAH population (no charge split), component-by-component size grids, a DustEM-style
+PAH population (no charge split), component-by-component size grids, a ZDA-style
 $Q$-table optics reader, and a \emph{specific-enthalpy} calorimetry source
 (\texttt{sed/src/zubko\_io.f90}) --- all confined to the builder, so the
 solver core is untouched. Its data (config/formula, size tables, optics,
@@ -1702,28 +1702,36 @@ rather than Draine's $K_{\rm abs}$.
 
 \subsection{Extending the grid below the Lyman limit}
 
-The astrodust wavelength grid is the T-matrix $Q$ table's, and the
-table reaches \SI{1e-4}{\micro\meter} ---
-\SI{12.4}{\kilo\electronvolt}. \textbf{The ionizing band is inside it},
-computed the same way as the rest of it, so a host that transports
+The astrodust wavelength grid is the grid of the T-matrix $Q$ table the
+model was built from, and two tables ship: the default
+\texttt{q\_astrodust\_P0.20\_Fe0.00\_1.400.dat} on 1129 wavelengths from
+\SI{0.0912}{\micro\meter}, and \texttt{..\_euv.dat} on 1762 reaching
+\SI{1e-4}{\micro\meter} --- \SI{12.4}{\kilo\electronvolt}. The second is
+the whole sweep; the first is that file with the wavelengths below the
+Lyman limit dropped, so the two agree cell for cell over the 1129 they
+share. \textbf{Given the \texttt{\_euv} table the ionizing band is inside
+it}, computed the same way as the rest of it, so a host that transports
 ionizing radiation reads it off the table and needs nothing more; in
 particular it does not have to link \texttt{libtmatrix.a}.
 
 \medskip
-\noindent \texttt{build\_astrodust} and \texttt{build\_dl07} still take an
-optional \texttt{lam\_min} [\si{\micro\meter}] for a host that needs
-something shorter still. Log-spaced points are then prepended from
+\noindent \texttt{build\_astrodust} and \texttt{build\_dl07} take an
+optional \texttt{lam\_min} [\si{\micro\meter}] for a host that needs to
+reach below the table it was given. Log-spaced points are then prepended from
 \texttt{lam\_min} up to the table, at a step no coarser than the
-table's own $\Delta\ln\lambda = 0.00794$ at its short-wavelength end,
+table's own $\Delta\ln\lambda$ at its short-wavelength end ($0.00794$ on
+the \texttt{\_euv} axis, $0.01156$ on the other),
 with the requested floor placed exactly. Omitting \texttt{lam\_min}
-prepends nothing, so every earlier result is bit-identical. For
-astrodust there is now nothing left to ask for: the table already
+prepends nothing, so every earlier result is bit-identical. What it does
+for astrodust depends on the table: on the 1129-wavelength one a floor
+below \SI{0.0912}{\micro\meter} builds a band, while the \texttt{\_euv}
+table already
 reaches the short end of the DH21 dielectric function itself
-($1.00003\times10^{-4}$\,\si{\micro\meter}), so every legal
+($1.00003\times10^{-4}$\,\si{\micro\meter}), so there every legal
 \texttt{lam\_min} either falls inside the table, prepending nothing, or
-below the dielectric data, where it is refused. DL07 can still be
-extended, to \SI{6.205e-5}{\micro\meter}, because the D03 optical
-constants reach further than the table does.
+below the dielectric data, where it is refused. DL07 can be
+extended below either, to \SI{6.205e-5}{\micro\meter}, because the D03 optical
+constants reach further than both.
 
 \medskip
 \noindent Where the ionizing-band astrodust optics come from is therefore the
@@ -1860,7 +1868,7 @@ and DL07, whose $Q$ table stopped at the Lyman limit itself:
 $hc/\SI{0.0912}{\micro\meter} = \SI{13.595}{\electronvolt} <
 \SI{13.6}{\electronvolt}$, so grid and field returned the same number.
 It was never invisible for Zubko, whose
-DustEM tables start at \SI{1e-3}{\micro\meter}: measuring the grid
+ZDA optics tables start at \SI{1e-3}{\micro\meter}: measuring the grid
 there gives \SI{1239.8}{\electronvolt}, ninety-one times the Lyman
 limit, for a Mathis field that carries no photon below
 \SI{0.0912}{\micro\meter}. Carrying the astrodust table into the

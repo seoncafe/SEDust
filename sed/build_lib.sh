@@ -37,6 +37,28 @@ cd "$(dirname "$0")"                 # sed/
 FC=${FC:-ifort}
 TMDIR=${TMDIR:-../tmatrix}
 
+# ---- HDF5 ------------------------------------------------------------
+# build_dust reads the optics products out of data/sedust_<model>.h5, so the
+# archive carries the HDF5 layer.  ON by default, and switched off for a host
+# that has no HDF5 or wants a text-only archive:
+#
+#   HDF5=0 ./build_lib.sh          the HDF5 paths compile out; build_dust then
+#                                  falls back to the text products
+#
+# A host linking the default archive must put -lsedust BEFORE the HDF5
+# libraries on its link line: static archives resolve left to right, and it is
+# libsedust.a that needs the HDF5 symbols.
+HDF5=${HDF5:-1}
+case "$(basename "$FC")" in
+   gfortran*|gfort*)  HDF5_PREFIX=${HDF5_PREFIX:-/data/opt/hdf5_gfortran} ;;
+   *)                 HDF5_PREFIX=${HDF5_PREFIX:-/data/opt/hdf5_intel} ;;
+esac
+if [ "$HDF5" != "0" ]; then
+   H5FLAGS="-DSEDUST_HDF5 -I$HDF5_PREFIX/include"
+else
+   H5FLAGS=""
+fi
+
 case "$(basename "$FC")" in
    gfortran*|gfort*)
       : "${MODOUT:=-Jlib}"
@@ -45,7 +67,7 @@ case "$(basename "$FC")" in
       # on the stack.  Enabling OpenMP already implies this, on both compilers;
       # stating it keeps a threaded path from resting on that side effect.  It
       # costs nothing here -- GFortran stacks local arrays either way.
-      : "${FLAGS:=-O3 -ffree-line-length-none -fopenmp -frecursive -w}"
+      : "${FLAGS:=-O3 -ffree-line-length-none -fopenmp -frecursive -cpp -w}"
       # The T-matrix sources carry their own flags, matching tmatrix/Makefile:
       # -frecursive keeps every migrated routine reentrant (a workspace belongs
       # to one caller, and callers run concurrently), and -fno-inline on
@@ -71,7 +93,7 @@ case "$(basename "$FC")" in
       # The SED sources do not run that test themselves, but they are compiled
       # into one archive with the routines that do, and euv_astrodust_tmatrix
       # calls straight into them.
-      : "${FLAGS:=-O3 -qopenmp -recursive -fp-model precise -w}"
+      : "${FLAGS:=-O3 -qopenmp -recursive -fp-model precise -fpp -w}"
       : "${TM_FREE:=-O2 -recursive -fp-model precise -w}"
       # Intel counterpart of -fno-inline.  The reproducibility argument recorded
       # in the GNU branch is a GNU-to-GNU one and does not carry across
@@ -84,10 +106,11 @@ esac
 
 # SEDust sources, in dependency order.  `sed_mathlib` is named so upstream to
 # avoid a clash with an RT host's own `mathlib` module.
-SED_SRCS="constants sed_mathlib enthalpy_v2 size_dist q_table enthalpy_astrodust mie \
+SED_SRCS="constants sed_mathlib sedust_h5 sedust_product enthalpy_v2 size_dist q_table \
+      enthalpy_astrodust mie \
       q_astrodust q_graphite q_graphite_d16 q_graphite_d16_sphere qpah radfield \
       p_sub stoch_qm pah_ioniz grain_dist q_silicate pah_ld01 dust_model_mod \
-      kext_table zubko_io sed_astrodust dust_lib"
+      kext_table zubko_io q_component sed_astrodust dust_lib"
 
 mkdir -p lib
 rm -f lib/*.o lib/*.mod lib/libsedust.a
@@ -118,7 +141,7 @@ fi
 
 for f in $SED_SRCS; do
    echo "  FC $f"
-   $FC $FLAGS $MODOUT -Ilib -c src/$f.f90 -o lib/$f.o
+   $FC $FLAGS $H5FLAGS $MODOUT -Ilib -c src/$f.f90 -o lib/$f.o
 done
 
 if [ -n "$WITH_TMATRIX" ]; then

@@ -13,6 +13,7 @@
 #
 # Run (from this directory; data paths are relative to ../):
 #   ./make_enthalpy.x
+#   ./make_qtable.x                    # -> ../data/qtable/ (DL07 + Zubko Q tables)
 #   ./main_astrodust.x                 # GD solver (default)
 #   ./main_astrodust.x qm              # energy-space, thermal-discrete
 #   ./main_astrodust.x qm_dbcon        # energy-space, thermal-continuous
@@ -24,8 +25,40 @@
 #   ./calc_kext.x dl07 euv
 #   ./calc_kext.x zubko
 #   ./calc_kext.x from_files <descriptor> [data_dir]
+#   ./check_build_dust.x               # build_dust on HDF5 vs the text builders
 
 FC      = gfortran
+
+# ---- HDF5 -------------------------------------------------------------
+# The optics products (kext curves, Q tables, and in v1.20 the polarized
+# matrices) are written and read as HDF5; the text products are still written
+# beside them, for reading with an eye and for diff.  HDF5 is therefore ON by
+# default and can be switched off for a build that has no library:
+#
+#   make HDF5=0                      text only; the HDF5 paths compile out
+#   make HDF5_PREFIX=/somewhere      a different installation
+#
+# The prefix must hold include/hdf5.mod built by THIS compiler -- a .mod from
+# another gfortran release is not readable, which is the usual failure here.
+HDF5        ?= 1
+ifeq ($(FC),ifort)
+   HDF5_PREFIX ?= /data/opt/hdf5_intel
+else
+   HDF5_PREFIX ?= /data/opt/hdf5_gfortran
+endif
+ifneq ($(HDF5),0)
+   H5FLAGS = -DSEDUST_HDF5 -I$(HDF5_PREFIX)/include
+   H5LIBS  = $(HDF5_PREFIX)/lib/libhdf5_fortran.a $(HDF5_PREFIX)/lib/libhdf5.a \
+             -lsz -lz -ldl -lm
+else
+   H5FLAGS =
+   H5LIBS  =
+endif
+# The HDF5 layer and the reader that knows the SEDust layout inside a file.
+# Both are always compiled: without -DSEDUST_HDF5 every entry point reports
+# "not available" and the callers fall through to the text products, so no
+# consumer carries an #ifdef of its own.
+SRC_H5 = src/sedust_h5.f90 src/sedust_product.f90
 # Portable baseline by default so libsedust.a runs on any node it is copied
 # to.  Uncomment the -march=native line for a host-optimized build (results
 # can differ in the last digits through FMA contraction).
@@ -36,7 +69,7 @@ FC      = gfortran
 #   do-subscript: false positives from the guarded trapezoid loops.
 WARN    = -Wall -Wextra -Wno-compare-reals -Wno-unused-dummy-argument \
           -Wno-unused-parameter -Wno-do-subscript
-FFLAGS  = -O3 -ffree-line-length-none $(WARN)
+FFLAGS  = -O3 -ffree-line-length-none -cpp $(WARN) $(H5FLAGS)
 # FFLAGS  = -O3 -march=native -ffree-line-length-none $(WARN)
 FFLAGS += -fopenmp
 # Local variables belong on the run-time stack, not in static storage: the EUV
@@ -88,8 +121,10 @@ SRC_BASE    = src/constants.f90 src/sed_mathlib.f90
 SRC_DL07MOD = src/pah_ioniz.f90 src/grain_dist.f90 src/q_silicate.f90 \
               src/pah_ld01.f90
 
-# Everything the SED pipeline needs, minus the driver.
-SRC_PIPE    = $(SRC_BASE) src/enthalpy_v2.f90 \
+# Everything the SED pipeline needs, minus the driver.  SRC_H5 sits after
+# SRC_BASE because src/sedust_product.f90 uses constants, and before
+# src/q_table.f90, which reads the astrodust table through it.
+SRC_PIPE    = $(SRC_BASE) $(SRC_H5) src/enthalpy_v2.f90 \
               src/size_dist.f90 src/q_table.f90 \
               src/enthalpy_astrodust.f90 \
               src/mie.f90 src/q_astrodust.f90 \
@@ -98,6 +133,7 @@ SRC_PIPE    = $(SRC_BASE) src/enthalpy_v2.f90 \
               src/radfield.f90 src/p_sub.f90 \
               src/stoch_qm.f90 $(SRC_DL07MOD) \
               src/dust_model_mod.f90 src/kext_table.f90 src/zubko_io.f90 \
+              src/q_component.f90 \
               src/sed_astrodust.f90
 
 SRC_ENTH    = $(SRC_BASE) src/enthalpy_v2.f90 \
@@ -117,24 +153,31 @@ make_enthalpy.x: $(SRC_ENTH)
 	$(FC) $(FFLAGS) $^ -o $@
 	@echo 'Built: ./make_enthalpy.x'
 
+# Stored (lambda, a_eff) cross-section tables for the DL07 and Zubko models,
+# the counterpart of tmatrix/output/q_astrodust_*.dat.  Both grids of each
+# model, computed by this tree's own optics routines.
+make_qtable.x: $(SRC_PIPE) src/make_qtable.f90
+	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
+	@echo 'Built: ./make_qtable.x     (writes ../data/qtable/)'
+
 main_astrodust.x: $(SRC_PIPE) $(SRC_EUVTM) src/main_astrodust.f90 | $(TMARCH)
-	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) -o $@
+	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
 	@echo 'Built: ./main_astrodust.x'
 
 # DL07 emission. Its own optics are Mie on the D03 dielectric functions, which
 # already run to 6.2e-5 um, so this driver reaches no astrodust EUV band and
 # needs no T-matrix.
 main_dl07.x: $(SRC_PIPE) src/main_dl07.f90
-	$(FC) $(FFLAGS) $^ -o $@
+	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./main_dl07.x'
 
 # Zubko/ZDA emission. The only shipped model whose optics grid reaches far
 # past the illuminated band, so it is the one that exercises the difference
 # between "hardest photon the field carries" and "short end of the grid".
-# That grid is the model's own DustEM table, so this driver too needs no
+# That grid is the model's own ZDA optics table, so this driver too needs no
 # T-matrix.
 main_zubko.x: $(SRC_PIPE) src/main_zubko.f90
-	$(FC) $(FFLAGS) $^ -o $@
+	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./main_zubko.x'
 
 # Size-integrated transport optics (lambda, albedo, <cos>, C_ext/C_abs/C_sca
@@ -142,8 +185,14 @@ main_zubko.x: $(SRC_PIPE) src/main_zubko.f90
 # Reuses the full SED pipeline, so every table it writes is the same optics
 # the RT hosts get from dust_extinction; only the driver differs.
 calc_kext.x: $(SRC_PIPE) $(SRC_EUVTM) src/calc_kext.f90 | $(TMARCH)
-	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) -o $@
+	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
 	@echo 'Built: ./calc_kext.x'
+
+# Does build_dust on the HDF5 products give the same model as the four
+# builders on the text products?  Run it after make_qtable.x and calc_kext.x.
+check_build_dust.x: $(SRC_PIPE) $(SRC_EUVTM) src/check_build_dust.f90 | $(TMARCH)
+	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
+	@echo 'Built: ./check_build_dust.x'
 
 # ---- libsedust.a: the model-agnostic dust-emission library, for a Fortran
 # 3D RT code to link.  Usage from the RT:  use dust_lib ;  link
@@ -191,6 +240,7 @@ clean:
 
 cleanall: clean
 	rm -f *.a make_enthalpy.x main_astrodust.x main_dl07.x main_zubko.x calc_kext.x
+	rm -f make_qtable.x check_build_dust.x
 	rm -f output/astrodust_irem_ours_*.dat output/enthalpy_*.dat
 
 .PHONY: all clean cleanall

@@ -3,12 +3,14 @@ program main_dl07
    ! (PAH + graphite) grains with WD01 size distributions, heated by the
    ! Mathis ISRF at U = 1. Reproduces the DL07spec reference spectra.
    !
-   ! Usage:  ./main_dl07.x [model]
+   ! Usage:  ./main_dl07.x [model] [euv] [qm|draine]
    !   model = mw31_00 | mw31_10 | ... | mw31_60 (default) | mw31_avg-style,
    !           lmc2_00 | lmc2_05 | lmc2_10 | smc
-   ! Output: output/dl07_sed_ours_<model>.dat
+   ! Output: output/dl07_sed_ours_<model>[_euv][_<solver>].dat
    !   columns: lambda[um]  lamI_total/NH  lamI_sil/NH  lamI_carb/NH
    !            [erg s^-1 cm^-2 sr^-1 H^-1] (the HD23/DL07 convention)
+   !   `euv` solves on the _euv Q table, whose grid runs to 1.0e-4 um instead
+   !   of stopping at the Lyman limit; the Mathis field carries no photon there.
 
    use, intrinsic :: iso_fortran_env, only: real64
    use constants,         only: wp
@@ -26,8 +28,15 @@ program main_dl07
    ! corrected field. (Earlier 0.93-off + uncorrected was an accidental
    ! cancellation that desynced emission from the 2003 extinction.)
 
+   ! The DL07 optics are Mie on the D03 dielectric functions, but the model's
+   ! wavelength grid still comes from the astrodust Q table, so which of the two
+   ! shipped tables this driver reads decides how far the SED reaches.  Default
+   ! is the non-ionizing one: the Mathis field is zero below the Lyman limit, so
+   ! the 633 extra wavelengths of the _euv table carry no photon.
    character(len=*), parameter :: F_QTAB =  &
-      '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat'
+      '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400.dat'
+   character(len=*), parameter :: F_QTAB_EUV =  &
+      '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400_euv.dat'
    character(len=*), parameter :: F_SIZE = '../data/release/size_distribution.dat'
    real(wp),         parameter :: U_ISRF = 1.0_wp        ! DL07 reference: U = 1
    real(wp),         parameter :: T_LO = 2.7_wp, T_HI = 5.0e3_wp
@@ -38,9 +47,12 @@ program main_dl07
    real(wp), allocatable :: lamI_tot(:), lamI_sil(:), lamI_carb(:)
    integer  :: sd_index, k, u, narg, iarg
    logical  :: use_qm, use_draine
+   ! Solve over the ionizing band as well, on the _euv Q table.
+   logical  :: use_euv_grid = .false.
    character(len=32) :: model, arg
    character(len=64) :: fname
    character(len=8)  :: qmtag
+   character(len=8)  :: euvtag
 
    ! ---- Args (any order): model name, and optional 'qm' to use the
    ! energy-space transition-matrix (thermal-discrete) stochastic solver
@@ -55,6 +67,8 @@ program main_dl07
          use_qm = .true.
       else if (trim(arg) == 'draine') then
          use_draine = .true.        ! Draine's original GD (default is 'heuristic')
+      else if (trim(arg) == 'euv') then
+         use_euv_grid = .true.      ! solve on the _euv Q table's 1762 grid
       else
          model = trim(arg)
       end if
@@ -89,7 +103,8 @@ program main_dl07
    gd_apply_d03_reduction = .true.   ! 0.93 abundance reduction = the 2003 model
    nc_coeff  = 470.0d0               ! DL07 Nc coefficient (rho~2.2)
    nc_integer = .true.               ! Nc is rounded to an integer
-   qmtag = ''
+   qmtag = '';  euvtag = ''
+   if (use_euv_grid) euvtag = '_euv'
    if (use_qm) then
       stoch_method = 'qm'            ! energy-space transition matrix (dbdis)
       qmtag = '_qm'
@@ -103,7 +118,11 @@ program main_dl07
    write(*,'(a,f6.1,a,l1)') ' Nc_coeff      : ', nc_coeff, '   Nc_integer: ', nc_integer
    write(*,'(a,a)')     ' solver        : ', trim(stoch_method)
 
-   call sed_init_dl07(F_QTAB, F_SIZE, sd_index, U_ISRF, NT_IN, T_LO, T_HI)
+   if (use_euv_grid) then
+      call sed_init_dl07(F_QTAB_EUV, F_SIZE, sd_index, U_ISRF, NT_IN, T_LO, T_HI)
+   else
+      call sed_init_dl07(F_QTAB, F_SIZE, sd_index, U_ISRF, NT_IN, T_LO, T_HI)
+   end if
    write(*,'(a,i0,a)') ' sed_init_dl07 done. NLAM=', NLAM, '.'
 
    allocate(J_lam(NLAM), lamI_tot(NLAM), lamI_sil(NLAM), lamI_carb(NLAM))
@@ -112,7 +131,7 @@ program main_dl07
    write(*,'(a)') ' solving DL07 SED (silicate + carbonaceous) ...'
    call sed_solve_dl07(J_lam, lamI_tot, lamI_sil, lamI_carb)
 
-   write(fname,'(a,a,a,a)') OUTDIR, trim(model), trim(qmtag), '.dat'
+   write(fname,'(a,a,a,a,a)') OUTDIR, trim(model), trim(euvtag), trim(qmtag), '.dat'
    open(newunit=u, file=trim(fname), status='replace', action='write')
    write(u,'(a,a,a,f5.2)') '# DL07 model SED (this work), ', trim(model), &
         ', Mathis ISRF U = ', U_ISRF
