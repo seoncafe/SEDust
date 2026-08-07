@@ -26,11 +26,12 @@ module q_graphite_d16_mod
    !   3 = k perp a, E perp a
 
    use constants, only: wp
+   use sed_paths, only: sed_data_path
    implicit none
    private
    public :: q_graphite_d16_abs, load_q_graphite_d16
 
-   character(len=*), parameter :: F_D16 = '../data/dielectric/qlib_gra_D16MGemt_1.400'
+   character(len=*), parameter :: F_D16 = 'dielectric/qlib_gra_D16MGemt_1.400'
    integer,  parameter :: NA_D = 169
    integer,  parameter :: NW_D = 1009
 
@@ -51,12 +52,12 @@ contains
       real(wp) :: axrat
 
       if (present(ok)) ok = .true.
-      open(newunit=u, file=F_D16, status='old', action='read', iostat=ios)
+      open(newunit=u, file=sed_data_path(F_D16), status='old', action='read', iostat=ios)
       if (ios /= 0) then
          if (present(ok)) then
             ok = .false.;  return
          else
-            write(*,'(a,a)') 'q_graphite_d16: cannot open ', F_D16
+            write(*,'(a,a)') 'q_graphite_d16: cannot open ', trim(sed_data_path(F_D16))
             stop 1
          end if
       end if

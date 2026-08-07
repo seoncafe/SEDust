@@ -40,12 +40,15 @@ program use_dustlib
    !
    ! WHERE THE TRANSPORT OPTICS COME FROM.  sed/calc_kext.x calls
    ! size_integrated_extinction to integrate the model's populations over grain
-   ! size, and writes the resulting curves to ../data/kext_*.dat in the column
+   ! size, and writes the resulting curves to ../data/<model>/kext_*.dat in the column
    ! order of Draine's kext_albedo tables.  dust_extinction serves one of those
    ! files back on the model's own wavelength grid: the builder loads it (see
-   ! kext_path at step 1), because the paths are relative to sed/ and this
-   ! program -- like a real host -- may change directory once the model is
-   ! built.  A host that is not Fortran, or that only transports and never
+   ! kext_path at step 1), because this program -- like a real host -- may
+   ! change directory once the model is built.  build_dust makes its data_dir
+   ! the data root for the length of the build, so every default it resolves
+   ! (the extinction curves, the dielectric functions, the stored cross-section
+   ! tables) sits inside that one directory and an absolute path works from any
+   ! working directory.  A host that is not Fortran, or that only transports and never
    ! emits, can read the file directly instead; link the library when the host
    ! also needs emission, because a file cannot supply the size-resolved
    ! absorption the heating solver wants.
@@ -74,7 +77,7 @@ program use_dustlib
    ! H column density divides them by dust_mass_per_H(m) [g/H] to get a mass
    ! opacity [cm^2/g]; the V band line this program prints is exactly that
    ! division.  The denominator is the same constant the K_abs column of every
-   ! ../data/kext_*.dat is normalized by, so a host reading the file and a host
+   ! ../data/<model>/kext_*.dat is normalized by, so a host reading the file and a host
    ! linking the library arrive at the same opacity.
    use constants, only: wp
    use radfield,  only: J_Mathis
@@ -103,11 +106,13 @@ program use_dustlib
    ! 6.1992e-5 um (20 keV); asking for exactly that value puts the request on
    ! the rounding boundary of the refusal test, so stand a little above it.
    real(wp), parameter :: LAM_MIN_DL07 = 6.21e-5_wp
-   type(dust_model_t)    :: m, m_dl07
+   type(dust_model_t)    :: m, m_dl07, m_zub
    real(wp), allocatable :: J(:), total(:), chan(:,:)
    real(wp), allocatable :: Cext(:), Cabs(:), Csca(:), gbar(:), albedo(:)
    real(wp), allocatable :: Cext2(:), Cabs2(:), Csca2(:)
+   real(wp), allocatable :: Cext3(:), Cabs3(:), Csca3(:)
    real(wp) :: Mdust_H
+   integer :: n3
    integer :: ipk, n, n2, j100, st
 
    ! --- (1) load a model once (here: astrodust) ------------------------
@@ -120,7 +125,7 @@ program use_dustlib
    ! is a contract: a file that cannot be read fails the build (status 5 for
    ! this builder), which is what a host wants when the file it was configured
    ! with is missing.  Omitting the argument falls to the model's default,
-   ! ../data/kext_astrodust_MW_euv.dat.  A default that cannot be read is only
+   ! ../data/astrodust/sedust_astrodust.h5.  A default that cannot be read is only
    ! an offer -- it leaves the model with no extinction to serve, and
    ! dust_extinction then reports status 2 -- but it does not fail the build.
    !
@@ -163,7 +168,10 @@ program use_dustlib
    ! Emission comes from the ACTIVE model -- the one most recently built --
    ! because the solver reads the module-global working set the builder set up.
    ! So every dust_emission call for this model belongs here, before step (5)
-   ! builds another one.
+   ! builds another one.  Getting that wrong is a status, not a wrong number:
+   ! dust_emission returns 3 for a model that is no longer the active one.
+   ! (dust_extinction and size_integrated_extinction read only the model
+   ! argument and are not restricted this way.)
    call J_Mathis(1.585_wp, m%lam, J)
    call dust_emission(m, J, total, chan)
 
@@ -215,9 +223,9 @@ program use_dustlib
    ! index.  Everything else about the API is unchanged, and omitting lam_min
    ! leaves the grid on the table's own 1762 wavelengths.
    !
-   ! No kext_path this time: the default, ../data/kext_dl07_MW_euv.dat, is the
+   ! No kext_path this time: the default, ../data/dl07/sedust_dl07.h5, is the
    ! size integral computed on exactly this extended grid.  Handing this model
-   ! ../data/kext_dl07_MW.dat instead would build without complaint -- the file
+   ! ../data/dl07/kext_dl07_MW.dat instead would build without complaint -- the file
    ! reads fine -- and then dust_extinction would refuse the call with status
    ! 3, because that table starts at the Q table's 1.0e-4 um while the grid now
    ! runs below it, and the library extrapolates no optics past a table's end.
@@ -241,6 +249,57 @@ program use_dustlib
                             ', grid ', m_dl07%lam(1), ' - ', m_dl07%lam(n2), ' um'
    print '(a,es11.4,a,es12.5,a)', '   C_ext/H at the requested floor ', m_dl07%lam(1), &
                             ' um =', Cext2(1), ' cm^2/H'
+
+   ! --- (6) zubko: two stored optics sets, and which one you get --------
+   ! This model ships TWO sets of optics in one product, and the argument
+   ! chooses between them:
+   !
+   !   default / 'zda'   the three grain-input files the Camps et al. (2015)
+   !                     benchmark distributes, stored verbatim.  The seven
+   !                     codes that benchmark compares against read those same
+   !                     files, so a host measuring itself against it wants
+   !                     this and gets it without asking.
+   !   'mie_d03'         this tree's own recomputation, Mie on the Draine
+   !                     (2003) optical constants.
+   !
+   ! Each set carries its own extinction curve (/kext and /kext_mie_d03), so
+   ! what dust_extinction serves is the size integral of the very optics the
+   ! model was built on -- not of the other set.  A name that is neither is
+   ! refused with status 92 rather than silently defaulted.
+   call build_dust(m_zub, 'zubko', DATA, NT_IN, T_LO, T_HI, &
+                   include_euv=.false., status=st)
+   if (st /= 0) then
+      print '(a,i0)', ' build_dust(zubko) failed, status = ', st
+      stop 1
+   end if
+   n3 = dust_nlam(m_zub)
+   allocate(Cext3(n3), Cabs3(n3), Csca3(n3))
+   call dust_extinction(m_zub, Cext3, Cabs3, Csca3, status=st)
+   if (st /= 0) then
+      print '(a,i0)', ' zubko dust_extinction failed, status = ', st
+      stop 1
+   end if
+   print '(a,i0,a,es11.4,a,es11.4,a)', '   model=zubko (benchmark tables): NLAM=', n3, &
+                            ', grid ', m_zub%lam(1), ' - ', m_zub%lam(n3), ' um'
+   print '(a,es12.5,a)', '   C_ext/H at 100 um =', &
+                            at_lambda(m_zub%lam, Cext3, 100.0_wp), ' cm^2/H'
+
+   call build_dust(m_zub, 'zubko', DATA, NT_IN, T_LO, T_HI, &
+                   include_euv=.false., status=st, zubko_optics='mie_d03')
+   if (st /= 0) then
+      print '(a,i0)', ' build_dust(zubko, mie_d03) failed, status = ', st
+      stop 1
+   end if
+   call dust_extinction(m_zub, Cext3, Cabs3, Csca3, status=st)
+   print '(a,es12.5,a)', '   the same, on mie_d03 optics       =', &
+                            at_lambda(m_zub%lam, Cext3, 100.0_wp), ' cm^2/H'
+
+   ! The non-ionizing grid COVERS the Lyman limit for every model: the cut is
+   ! an index cut at the last node at or below 0.0912 um.  The ZDA grid has no
+   ! node there, so this one starts just below it rather than just above --
+   ! which is what lets a host hand the library its own Lyman-limit grid.
+   print '(a,es12.5,a)', '   non-ionizing grid starts at ', m_zub%lam(1), &
+                            ' um, i.e. below the Lyman limit'
 
 contains
 

@@ -113,7 +113,7 @@ SRC_EUVTM = $(TMDIR)/driver/asymptotic_optics.f90 \
             src/euv_astrodust_tmatrix.f90
 
 # ---- source groups, in dependency order ------------------------------
-SRC_BASE    = src/constants.f90 src/sed_mathlib.f90
+SRC_BASE    = src/constants.f90 src/sed_paths.f90 src/sed_mathlib.f90
 
 # DL07-support modules (also used by sed_astrodust.f90, so required by every
 # target that links it): PAH ionization (WD01b charging), WD01/DL07 size
@@ -193,6 +193,14 @@ calc_kext.x: $(SRC_PIPE) $(SRC_EUVTM) src/calc_kext.f90 | $(TMARCH)
 check_build_dust.x: $(SRC_PIPE) $(SRC_EUVTM) src/check_build_dust.f90 | $(TMARCH)
 	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
 	@echo 'Built: ./check_build_dust.x'
+
+# Builds every model from a foreign working directory with an absolute
+# data_dir, and checks that a bad one comes back as a status instead of an
+# abort.  Links the LIBRARY, not the pipeline sources, because that is what a
+# host sees.
+check_data_root.x: libsedust.a src/check_data_root.f90
+	$(FC) $(FFLAGS) -I. src/check_data_root.f90 libsedust.a $(H5LIBS) -o $@
+	@echo 'Built: ./check_data_root.x'
 
 # ---- libsedust.a: the model-agnostic dust-emission library, for a Fortran
 # 3D RT code to link.  Usage from the RT:  use dust_lib ;  link

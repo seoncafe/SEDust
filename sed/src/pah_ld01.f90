@@ -7,6 +7,7 @@ module pah_ld01_mod
    ! so the SED solver can use the *reference* cross sections directly instead
    ! of our DL07 qpah implementation. Set use_ld01_pah_xsec=.true. to enable.
    use constants, only: wp
+   use sed_paths, only: sed_data_path
    implicit none
    private
    public :: q_pah_ld01, load_pah_ld01, use_ld01_pah_xsec
@@ -14,8 +15,8 @@ module pah_ld01_mod
    logical, save :: use_ld01_pah_xsec = .false.   ! toggled by the driver
 
    integer, parameter :: NRAD = 31, NWAV = 1201
-   character(len=*), parameter :: F_NEU = '../data/dielectric/PAHneu.31'
-   character(len=*), parameter :: F_ION = '../data/dielectric/PAHion.31'
+   character(len=*), parameter :: F_NEU = 'dielectric/PAHneu.31'
+   character(len=*), parameter :: F_ION = 'dielectric/PAHion.31'
 
    logical,  save :: loaded = .false.
    real(wp), save :: la(NRAD)              ! log(radius/um), ascending
@@ -34,13 +35,13 @@ contains
       if (present(ok)) ok = .true.
       if (loaded) return
       if (present(ok)) then
-         call read_one(F_NEU, lqn, .true.,  ok1)
+         call read_one(sed_data_path(F_NEU), lqn, .true.,  ok1)
          if (.not. ok1) then;  ok = .false.;  return;  end if
-         call read_one(F_ION, lqi, .false., ok1)
+         call read_one(sed_data_path(F_ION), lqi, .false., ok1)
          if (.not. ok1) then;  ok = .false.;  return;  end if
       else
-         call read_one(F_NEU, lqn, .true.)
-         call read_one(F_ION, lqi, .false.)
+         call read_one(sed_data_path(F_NEU), lqn, .true.)
+         call read_one(sed_data_path(F_ION), lqi, .false.)
       end if
       loaded = .true.
    end subroutine load_pah_ld01

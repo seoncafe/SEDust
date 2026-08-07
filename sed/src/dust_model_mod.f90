@@ -82,6 +82,16 @@ module dust_model_mod
       real(wp), allocatable :: kext_Cext(:), kext_Cabs(:) ! (kext_n) [cm^2/H]
       real(wp), allocatable :: kext_Csca(:)               ! (kext_n) [cm^2/H]
       real(wp), allocatable :: kext_gbar(:)               ! (kext_n) <cos>
+      ! Which build produced this model.  The emission side is solved on the
+      ! module-level grids of sed_astrodust_mod, which the LAST build filled,
+      ! so dust_emission and size_integrated_extinction can only answer for the
+      ! model built most recently.  A host keeping two models alive and
+      ! querying them alternately used to get the wrong one's numbers in
+      ! silence; the builders stamp this, those routines compare it against the
+      ! stamp of the active build, and a mismatch is a status instead.  0 marks
+      ! a model that was never built.  dust_extinction is exempt: it serves
+      ! kext_* off the model argument and reads no module grid.
+      integer               :: build_id  = 0
    end type dust_model_t
 
 contains

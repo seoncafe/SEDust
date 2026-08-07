@@ -21,6 +21,8 @@ program check_build_dust
                                 dust_mass_per_H, dust_extinction, &
                                 dl07_euv_lambda_floor, sed_verbose
    use euv_astrodust_tmatrix, only: use_tmatrix_euv_band_optics
+   use zubko_io,          only: read_zubko_optics
+   use sedust_product_mod, only: read_sedust_qtable
    implicit none
 
    character(len=*), parameter :: DDIR   = '../data'
@@ -34,9 +36,15 @@ program check_build_dust
    character(len=*), parameter :: F_SD   = '../data/release/size_distribution.dat'
    character(len=*), parameter :: F_CFG  = '../data/zubko/ZDA_BARE_GR_S_Config.dat'
    character(len=*), parameter :: D_ZUB  = '../data/zubko/'
+   character(len=*), parameter :: F_ZU_H5 = '../data/zubko/sedust_zubko.h5'
    character(len=*), parameter :: K_AD   = '../data/astrodust/kext_astrodust_MW_euv.dat'
    character(len=*), parameter :: K_DL   = '../data/dl07/kext_dl07_MW_euv.dat'
-   character(len=*), parameter :: K_ZU   = '../data/zubko/kext_zubko_BARE_GR_S_euv.dat'
+   ! The mie_d03 curve, because the text side of the zubko comparison is the
+   ! mie_d03 optics -- the text q_zubko_*.dat ARE that set.  Naming the default
+   ! curve here would compare the size integral of one set of optics against
+   ! the stored integral of the other.
+   character(len=*), parameter :: K_ZU   = &
+        '../data/zubko/kext_zubko_BARE_GR_S_mie_d03_euv.dat'
    integer,  parameter :: NT_IN = 100
    real(wp), parameter :: T_LO = 1.0_wp, T_HI = 3000.0_wp
    ! Seven written digits in the text tables: a value can be off by 5e-7 of
@@ -108,21 +116,72 @@ contains
    end subroutine check_dl07
 
    subroutine check_zubko()
+      ! zubko stores TWO optics sets, so this compares like with like: the text
+      ! q_zubko_*.dat products ARE the mie_d03 recomputation, so that is the
+      ! set the HDF5 side is asked for.  The DEFAULT set is the benchmark's own
+      ! tables, which have no text counterpart to compare against here -- they
+      ! ARE text, and check_zubko_zda below reads them back directly.
       type(dust_model_t) :: mh, mt
       integer :: st
-      call build_dust(mh, 'zubko', DDIR, NT_IN, T_LO, T_HI, .false., status=st)
+      call build_dust(mh, 'zubko', DDIR, NT_IN, T_LO, T_HI, .false., status=st, &
+                      zubko_optics='mie_d03')
       call fail_if(st /= 0, 'zubko narrow: build_dust status', st)
       call build_zubko(mt, F_CFG, D_ZUB, NT_IN, T_LO, T_HI, status=st, kext_path=K_ZU, &
-                       lam_min=0.0912_wp)
+                       include_euv=.false.)
       call fail_if(st /= 0, 'zubko narrow: build_zubko status', st)
-      call compare('zubko, non-EUV', mh, mt)
+      call compare('zubko mie_d03, non-EUV', mh, mt)
 
-      call build_dust(mh, 'zubko', DDIR, NT_IN, T_LO, T_HI, .true., status=st)
+      call build_dust(mh, 'zubko', DDIR, NT_IN, T_LO, T_HI, .true., status=st, &
+                      zubko_optics='mie_d03')
       call fail_if(st /= 0, 'zubko wide: build_dust status', st)
-      call build_zubko(mt, F_CFG, D_ZUB, NT_IN, T_LO, T_HI, status=st, kext_path=K_ZU)
+      call build_zubko(mt, F_CFG, D_ZUB, NT_IN, T_LO, T_HI, status=st, kext_path=K_ZU, &
+                       include_euv=.true.)
       call fail_if(st /= 0, 'zubko wide: build_zubko status', st)
-      call compare('zubko, EUV', mh, mt)
+      call compare('zubko mie_d03, EUV', mh, mt)
+
+      call check_zubko_zda()
    end subroutine check_zubko
+
+
+   subroutine check_zubko_zda()
+      ! Does /qtable/{sil,gra,pah} hold the distributed tables as they stand?
+      ! This is the set the model is built on by default, and the seven codes
+      ! the SHG benchmark compares against read those same files, so anything
+      ! but an exact round-trip would make that comparison measure an optics
+      ! difference instead of the solver.  Read both sides and diff them.
+      character(len=*), parameter :: COMP(3) = [character(len=3) :: 'sil', 'gra', 'pah']
+      character(len=*), parameter :: FILE(3) = [character(len=24) :: &
+           'suvSil_121_1201.dat', 'Gra_121_1201.dat', 'PAH_28_1201_neu.dat']
+      real(wp), allocatable :: a_f(:), l_f(:), qa_f(:,:), qs_f(:,:), gg_f(:,:)
+      real(wp), allocatable :: a_h(:), qe_h(:,:), qa_h(:,:), qs_h(:,:), gg_h(:,:)
+      real(wp) :: rho_f, rho_h, da, ds, dg
+      integer  :: ic, nsize, nwave
+      logical  :: ok
+
+      write(*,'(a)') ''
+      write(*,'(a)') ' === zubko default set: /qtable vs the distributed files'
+      do ic = 1, 3
+         call read_zubko_optics(D_ZUB//trim(FILE(ic)), nsize, nwave, a_f, l_f, &
+                                qa_f, qs_f, rho_f, ok=ok, gpar=gg_f)
+         call fail_if(.not. ok, 'zubko zda: cannot read '//trim(FILE(ic)), 0)
+         call read_sedust_qtable(F_ZU_H5, trim(COMP(ic)), .true., a_h, qe_h, qa_h, &
+                                 qs_h, gg_h, rho_h, ok)
+         call fail_if(.not. ok, 'zubko zda: cannot read /qtable/'//trim(COMP(ic)), 0)
+         if (size(a_h) /= nsize .or. size(qa_h,1) /= nwave) then
+            write(*,'(a,a)') '   *** shape mismatch for ', trim(COMP(ic))
+            nbad = nbad + 1;  cycle
+         end if
+         da = maxval(abs(qa_h - qa_f));  ds = maxval(abs(qs_h - qs_f))
+         dg = maxval(abs(gg_h - gg_f))
+         write(*,'(a,a4,a,es9.2,a,es9.2,a,es9.2)') '   ', trim(COMP(ic)), &
+              '  max|dQ_abs| ', da, '  max|dQ_sca| ', ds, '  max|dg| ', dg
+         ! Stored as written: the product holds these arrays, it does not
+         ! recompute them, so anything but zero is a transcription bug.
+         call fail_if(da /= 0.0_wp .or. ds /= 0.0_wp .or. dg /= 0.0_wp, &
+                      'zubko zda: /qtable/'//trim(COMP(ic))//' is not the file', 0)
+         deallocate(a_f, l_f, qa_f, qs_f, gg_f, a_h, qe_h, qa_h, qs_h, gg_h)
+      end do
+   end subroutine check_zubko_zda
 
 
    subroutine compare(label, mh, mt)

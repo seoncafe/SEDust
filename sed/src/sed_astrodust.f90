@@ -61,7 +61,10 @@ module sed_astrodust_mod
    use dust_model_mod,        only: dust_model_t, grain_pop_t, free_dust_model
    use kext_table_mod,        only: load_kext_table
    use q_component_mod, only: load_q_component
+   use sed_paths,             only: sed_set_data_root, sed_get_data_root, sed_data_path, &
+                                    SED_PATHLEN
    use sedust_product_mod,    only: sedust_dir, sedust_h5_file, read_sedust_grid, &
+                                    lyman_index, &
                                     read_sedust_qtable, read_sedust_kext
    use zubko_io,              only: zda_comp_t, read_zda_config, zda_gofa, &
                                     read_zubko_optics, read_zubko_calor, &
@@ -97,15 +100,6 @@ module sed_astrodust_mod
    ! that they land on ONE wavelength grid instead of on two that agree only to
    ! a few parts in 10^7 and cannot then share an axis on disk.
    public :: dl07_euv_lambda_floor, astrodust_euv_lambda_floor, LAM_LO_MARGIN
-   ! Take the optics of DL07 and Zubko from the stored (lambda, a_eff) tables
-   ! under data/<model>/ instead of solving them at build time.  On by default:
-   ! those tables ARE this tree's own optics, written once by make_qtable.x, so
-   ! reading them is the same calculation without repeating it.  make_qtable.x
-   ! itself turns it off, because it is the program that produces them, and so
-   ! does anything that wants the optics back from the dielectric functions.
-   ! A model grid no stored table matches -- a host's own lam_min, say -- falls
-   ! back to solving, and says so.
-   public :: use_stored_q_tables
    public :: NLAM, NA, NT, lam, aeff, T_first, dn_ad, dn_pah, initialized
    ! Exposed so that external drivers can cross-check the optics:
    public :: Cabs, Csca, gsca_ad, Cabs_pah, kappB_first, kappB_pah_first
@@ -191,9 +185,9 @@ module sed_astrodust_mod
    ! radiation and one that does not.  The narrower non-EUV product is the file
    ! to name explicitly, not the other way round.  The Zubko model has no EUV
    ! extension and needs none: its own optics table already reaches 1.24 keV.
-   character(len=*), parameter :: KEXT_ASTRODUST = '../data/astrodust/kext_astrodust_MW_euv.dat'
-   character(len=*), parameter :: KEXT_DL07      = '../data/dl07/kext_dl07_MW_euv.dat'
-   character(len=*), parameter :: KEXT_ZUBKO     = '../data/zubko/kext_zubko_BARE_GR_S_euv.dat'
+   character(len=*), parameter :: KEXT_ASTRODUST = 'astrodust/kext_astrodust_MW_euv.dat'
+   character(len=*), parameter :: KEXT_DL07      = 'dl07/kext_dl07_MW_euv.dat'
+   character(len=*), parameter :: KEXT_ZUBKO     = 'zubko/kext_zubko_BARE_GR_S_euv.dat'
    ! The same curve inside the model's own HDF5 product, which is tried FIRST.
    ! /kext is read on the whole wavelength axis, so it covers every grid the
    ! model can be built on -- which is what lets a host leave kext_path blank
@@ -201,9 +195,9 @@ module sed_astrodust_mod
    ! a narrow table and a wide one with the _euv file.  A tree that has no
    ! product, or a build made without HDF5, falls back to the text defaults
    ! above and nothing changes for it.
-   character(len=*), parameter :: KEXT_H5_ASTRODUST = '../data/astrodust/sedust_astrodust.h5'
-   character(len=*), parameter :: KEXT_H5_DL07      = '../data/dl07/sedust_dl07.h5'
-   character(len=*), parameter :: KEXT_H5_ZUBKO     = '../data/zubko/sedust_zubko.h5'
+   character(len=*), parameter :: KEXT_H5_ASTRODUST = 'astrodust/sedust_astrodust.h5'
+   character(len=*), parameter :: KEXT_H5_DL07      = 'dl07/sedust_dl07.h5'
+   character(len=*), parameter :: KEXT_H5_ZUBKO     = 'zubko/sedust_zubko.h5'
    ! A model refuses a grid floor shorter than its own dielectric function's
    ! tabulation, because past it (n, k) would freeze at the boundary value.
    ! Asking for exactly that shortest wavelength puts the request on the
@@ -213,11 +207,6 @@ module sed_astrodust_mod
    ! The Lyman limit, 13.6 eV: where an interstellar radiation field stops, and
    ! the short-wavelength end of the non-ionizing products.
    real(wp), parameter :: LAM_LYMAN_UM = 0.0912_wp
-   ! HDF5 product the stored cross sections of the model being built come from.
-   ! Set by build_dust for the length of one build and cleared after it; blank
-   ! means the text tables under data/<model>/, which is what every caller that
-   ! predates the HDF5 products gets.
-   character(len=512), save :: stored_q_h5 = ''
    ! SI constants for the induced-emission factor (h*c^2 in J*m^2/s).
    real(wp), parameter :: H_SI    = 6.62606957e-34_wp
    real(wp), parameter :: C_SI    = 2.99792458e8_wp
@@ -268,8 +257,11 @@ module sed_astrodust_mod
 
    procedure(euv_band_optics_i), pointer :: euv_band_optics => null()
 
-   logical, save :: use_stored_q_tables = .true.
    logical :: initialized = .false.
+   ! Which build filled the module grids.  Bumped once per successful build and
+   ! stamped into the model; dust_emission and size_integrated_extinction, which
+   ! read those grids, compare against it.  See dust_model_t%build_id.
+   integer, save :: active_build_id = 0
    logical, save :: use_induced_emission = .false.
 
    ! dbdis-style photon-energy cutoff in the heuristic GD emission sum:
@@ -895,7 +887,8 @@ contains
    ! grain-charging model (pah_ionfrac) at intensity u_isrf.
    ! =====================================================================
    subroutine sed_init_dl07(qtable_path, sizedist_path, sd_index, u_isrf, &
-                            NT_in, T_lo, T_hi, status, lam_min, lam_axis, include_euv)
+                            NT_in, T_lo, T_hi, status, lam_min, lam_axis, include_euv, &
+                            stored_q_dir)
       character(len=*), intent(in) :: qtable_path, sizedist_path
       integer,          intent(in) :: sd_index, NT_in
       real(wp),         intent(in) :: u_isrf, T_lo, T_hi
@@ -928,7 +921,18 @@ contains
       ! data/dl07/sedust_dl07.h5 here is the same as handing the axis through
       ! lam_axis.  Ignored for a text table, and by lam_axis when that is given.
       logical, optional, intent(in) :: include_euv
+      ! Where this model's stored cross sections come from.  Omitted, the
+      ! model's own directory under the data root, with the /qtable of an HDF5
+      ! qtable_path tried ahead of it -- so one file supplies both the axis and
+      ! the numbers, and no caller can pair the axis of one source with the
+      ! optics of another.  Passed BLANK, NOTHING stored is read from anywhere
+      ! and every optic is solved from the dielectric functions: that is what
+      ! make_qtable.x asks for, being the program that writes these tables, and
+      ! what a test comparing two builds of one model asks for, so that both
+      ! take the same route whatever grid they are on.
+      character(len=*), optional, intent(in) :: stored_q_dir
 
+      character(len=512) :: q_h5, q_dir
       integer  :: i, ja, jw, jt, n_euv
       real(wp) :: a_um, t, da, qabs1, Q_neu, Q_ion
       real(wp) :: geo, qext1, qsca1, gsca1
@@ -952,6 +956,17 @@ contains
       ! log grid built below -- NOT the size-dist file, whose dn columns are
       ! unused here (dn/da comes from grain_dist_dl07, the WD01 analytic model).
       if (present(status)) status = 0
+      ! The two places stored optics can come from, resolved once.  When
+      ! qtable_path names an HDF5 product, that product is also where the
+      ! optics come from: one file, one set of numbers.
+      q_h5 = ''
+      if (is_hdf5_path(qtable_path)) q_h5 = qtable_path
+      q_dir = sedust_dir(trim(sed_get_data_root()), 'dl07')
+      if (present(stored_q_dir)) then
+         q_dir = stored_q_dir
+         ! Blank means no stored optics AT ALL, the product included.
+         if (len_trim(stored_q_dir) == 0) q_h5 = ''
+      end if
       if (present(lam_axis) .or. is_hdf5_path(qtable_path)) then
          ! The axis is given outright, or read from the product that carries
          ! it; either way no text Q table is opened.
@@ -1068,7 +1083,7 @@ contains
       ! Mie on the D03 astrosilicate dielectric function keeps every return, so
       ! the scattering cross section and its asymmetry come from the same
       ! calculation as the absorption rather than from a tabulated albedo.
-      call stored_q_on_model_grid('q_dl07_sil', 'sil', tQa, tQs, tGg, got_sil)
+      call stored_q_on_model_grid(trim(q_h5), trim(q_dir), 'q_dl07_sil', 'sil', tQa, tQs, tGg, got_sil)
       do ja = 1, NA
          a_um = aeff(ja)
          geo  = PI * (a_um * UM2CM)**2
@@ -1106,13 +1121,20 @@ contains
          ! ionized (single cation-only solve). aeff in microns.
          if (aeff(ja) > 0.99999e-2_wp) fion(ja) = 1.0_wp
       end do
-      call stored_q_on_model_grid('q_dl07_pah_neu', 'pah_neu', tQa, tQs, tGg, got_neu)
-      call stored_q_on_model_grid('q_dl07_pah_ion', 'pah_ion', uQa, uQs, uGg, got_ion)
-      call stored_q_on_model_grid('q_dl07_gra', 'gra',     vQa, vQs, vGg, got_gra)
+      call stored_q_on_model_grid(trim(q_h5), trim(q_dir), 'q_dl07_pah_neu', 'pah_neu', tQa, tQs, tGg, got_neu)
+      call stored_q_on_model_grid(trim(q_h5), trim(q_dir), 'q_dl07_pah_ion', 'pah_ion', uQa, uQs, uGg, got_ion)
+      call stored_q_on_model_grid(trim(q_h5), trim(q_dir), 'q_dl07_gra', 'gra',     vQa, vQs, vGg, got_gra)
       if (sed_verbose) then
          if (got_sil .and. got_neu .and. got_ion .and. got_gra) then
-            write(*,'(a)') ' sed_init_dl07: optics read from the stored tables' // &
-                           ' under ../data/dl07/'
+            ! Name the source that was opened, not a directory written down
+            ! here: this line was printed on the HDF5 route too, and named a
+            ! directory that run had not touched.
+            if (len_trim(q_h5) > 0) then
+               write(*,'(a,a)') ' sed_init_dl07: optics read from ', trim(q_h5)
+            else
+               write(*,'(a,a)') ' sed_init_dl07: optics read from the stored' // &
+                                ' tables under ', trim(q_dir)
+            end if
          else
             write(*,'(a)') ' sed_init_dl07: optics solved from the dielectric' // &
                            ' functions (no stored table on this grid)'
@@ -2020,7 +2042,7 @@ contains
    ! =====================================================================
 
 
-   subroutine stored_q_on_model_grid(base, comp, Qa, Qs, Gg, found, rho)
+   subroutine stored_q_on_model_grid(h5, dir, base, comp, Qa, Qs, Gg, found, rho)
       ! Load the stored cross-section table of one population whose axes ARE
       ! the model grid this build just fixed.  Two wavelength sets ship for each
       ! population, so the one whose lambda and a_eff match is the one this
@@ -2028,21 +2050,33 @@ contains
       ! grid we stored no table for -- and the caller then solves the optics as
       ! it always did.
       !
-      ! The HDF5 product is tried first, and its two sets are the two halves of
-      ! one axis rather than two files; the text tables under data/<model>/ are
-      ! the same numbers to their seven written digits.
+      ! WHERE THE NUMBERS COME FROM IS AN ARGUMENT, not module state.  It used
+      ! to be a module variable that only build_dust ever assigned, so every
+      ! other caller silently took the text route whatever product it had named
+      ! -- which is how calc_kext.x came to take a model's wavelength axis from
+      ! its HDF5 product and that model's optics from the seven-digit text
+      ! tables, and write the two into one file as /kext and /qtable.
+      !
+      !   h5   the model's HDF5 product, or blank.  Tried first; its two
+      !        wavelength sets are the two halves of one axis, not two files.
+      !   dir  a directory of text tables ('.../dl07/'), or blank.  The same
+      !        numbers to their seven written digits.
+      !
+      ! Both blank means "no stored optics": the caller solves from the
+      ! dielectric functions.  That is what make_qtable.x asks for, being the
+      ! program that writes these tables.
       !
       ! Every node must agree to a relative 1e-6.  That is set by the TEXT
       ! tables' own written precision, not by any physics -- and it is still
       ! four orders tighter than it needs to be to tell one node from the next,
       ! since these grids step by about 1% in wavelength.
+      character(len=*),      intent(in)  :: h5, dir
       character(len=*),      intent(in)  :: base
       ! Group name inside the HDF5 product ('sil', 'gra', 'pah_neu', ...).
       character(len=*),      intent(in)  :: comp
       real(wp), allocatable, intent(out) :: Qa(:,:), Qs(:,:), Gg(:,:)
       logical,               intent(out) :: found
       real(wp), optional,    intent(inout) :: rho
-      character(len=*), parameter :: DIR = '../data/dl07/'
       character(len=*), parameter :: SUF(2) = [character(len=4) :: '_euv', '    ']
       logical,          parameter :: WIDE(2) = [.true., .false.]
       real(wp), allocatable :: tl(:), ta(:), Qe(:,:)
@@ -2051,16 +2085,15 @@ contains
       logical :: ok
 
       found = .false.
-      if (.not. use_stored_q_tables) return
 
-      if (len_trim(stored_q_h5) > 0) then
+      if (len_trim(h5) > 0) then
          do k = 1, 2
-            call read_sedust_grid(trim(stored_q_h5), WIDE(k), tl, i_lyman, ok)
+            call read_sedust_grid(trim(h5), WIDE(k), tl, i_lyman, ok)
             if (.not. ok) exit          ! no such file: fall through to the text
             found = grid_matches(tl)
             deallocate(tl)
             if (.not. found) cycle
-            call read_sedust_qtable(trim(stored_q_h5), comp, WIDE(k), ta, Qe, Qa, Qs, &
+            call read_sedust_qtable(trim(h5), comp, WIDE(k), ta, Qe, Qa, Qs, &
                                     Gg, rho_h5, ok)
             if (.not. ok) then;  found = .false.;  cycle;  end if
             found = size(ta) == NA
@@ -2073,8 +2106,10 @@ contains
          found = .false.
       end if
 
+      if (len_trim(dir) == 0) return
+
       do k = 1, 2
-         call load_q_component(DIR//base//trim(SUF(k))//'.dat', nw, na_t, &
+         call load_q_component(trim(dir)//base//trim(SUF(k))//'.dat', nw, na_t, &
                                tl, ta, Qa, Qs, Gg, ok, rho=rho)
          if (.not. ok) cycle
          if (nw == NLAM .and. na_t == NA) then
@@ -2529,6 +2564,7 @@ contains
       end if
 
       m%name = 'astrodust'
+      active_build_id = active_build_id + 1;  m%build_id = active_build_id
       m%NA = NA;  m%NLAM = NLAM;  m%NT = NT
       m%lam = lam;  m%aeff = aeff;  m%T_first = T_first;  m%log_T_first = log_T_first
       m%use_induced_emission = use_induced_emission
@@ -2552,8 +2588,8 @@ contains
       call set_pop(m%pops(3), 'pah', 2, dn_cion, Cabs_cion, kappB_cion, H_pah_first, &
                    log_H_pah_first, log_kappB_cion, kappCMB_cion, rho_bulk=RHO_PAH)
 
-      call load_model_extinction_table(m, KEXT_ASTRODUST, kext_path, kok, kpath, &
-                                       default_h5=KEXT_H5_ASTRODUST)
+      call load_model_extinction_table(m, sed_data_path(KEXT_ASTRODUST), kext_path, kok, kpath, &
+                                       default_h5=sed_data_path(KEXT_H5_ASTRODUST))
       if (.not. kok) then
          if (present(status)) then
             status = 5;  return
@@ -2569,7 +2605,7 @@ contains
    ! neutral + cation summed). Reuses sed_init_dl07 to set the globals.
    subroutine build_dl07(m, qtable_path, sizedist_path, sd_index, u_isrf, &
                          NT_in, T_lo, T_hi, status, lam_min, kext_path, lam_axis, &
-                         include_euv)
+                         include_euv, stored_q_dir)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: qtable_path, sizedist_path
       integer,            intent(in)  :: sd_index, NT_in
@@ -2597,6 +2633,9 @@ contains
       ! Which axis to take when qtable_path names an HDF5 product; see
       ! sed_init_dl07.
       logical, optional, intent(in) :: include_euv
+      ! Where this model's stored cross sections come from, blank for none at
+      ! all; see sed_init_dl07.
+      character(len=*), optional, intent(in) :: stored_q_dir
       logical :: kok
       character(len=512) :: kpath
 
@@ -2608,12 +2647,13 @@ contains
       gd_apply_d03_reduction = .true.
       call sed_init_dl07(qtable_path, sizedist_path, sd_index, u_isrf, NT_in, T_lo, T_hi, &
                          status=status, lam_min=lam_min, lam_axis=lam_axis, &
-                         include_euv=include_euv)
+                         include_euv=include_euv, stored_q_dir=stored_q_dir)
       if (present(status)) then
          if (status /= 0) return
       end if
 
       m%name = 'dl07'
+      active_build_id = active_build_id + 1;  m%build_id = active_build_id
       m%NA = NA;  m%NLAM = NLAM;  m%NT = NT
       m%lam = lam;  m%aeff = aeff;  m%T_first = T_first;  m%log_T_first = log_T_first
       m%use_induced_emission = use_induced_emission
@@ -2660,8 +2700,8 @@ contains
                    log_H_pah_first, log_kappB_cion, kappCMB_cion, &
                    Csca_in=Csca_car, gsca_in=gsca_car, rho_bulk=RHO_GRAPHITE)
 
-      call load_model_extinction_table(m, KEXT_DL07, kext_path, kok, kpath, &
-                                       default_h5=KEXT_H5_DL07)
+      call load_model_extinction_table(m, sed_data_path(KEXT_DL07), kext_path, kok, kpath, &
+                                       default_h5=sed_data_path(KEXT_H5_DL07))
       if (.not. kok) then
          if (present(status)) then
             status = 5;  return
@@ -2681,7 +2721,7 @@ contains
    ! (H = u_spec(T)*rho*(4pi/3)a^3). The shared lambda grid is the optics
    ! grid (all 3 components share 1201 wavelengths). Channels: PAH, GRA, SIL.
    subroutine build_zubko(m, config_path, data_dir, NT_in, T_lo, T_hi, status, kext_path, &
-                          lam_min)
+                          lam_min, include_euv, qtable_path, optics)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: config_path, data_dir
       integer,            intent(in)  :: NT_in
@@ -2695,24 +2735,57 @@ contains
       !   status = 4  a component's size/wavelength grid is inconsistent
       !   status = 5  a component's calorimetry read failed
       !   status = 6  the requested extinction table failed to load
-      !   status = 7  lam_min shorter than the model's own optics table
+      !   status = 7  lam_min shorter than this model's own optics table, which
+      !               it cannot extend
+      !   status = 8  optics is not one of 'zda' | 'mie_d03'
       integer, optional,  intent(out) :: status
       ! Optional precomputed size-integrated extinction curve for
       ! dust_extinction to serve; see build_astrodust. Omitted, KEXT_ZUBKO.
       character(len=*), optional, intent(in) :: kext_path
-      ! Shortest wavelength [um] the model must cover.  For astrodust and DL07
-      ! this argument EXTENDS the grid below the optics table, using the
-      ! dielectric function the table was computed from.  This model has no
-      ! dielectric function of its own -- the ZDA tables ARE the model, and
-      ! nothing here can solve a new wavelength for them -- so here
-      ! it can only NARROW the grid: wavelengths shortward of it are dropped
-      ! from the tables, row by row, and nothing is recomputed.  A floor below
-      ! the tables' own start is refused (status 7) rather than silently
-      ! ignored.  That is what a non-ionizing host wants: the ZDA tables start
-      ! at 1.0e-3 um (1.24 keV), 91 times harder than a field illuminated to
-      ! the Lyman limit, and every wavelength kept costs solver time in every
-      ! cell.
+      ! Shortest wavelength [um] the model must COVER.  One meaning for every
+      ! model: astrodust and DL07 meet it by extending the grid on the
+      ! dielectric function their optics came from, and this model meets it
+      ! when its own table already reaches -- the ZDA tables ARE the model and
+      ! nothing here can solve a new wavelength for them -- or refuses it
+      ! (status 7) when they do not.  It never NARROWS the grid.  It used to,
+      ! which is how a host with one physically motivated floor and one
+      ! build_dust call silently truncated this model alone while extending the
+      ! other two.  Narrowing is what include_euv is for.
       real(wp), optional, intent(in) :: lam_min
+      ! Whether to keep the ionizing part of the model's own optics grid.
+      ! Default .true., the whole table.  .false. cuts at lyman_index, the same
+      ! index cut the HDF5 products carry for astrodust and DL07, so one
+      ! argument means one thing across the three models.  Pure row selection
+      ! on the tables: no value is recomputed.  The ZDA tables start at
+      ! 1.0e-3 um (1.24 keV), 91 times harder than a field illuminated to the
+      ! Lyman limit, and every wavelength kept costs solver time in every cell.
+      logical, optional, intent(in) :: include_euv
+      ! The model's HDF5 product, when the caller has one.  This is where the
+      ! stored cross sections come from; blank or omitted leaves the text
+      ! tables under data_dir and then the ZDA optics tables themselves.  It is
+      ! an argument rather than module state so that a program writing /kext
+      ! into a product takes its optics from the /qtable of that same product.
+      character(len=*), optional, intent(in) :: qtable_path
+      ! WHICH optics inside that product.  Two sets are stored:
+      !   'zda'      (default) the tables the Camps et al. (2015) benchmark
+      !              distributes, which is what the seven codes it compares
+      !              against read, so a run against that benchmark measures the
+      !              stochastic-heating solver and not an optics difference.
+      !              Their own headers: Zubko's multilayer-sphere code
+      !              (1997-2002) for the silicate and graphite, Misselt's 2009
+      !              implementation of Li & Draine (2001) / Draine & Li (2007)
+      !              for the PAHs.
+      !   'mie_d03'  this tree's own recomputation, Mie on the Draine (2003)
+      !              optical constants.  It reproduces the distributed silicate
+      !              to a mean relative 2.4e-6 and the graphite to 0.45% in
+      !              Q_sca and 8% in Q_abs; the PAH component is a different
+      !              implementation of the same LD01/DL07 prescription.
+      ! Both live in /qtable of one file, the second under names suffixed
+      ! _mie_d03, so the choice is a group name and not a second product to
+      ! keep in step.  A tree without the HDF5 product falls back to the text
+      ! q_zubko_*.dat, which are the recomputation, and then to the
+      ! distributed tables themselves.
+      character(len=*), optional, intent(in) :: optics
 
       type(zda_comp_t)      :: comps(ZDA_MAXCOMP)
       integer               :: ncomp, ic, jt, ja, jw, nsize, nwave, ntc, k_lo
@@ -2721,13 +2794,27 @@ contains
       real(wp), allocatable :: qe_h5(:,:)
       real(wp), allocatable :: a_opt(:), lam_opt(:), qa(:,:), qs(:,:), gg(:,:)
       real(wp), allocatable :: Tcal(:), Ucal(:), Ccal(:), Hcol(:)
-      logical               :: rok, kok
-      character(len=512)    :: kpath
+      logical               :: rok, kok, wide
+      character(len=512)    :: kpath, q_h5
+      character(len=16)     :: qset
+      character(len=32)     :: h5comp
       character(len=16)     :: cn(3)
       character(len=8)      :: gt(3)
       character(len=64)     :: optf
 
       if (present(status)) status = 0
+      wide = .true.;  if (present(include_euv)) wide = include_euv
+      q_h5 = '';      if (present(qtable_path)) q_h5 = qtable_path
+      qset = 'zda';   if (present(optics)) qset = optics
+      if (trim(qset) /= 'zda' .and. trim(qset) /= 'mie_d03') then
+         if (present(status)) then
+            status = 8;  return
+         else
+            write(*,'(a,a,a)') ' build_zubko: optics = ''', trim(qset), &
+               ''' is not one of zda | mie_d03'
+            stop 1
+         end if
+      end if
 
       cn = [character(len=16):: 'PAH', 'GRA', 'SIL']
       gt = [character(len=8) :: 'pah', 'gra', 'sil']
@@ -2747,6 +2834,7 @@ contains
       end if
 
       m%name = 'zubko'
+      active_build_id = active_build_id + 1;  m%build_id = active_build_id
       m%use_induced_emission = use_induced_emission
       m%stoch_method = stoch_method
       m%n_channel = 3
@@ -2766,21 +2854,43 @@ contains
          ! data/dielectric/.  That fixes what they are made of: their headers name
          ! Draine's older eps_Sil / eps_Gra, but the D03 revision is what reproduces
          ! them, and only D03 reaches the 1e4 um end of their grid at all.  The
-         ! graphite agrees in Q_sca to 0.45% and in Q_abs to 8% out to 1e3 um; the
-         ! PAH file is not Mie and has no dielectric function -- its header names the
-         ! Li & Draine (2001) / Draine & Li (2007) cross sections, a different
-         ! implementation of which this tree carries as qpah.
+         ! graphite agrees in Q_sca to 0.45% and in Q_abs to 8% out to 1e3 um.
+         !
+         ! The PAH file is a COMPOSITE, and measurably so -- its header names the
+         ! Li & Draine (2001) / Draine & Li (2007) cross sections and a 2009
+         ! implementation by Misselt, not Zubko's code, and comparing it cell by
+         ! cell against Gra_121_1201.dat shows what it is made of:
+         !   Q_sca and <cos>  IDENTICAL to graphite, every size, all 1201
+         !                    wavelengths.  The PAH population scatters as the
+         !                    graphite sphere of the same radius; there is no
+         !                    PAH scattering calculation in it.
+         !   Q_abs            identical to graphite shortward of 0.0585 um
+         !                    (21.2 eV, the DL07 PAH-to-graphite transition) and
+         !                    the PAH prescription longward of it.
+         ! Its 28 radii are graphite's first 28 except the smallest, which the
+         ! file states as 3.50e-4 um while its own x = 2 pi a / lambda column was
+         ! computed with graphite's 3.55e-4.
+         !
+         ! This tree recomputes the PAH absorption with qpah (a different
+         ! implementation of the same LD01/DL07 prescription) and stores NO
+         ! scattering for it, so the model built from the stored tables has a
+         ! non-scattering PAH population.  Measured on the distributed tables,
+         ! the PAH share of the model's C_sca is at most 0.17% (at 0.036 um) and
+         ! below 0.06% everywhere else, so this is a small approximation -- but
+         ! it is one, and it is not what the benchmark's tables do.
          !
          ! This tree's OWN table first: make_qtable.x recomputed each component
          ! on the ZDA grids by the routines above.  The wide table is the one to
-         ! load -- lam_min below cuts it, exactly as it cuts the shipped grid.
-         ! Falling back to the distributed file keeps a tree without
+         ! load -- include_euv below cuts it, exactly as it cuts the shipped
+         ! grid.  Falling back to the distributed file keeps a tree without
          ! the stored tables working, and changes which optics the model is.
          rok = .false.
-         if (use_stored_q_tables .and. len_trim(stored_q_h5) > 0) then
-            call read_sedust_grid(trim(stored_q_h5), .true., lam_opt, k_lo, rok)
+         if (len_trim(q_h5) > 0) then
+            h5comp = trim(gt(ic))
+            if (trim(qset) == 'mie_d03') h5comp = trim(gt(ic))//'_mie_d03'
+            call read_sedust_grid(trim(q_h5), .true., lam_opt, k_lo, rok)
             if (rok) then
-               call read_sedust_qtable(trim(stored_q_h5), trim(gt(ic)), .true., a_opt, &
+               call read_sedust_qtable(trim(q_h5), trim(h5comp), .true., a_opt, &
                                        qe_h5, qa, qs, gg, rho_h5, rok)
                if (rok) then
                   nwave = size(lam_opt);  nsize = size(a_opt)
@@ -2792,10 +2902,10 @@ contains
                if (allocated(lam_opt)) deallocate(lam_opt)
                if (allocated(a_opt))   deallocate(a_opt)
             end if
-            if (rok .and. ic == 1 .and. sed_verbose) write(*,'(a,a)') &
-               ' build_zubko: optics read from ', trim(stored_q_h5)
+            if (rok .and. ic == 1 .and. sed_verbose) write(*,'(a,a,a,a)') &
+               ' build_zubko: ', trim(qset), ' optics read from ', trim(q_h5)
          end if
-         if (use_stored_q_tables .and. .not. rok) then
+         if (.not. rok) then
             call load_q_component(trim(data_dir)//'q_zubko_'//trim(gt(ic))//'_euv.dat', &
                                   nwave, nsize, lam_opt, a_opt, qa, qs, gg, rok, rho=rho)
             if (rok .and. sed_verbose) write(*,'(a,a,a,a)') &
@@ -2819,32 +2929,33 @@ contains
             end if
          end if
 
+         ! lam_min is a COVERAGE requirement, not a cut: this model cannot
+         ! solve a wavelength its tables do not carry, so a floor below them is
+         ! refused rather than answered with a frozen or extrapolated optic.
+         if (present(lam_min)) then
+            if (lam_min > 0.0_wp .and. lam_min < lam_opt(1)) then
+               if (present(status)) then
+                  status = 7;  return
+               else
+                  write(*,'(a,es12.5,a,es12.5)') ' build_zubko: lam_min ', lam_min, &
+                     ' um is shorter than the optics table, which starts at ', lam_opt(1)
+                  stop 1
+               end if
+            end if
+         end if
+
          ! Narrow the grid to the requested coverage before anything downstream
          ! sees it, so the shared-grid checks, the cross sections and the
          ! Planck-averaged opacities all follow from the same axis.  Pure row
          ! selection on the tables: no value is recomputed.
-         if (present(lam_min)) then
-            if (lam_min > 0.0_wp) then
-               if (lam_min < lam_opt(1)) then
-                  if (present(status)) then
-                     status = 7;  return
-                  else
-                     write(*,'(a,es12.5,a,es12.5)') ' build_zubko: lam_min ', lam_min, &
-                        ' um is shorter than the optics table, which starts at ', lam_opt(1)
-                     stop 1
-                  end if
-               end if
-               k_lo = 1
-               do jw = 1, nwave
-                  if (lam_opt(jw) >= lam_min) then;  k_lo = jw;  exit;  end if
-               end do
-               if (k_lo > 1) then
-                  nwave   = nwave - k_lo + 1
-                  lam_opt = lam_opt(k_lo:)
-                  qa      = qa(k_lo:, :)
-                  qs      = qs(k_lo:, :)
-                  gg      = gg(k_lo:, :)
-               end if
+         if (.not. wide) then
+            k_lo = lyman_index(lam_opt)
+            if (k_lo > 1) then
+               nwave   = nwave - k_lo + 1
+               lam_opt = lam_opt(k_lo:)
+               qa      = qa(k_lo:, :)
+               qs      = qs(k_lo:, :)
+               gg      = gg(k_lo:, :)
             end if
          end if
 
@@ -2980,8 +3091,9 @@ contains
          deallocate(a_opt, lam_opt, qa, qs, gg, Tcal, Ucal, Ccal)
       end do
 
-      call load_model_extinction_table(m, KEXT_ZUBKO, kext_path, kok, kpath, &
-                                       default_h5=KEXT_H5_ZUBKO)
+      call load_model_extinction_table(m, sed_data_path(zubko_kext_default(qset)), kext_path, kok, kpath, &
+                                       default_h5=sed_data_path(KEXT_H5_ZUBKO), &
+                                       h5_group='kext'//trim(zubko_kext_tag(qset)))
       if (.not. kok) then
          if (present(status)) then
             status = 6;  return
@@ -3031,7 +3143,7 @@ contains
    ! calorimetry table; all files are sought under data_dir. This is the
    ! data-driven path (build_astrodust/dl07/zubko are the coded builders).
    subroutine build_from_files(m, descriptor_path, data_dir, NT_in, T_lo, T_hi, status, &
-                               kext_path, lam_min)
+                               kext_path, lam_min, include_euv)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: descriptor_path, data_dir
       integer,            intent(in)  :: NT_in
@@ -3055,13 +3167,14 @@ contains
       ! descriptor names optics, sizes and calorimetry but not a precomputed
       ! extinction curve, so unless this is given the model has none to serve.
       character(len=*), optional, intent(in) :: kext_path
-      ! Shortest wavelength [um] the model must cover.  A file-defined model is
-      ! its tables, with no dielectric function behind them, so this can only
-      ! NARROW the grid they were read on: wavelengths shortward of it are
-      ! dropped row by row and nothing is recomputed.  A floor below the tables'
-      ! own start is refused (status 10).  See build_zubko, which takes it the
-      ! same way.
+      ! Shortest wavelength [um] the model must COVER.  A file-defined model is
+      ! its tables, with no dielectric function behind them, so it meets this
+      ! when they already reach and refuses it (status 10) when they do not.
+      ! It never narrows the grid; see build_zubko, which takes it the same way.
       real(wp), optional, intent(in) :: lam_min
+      ! Whether to keep the ionizing part of the tables' own grid; default
+      ! .true.  .false. cuts at lyman_index, as it does for every other model.
+      logical, optional, intent(in) :: include_euv
 
       integer, parameter :: MAXP = 16
       character(len=8)   :: p_gt(MAXP)
@@ -3071,15 +3184,17 @@ contains
       integer            :: npop, u, ios, ip, jt, ja, jw, nsize, nwave, ntc, ndn, nchan, ic, nline
       integer            :: k_lo
       real(wp)           :: t, rho, mass, vf, dlna, uspec, fa, loga, wdev
-      logical            :: rok, kok
+      logical            :: rok, kok, wide
       character(len=256) :: line
       character(len=512) :: kpath
       real(wp), allocatable :: a_opt(:), lam_opt(:), qa(:,:), qs(:,:), gg(:,:)
       real(wp), allocatable :: a_dn(:), f_dn(:), la_dn(:), lf_dn(:), Tc(:), Uc(:), Cc(:)
 
       if (present(status)) status = 0
+      wide = .true.;  if (present(include_euv)) wide = include_euv
 
       npop = 0;  nline = 0;  m%name = 'file_model'
+      active_build_id = active_build_id + 1;  m%build_id = active_build_id
       open(newunit=u, file=trim(descriptor_path), status='old', action='read', iostat=ios)
       if (ios /= 0) then
          if (present(status)) then
@@ -3149,30 +3264,29 @@ contains
          end if
          if (p_rho(ip) > 0.0_wp) rho = p_rho(ip)         ! descriptor rho overrides file
 
+         ! lam_min is a COVERAGE requirement, not a cut; see build_zubko.
+         if (present(lam_min)) then
+            if (lam_min > 0.0_wp .and. lam_min < lam_opt(1)) then
+               if (present(status)) then
+                  status = 10;  return
+               else
+                  write(*,'(a,es12.5,a,es12.5)') ' build_from_files: lam_min ', lam_min, &
+                     ' um is shorter than the optics table, which starts at ', lam_opt(1)
+                  stop 1
+               end if
+            end if
+         end if
+
          ! Narrow the grid to the requested coverage before anything downstream
          ! sees it.  Pure row selection on the tables: no value is recomputed.
-         if (present(lam_min)) then
-            if (lam_min > 0.0_wp) then
-               if (lam_min < lam_opt(1)) then
-                  if (present(status)) then
-                     status = 10;  return
-                  else
-                     write(*,'(a,es12.5,a,es12.5)') ' build_from_files: lam_min ', lam_min, &
-                        ' um is shorter than the optics table, which starts at ', lam_opt(1)
-                     stop 1
-                  end if
-               end if
-               k_lo = 1
-               do jw = 1, nwave
-                  if (lam_opt(jw) >= lam_min) then;  k_lo = jw;  exit;  end if
-               end do
-               if (k_lo > 1) then
-                  nwave   = nwave - k_lo + 1
-                  lam_opt = lam_opt(k_lo:)
-                  qa      = qa(k_lo:, :)
-                  qs      = qs(k_lo:, :)
-                  gg      = gg(k_lo:, :)
-               end if
+         if (.not. wide) then
+            k_lo = lyman_index(lam_opt)
+            if (k_lo > 1) then
+               nwave   = nwave - k_lo + 1
+               lam_opt = lam_opt(k_lo:)
+               qa      = qa(k_lo:, :)
+               qs      = qs(k_lo:, :)
+               gg      = gg(k_lo:, :)
             end if
          end if
 
@@ -3189,7 +3303,7 @@ contains
 
          if (ip == 1) then
             NLAM = nwave;  NT = NT_in
-            ! This model's grid is its own optics tables, narrowed by lam_min if
+            ! This model's grid is its own optics tables, narrowed by include_euv if
             ! one was given.  Nothing is ever prepended below them.
             n_lam_euv = 0
             if (allocated(lam)) deallocate(lam, T_first, log_T_first)
@@ -3319,7 +3433,8 @@ contains
    ! =====================================================================
    subroutine build_dust(m, model, data_dir, NT_in, T_lo, T_hi, include_euv, status, &
                          lam_min, kext_path, sd_index, u_isrf, sizedist_path, &
-                         config_path, astrodust_index_path, euv_tmatrix)
+                         config_path, astrodust_index_path, euv_tmatrix, message, &
+                         zubko_optics)
       ! One entry point for every model this library codes, built from ONE
       ! directory and ONE flag:
       !
@@ -3335,19 +3450,35 @@ contains
       ! it: the size distribution (data_dir/release/size_distribution.dat, or
       ! the ZDA config) and the calorimetry.
       !
-      ! WHAT include_euv DECIDES.  The grid.  .false. (the default) builds on
-      ! the non-ionizing part of the model's axis, .true. on the whole of it.
+      ! WHAT include_euv DECIDES.  The grid, and it decides it the same way for
+      ! every model: .false. (the default) builds on the non-ionizing part of
+      ! the model's own axis, .true. on the whole of it.  The cut is an INDEX
+      ! cut at lyman_index -- the last node at or below 0.0912 um -- so the
+      ! grid a host gets COVERS the Lyman limit whatever model it named.  It
+      ! used to be an index cut for two models and a wavelength cut for the
+      ! third, and the third then began 1.2e-5 of itself INSIDE the limit,
+      ! which a host on its own Lyman-limit grid was refused for.
+      !
       ! Because the extinction curve is read from the same file and covers the
       ! wider axis, it covers either grid -- which is what retires the old
       ! pairing of a narrow model with an _euv-only kext table, a mismatch that
       ! used to fail at dust_extinction rather than at the build.
       !
-      ! lam_min then means only what it always meant for a model whose optics
-      ! reach further than its stored axis: reach BELOW what that axis covers.
-      ! For astrodust and DL07 it extends the grid, using the dielectric
-      ! function the optics come from; for zubko and a file-defined model,
-      ! which have no dielectric function behind their tables, it narrows.
-      ! That asymmetry is the models', not this routine's.
+      ! WHAT lam_min DECIDES.  The shortest wavelength the model must COVER,
+      ! and nothing else.  astrodust and DL07 meet it by extending their grid
+      ! on the dielectric function their optics come from; zubko and a
+      ! file-defined model, which have no dielectric function behind their
+      ! tables, meet it when those tables already reach and REFUSE it when they
+      ! do not.  No model truncates for it.  It used to truncate for two of the
+      ! four, so one host with one physically motivated floor got a longer grid
+      ! from two models and a shorter one from the others.
+      !
+      ! WHERE THE DATA IS.  For the length of the build, data_dir is the data
+      ! root: the dielectric functions, the default extinction curves and the
+      ! stored cross-section tables all resolve inside it, not against the
+      ! working directory.  The previous root is restored on the way out.  A
+      ! host can therefore put the data anywhere and stop changing directory
+      ! around the call.
       !
       ! FALLBACK.  A tree with no HDF5 product, or a build made with HDF5=0,
       ! gets the text products through the same builders, and each says on
@@ -3369,11 +3500,29 @@ contains
       real(wp), optional, intent(in)  :: T_lo, T_hi
       ! Carry the ionizing band.  Default .false.
       logical,  optional, intent(in)  :: include_euv
-      ! 0 = success.  Non-zero codes are the ones the model's own builder
-      ! documents, plus:
+      ! 0 = success.  ONE vocabulary, whatever the model: the four builders
+      ! number their own stages differently (5 is an unreadable extinction
+      ! table for astrodust and DL07, 6 for zubko, 9 for from_files, and 6
+      ! means something else again for astrodust), and a host using the single
+      ! entry point should not have to branch on the model name to read a code.
+      ! Each builder's code is mapped onto this list:
+      !   status = 0   built
+      !   status = 1   optics table (Q table, or a component's optics)
+      !   status = 2   size distribution
+      !   status = 3   dielectric function
+      !   status = 4   lam_min not coverable by this model
+      !   status = 5   extinction table
+      !   status = 6   calorimetry
+      !   status = 7   grid inconsistent between components
+      !   status = 8   EUV spheroid optics unavailable (no T-matrix registered)
+      !   status = 9   model definition (the ZDA config, or the descriptor)
       !   status = 90  model name not one of the four
+      !   status = 92  zubko_optics not one of 'zda' | 'mie_d03'
       !   status = 91  'from_files' without config_path (the descriptor)
       integer,  optional, intent(out) :: status
+      ! What went wrong, in words, for a host that has to print one line before
+      ! a collective abort.  Blank on success.
+      character(len=*), optional, intent(out) :: message
       real(wp), optional, intent(in)  :: lam_min
       ! Extinction curve to serve.  Omitted, /kext of the model's own product.
       character(len=*), optional, intent(in) :: kext_path
@@ -3388,9 +3537,14 @@ contains
       character(len=*), optional, intent(in) :: config_path
       character(len=*), optional, intent(in) :: astrodust_index_path
       logical,  optional, intent(in)  :: euv_tmatrix
+      ! zubko only: which of the two stored optics sets to build on, 'zda'
+      ! (default, the benchmark's own tables) or 'mie_d03' (this tree's
+      ! recomputation).  See build_zubko.
+      character(len=*), optional, intent(in) :: zubko_optics
 
-      character(len=512) :: h5, sd, cfg, ddir, kext
-      integer  :: nt
+      character(len=512) :: h5, sd, cfg, ddir
+      character(len=SED_PATHLEN) :: saved_root
+      integer  :: nt, st
       real(wp) :: tlo, thi
       real(wp), allocatable :: lam_h5(:)
       integer  :: sdi, i_lyman
@@ -3398,6 +3552,8 @@ contains
       logical  :: wide, got
 
       if (present(status)) status = 0
+      if (present(message)) message = ''
+      st = 0
       wide = euv_asked(include_euv)
       ! Defaults: the grid the manual quotes as typical, wide enough for the
       ! CMB floor at one end and a stochastically heated small grain at the
@@ -3407,30 +3563,38 @@ contains
       thi  = 5.0e3_wp;   if (present(T_hi))  thi  = T_hi
       ddir = data_dir
       if (len_trim(ddir) == 0) ddir = '../data'
+      ! Point the whole library at this directory for the length of the build,
+      ! so the dielectric functions and the default extinction curves resolve
+      ! inside it and not against the working directory.  Restored on the way
+      ! out, at every exit.
+      saved_root = sed_get_data_root()
+      call sed_set_data_root(trim(ddir))
+
       h5  = sedust_h5_file(trim(ddir), model)
       sd  = trim(ddir)//'/release/size_distribution.dat'
       if (present(sizedist_path)) sd = sizedist_path
-      ! The extinction curve lives in the same file unless the caller names
-      ! another; load_model_extinction_table takes either by its suffix.
-      kext = h5
-      if (present(kext_path)) kext = kext_path
+      ! kext_path is NOT given a value here.  Naming a file is a contract --
+      ! the builder fails if it cannot be read -- and passing the product path
+      ! unconditionally turned the model's own SOFT default into a hard one,
+      ! so a tree without the curve could no longer build a model for emission
+      ! alone.  Absent, it propagates as absent, and each builder falls to its
+      ! own default: /kext of the product, then the model's text curve, then no
+      ! extinction and a status from dust_extinction rather than a failed
+      ! build.  Both defaults resolve against the data root set above.
 
       sdi   = 7;        if (present(sd_index)) sdi   = sd_index
       uisrf = 1.0_wp;   if (present(u_isrf))   uisrf = u_isrf
-
-      ! The stored cross sections of dl07 and zubko come from this file for the
-      ! length of the build, and from the text tables again after it.
-      stored_q_h5 = h5
 
       select case (trim(model))
 
       case ('astrodust')
          ! The Q table IS the optics here, so the HDF5 path goes straight in;
          ! sed_init reads /qtable/astrodust from it and cuts at i_lyman.
-         call build_astrodust(m, trim(h5), trim(sd), nt, tlo, thi, status=status, &
+         call build_astrodust(m, trim(h5), trim(sd), nt, tlo, thi, status=st, &
                               lam_min=lam_min, astrodust_index_path=astrodust_index_path, &
-                              kext_path=trim(kext), euv_tmatrix=euv_tmatrix, &
+                              kext_path=kext_path, euv_tmatrix=euv_tmatrix, &
                               include_euv=wide)
+         call report(st, [1, 2, 3, 4, 5, 8])
 
       case ('dl07')
          ! This model takes only a grid from a Q table -- its optics are Mie on
@@ -3439,51 +3603,107 @@ contains
          call read_sedust_grid(trim(h5), wide, lam_h5, i_lyman, got)
          if (got) then
             call build_dl07(m, trim(h5), trim(sd), sdi, uisrf, nt, tlo, thi, &
-                            status=status, lam_min=lam_min, kext_path=trim(kext), &
+                            status=st, lam_min=lam_min, kext_path=kext_path, &
                             lam_axis=lam_h5)
             deallocate(lam_h5)
          else
             ! No product to read: the text route, on the astrodust Q table the
             ! model's grid has always come from.
             call build_dl07(m, trim(ddir)//dl07_text_qtable(wide), trim(sd), sdi, uisrf, &
-                            nt, tlo, thi, status=status, lam_min=lam_min, &
-                            kext_path=kext_or_text(kext, KEXT_DL07))
+                            nt, tlo, thi, status=st, lam_min=lam_min, &
+                            kext_path=kext_path)
          end if
+         call report(st, [1, 2, 0, 4, 5, 0])
 
       case ('zubko')
          cfg = trim(sedust_dir(trim(ddir), 'zubko'))//'ZDA_BARE_GR_S_Config.dat'
          if (present(config_path)) cfg = config_path
          call build_zubko(m, trim(cfg), trim(sedust_dir(trim(ddir), 'zubko')), &
                           nt, tlo, thi, &
-                          status=status, kext_path=kext_or_text(kext, KEXT_ZUBKO), &
-                          lam_min=zubko_floor(wide, lam_min))
+                          status=st, kext_path=kext_path, lam_min=lam_min, &
+                          include_euv=wide, qtable_path=trim(h5), &
+                          optics=zubko_optics)
+         call report(st, [9, 9, 1, 7, 6, 5, 4, 92])
 
       case ('from_files')
          if (.not. present(config_path)) then
-            if (present(status)) then
-               status = 91
-            else
-               write(*,'(a)') ' build_dust: from_files needs config_path (the descriptor)'
-               stop 1
-            end if
-            stored_q_h5 = '';  return
+            call finish(91, 'build_dust: from_files needs config_path (the descriptor)')
+            return
          end if
          call build_from_files(m, config_path, trim(ddir), nt, tlo, thi, &
-                               status=status, kext_path=kext_path, lam_min=lam_min)
+                               status=st, kext_path=kext_path, lam_min=lam_min, &
+                               include_euv=wide)
+         call report(st, [9, 9, 9, 9, 1, 7, 2, 6, 5, 4])
 
       case default
-         if (present(status)) then
-            status = 90
-         else
-            write(*,'(a,a,a)') ' build_dust: unknown model ''', trim(model), &
-               ''' (astrodust | dl07 | zubko | from_files)'
-            stop 1
-         end if
+         call finish(90, 'build_dust: unknown model '''//trim(model)// &
+                         ''' (astrodust | dl07 | zubko | from_files)')
+         return
       end select
 
-      stored_q_h5 = ''
+      call sed_set_data_root(trim(saved_root))
 
    contains
+
+      subroutine report(code, map)
+         ! Map a builder's own stage number onto build_dust's single
+         ! vocabulary.  map(k) is what that builder's code k means here; 0
+         ! marks a code the builder does not use.
+         integer, intent(in) :: code, map(:)
+         if (code <= 0) return
+         if (code <= size(map)) then
+            if (map(code) > 0) then
+               call finish(map(code), '');  return
+            end if
+         end if
+         call finish(code, '')       ! 90/91 and anything unmapped, as given
+      end subroutine report
+
+      subroutine finish(code, msg)
+         ! One exit for every failure: restore the data root, then report
+         ! through status, or stop if the caller asked for no status.
+         integer,          intent(in) :: code
+         character(len=*), intent(in) :: msg
+         call sed_set_data_root(trim(saved_root))
+         if (present(message)) then
+            if (len_trim(msg) > 0) then
+               message = msg
+            else
+               message = 'build_dust: '//trim(model)//' failed at '//trim(stage_name(code))
+            end if
+         end if
+         if (present(status)) then
+            status = code
+         else
+            if (len_trim(msg) > 0) then
+               write(*,'(a)') trim(msg)
+            else
+               write(*,'(a,a,a,a)') ' build_dust: ', trim(model), ' failed at ', &
+                                    trim(stage_name(code))
+            end if
+            stop 1
+         end if
+      end subroutine finish
+
+      function stage_name(code) result(nm)
+         integer, intent(in) :: code
+         character(len=48)   :: nm
+         select case (code)
+         case (1);   nm = 'the optics table'
+         case (2);   nm = 'the size distribution'
+         case (3);   nm = 'the dielectric function'
+         case (4);   nm = 'lam_min, which this model cannot cover'
+         case (5);   nm = 'the extinction table'
+         case (6);   nm = 'the calorimetry'
+         case (7);   nm = 'the grid, which its components disagree on'
+         case (8);   nm = 'the EUV spheroid optics (no T-matrix registered)'
+         case (9);   nm = 'the model definition'
+         case (90);  nm = 'the model name'
+         case (91);  nm = 'the missing descriptor'
+         case (92);  nm = 'the zubko_optics name'
+         case default;  write(nm,'(a,i0)') 'stage ', code
+         end select
+      end function stage_name
 
       function dl07_text_qtable(w) result(p)
          ! The astrodust T-matrix table the DL07 grid comes from in the text
@@ -3497,42 +3717,6 @@ contains
          end if
       end function dl07_text_qtable
 
-      function kext_or_text(k, textdefault) result(p)
-         ! With no HDF5 product to read /kext from, fall back to the model's
-         ! default text curve rather than hand the builder a path to a file
-         ! that is not there.
-         character(len=*), intent(in) :: k, textdefault
-         character(len=512) :: p
-         p = k
-         if (is_hdf5_path(k) .and. .not. present(kext_path)) then
-            if (.not. h5_kext_present(k)) p = textdefault
-         end if
-      end function kext_or_text
-
-      logical function h5_kext_present(p)
-         character(len=*), intent(in) :: p
-         real(wp), allocatable :: l(:), a(:), g(:), ce(:), ca(:), cs(:)
-         integer :: n
-         call read_sedust_kext(trim(p), .true., n, l, a, g, ce, ca, cs, h5_kext_present)
-         if (h5_kext_present) deallocate(l, a, g, ce, ca, cs)
-      end function h5_kext_present
-
-      function zubko_floor(w, lm) result(f)
-         ! This model's grid IS its optics table, which reaches 1.24 keV, so
-         ! the narrow request is a cut at the Lyman limit rather than an
-         ! extension -- the same asymmetry build_zubko documents.  An explicit
-         ! lam_min wins, because a host asking for a particular floor means it.
-         logical,  intent(in) :: w
-         real(wp), optional, intent(in) :: lm
-         real(wp) :: f
-         if (present(lm)) then
-            f = lm
-         else if (w) then
-            f = 0.0_wp                      ! 0 = no narrowing; build_zubko ignores it
-         else
-            f = LAM_LYMAN_UM
-         end if
-      end function zubko_floor
 
    end subroutine build_dust
 
@@ -3553,11 +3737,25 @@ contains
       ! original stop-on-error behavior is kept (as the CLI drivers expect).
       !   status = 1  unknown stoch_method
       !   status = 2  'qm' selected but a population is missing its radii
+      !   status = 3  m is not the most recently built model
       integer,  optional, intent(out) :: status
       real(wp), allocatable :: Jout_pop(:), Jchan(:,:)
       integer :: ip, ic
 
       if (present(status)) status = 0
+
+      ! This routine solves on the MODULE grids, which the last build filled,
+      ! so it can only answer for the model that build produced.  Refuse any
+      ! other rather than return another model's numbers under this one's name.
+      if (m%build_id /= active_build_id .or. active_build_id == 0) then
+         if (present(status)) then
+            status = 3;  return
+         else
+            write(*,'(a)') 'dust_emission: m is not the most recently built model'
+            write(*,'(a)') '   rebuild it, or query models one at a time'
+            stop 1
+         end if
+      end if
 
       ! Validate the model's chosen solver before doing any work.
       select case (trim(m%stoch_method))
@@ -3774,7 +3972,12 @@ contains
    ! through absorption only and the astrodust grains carry all the scattering.
    !
    ! Units: all cross sections [cm^2/H]; gbar dimensionless.
-   ! REQUIRES: m is the most recently built model (its grids == the globals).
+   !
+   ! This routine reads NOTHING but m: every array it sums is a component of
+   ! the model argument, so unlike dust_emission it does NOT require m to be
+   ! the most recently built model, and two models may be integrated one after
+   ! the other.  It carried the opposite claim in this comment for a while, and
+   ! at least one host wrote that restriction down as though it were real.
    subroutine size_integrated_extinction(m, Cext, Cabs, Csca, gbar, albedo, status)
       type(dust_model_t), intent(in)  :: m
       real(wp),           intent(out) :: Cext(:), Cabs(:), Csca(:)   ! (NLAM) [cm^2/H]
@@ -3910,7 +4113,27 @@ contains
    ! An empty path names no file, so default_path = '' means the model has no
    ! default at all, and kext_path = '' asks for no table rather than for a file
    ! that cannot be opened.
-   subroutine load_model_extinction_table(m, default_path, kext_path, ok, path, default_h5)
+   pure function zubko_kext_tag(qset) result(t)
+      ! The suffix a zubko extinction curve carries when it is the size
+      ! integral of the non-default optics.  The default set is unmarked, so
+      ! the shipped file and group names do not move.
+      character(len=*), intent(in) :: qset
+      character(len=16) :: t
+      t = ''
+      if (trim(qset) /= 'zda') t = '_'//trim(qset)
+   end function zubko_kext_tag
+
+
+   pure function zubko_kext_default(qset) result(p)
+      ! The text curve behind the product, named the same way.
+      character(len=*), intent(in) :: qset
+      character(len=96) :: p
+      p = 'zubko/kext_zubko_BARE_GR_S'//trim(zubko_kext_tag(qset))//'_euv.dat'
+   end function zubko_kext_default
+
+
+   subroutine load_model_extinction_table(m, default_path, kext_path, ok, path, default_h5, &
+                                          h5_group)
       type(dust_model_t), intent(inout) :: m
       character(len=*),   intent(in)  :: default_path
       character(len=*), optional, intent(in) :: kext_path
@@ -3918,6 +4141,11 @@ contains
       ! /kext of this file is tried before default_path, and default_path is
       ! what a tree without the product falls back to.
       character(len=*), optional, intent(in) :: default_h5
+      ! Which curve inside that product, '/kext' by default.  A model storing
+      ! more than one set of optics stores the matching curve beside each, so
+      ! that what dust_extinction serves is the size integral of the very
+      ! optics the model was built on.
+      character(len=*), optional, intent(in) :: h5_group
       logical,            intent(out) :: ok
       ! The file that was tried, for the caller's error message.
       character(len=*),   intent(out) :: path
@@ -3943,8 +4171,14 @@ contains
          ! grid, so the widest one covers every grid the model can be built on
          ! and there is nothing left for a caller to select wrongly.  That is
          ! what retires the pairing of a narrow model with an _euv-only curve.
-         call read_sedust_kext(trim(path), .true., m%kext_n, m%kext_lam, albedo_t, &
-                               m%kext_gbar, m%kext_Cext, m%kext_Cabs, m%kext_Csca, tok)
+         if (present(h5_group)) then
+            call read_sedust_kext(trim(path), .true., m%kext_n, m%kext_lam, albedo_t, &
+                                  m%kext_gbar, m%kext_Cext, m%kext_Cabs, m%kext_Csca, tok, &
+                                  group = h5_group)
+         else
+            call read_sedust_kext(trim(path), .true., m%kext_n, m%kext_lam, albedo_t, &
+                                  m%kext_gbar, m%kext_Cext, m%kext_Cabs, m%kext_Csca, tok)
+         end if
       else
          call load_kext_table(trim(path), m%kext_n, m%kext_lam, albedo_t, m%kext_gbar, &
                               m%kext_Cext, m%kext_Cabs, m%kext_Csca, tok)

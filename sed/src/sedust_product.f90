@@ -7,8 +7,9 @@ module sedust_product_mod
    ! the writing side).
    !
    ! WHAT include_euv MEANS.  A file holds ONE wavelength axis, the widest the
-   ! model has, and /grid records i_lyman, the first index at or longward of
-   ! 0.0912 um.  Every routine here takes include_euv:
+   ! model has, and /grid records i_lyman, where that axis crosses the Lyman
+   ! limit (lyman_index below defines exactly where).  Every routine here takes
+   ! include_euv:
    !
    !   .true.   the whole axis, for a host that transports ionizing radiation
    !   .false.  lambda(i_lyman:) and the same slice of every wavelength-indexed
@@ -29,12 +30,50 @@ module sedust_product_mod
    implicit none
    private
 
+   ! The Lyman limit, 13.6 eV: where an interstellar radiation field stops, and
+   ! the short-wavelength end of the non-ionizing view of every product.
+   real(wp), parameter :: LAM_LYMAN_UM = 0.0912_wp
+   ! A node this close to the limit in relative terms IS the limit.  The
+   ! astrodust and DL07 axes carry 0.0912 um bit-exactly, so this changes
+   ! nothing for them today; it keeps the rule from turning on the last bit of
+   ! a product someone rewrites.
+   real(wp), parameter :: LYMAN_TOL = 1.0e-9_wp
+
    public :: sedust_dir, sedust_h5_file
+   public :: LAM_LYMAN_UM, lyman_index
    public :: read_sedust_grid
    public :: read_sedust_qtable
    public :: read_sedust_kext
 
 contains
+
+   pure integer function lyman_index(lam) result(i)
+      ! Where an ascending wavelength axis crosses the Lyman limit: the LAST
+      ! node at or below 0.0912 um, not the first at or above it.
+      !
+      ! The non-ionizing view of a product is lam(i:), and a host interpolates
+      ! that view onto its own grid, so the view has to COVER the band the host
+      ! transports.  A host whose transport floor IS the Lyman limit is then
+      ! inside the table by construction, for every model alike.
+      !
+      ! Cutting at the first node at or above the limit instead leaves the
+      ! limit OUTSIDE the view whenever the grid has no node exactly there.
+      ! The astrodust and DL07 axes do have one -- both rules return the same
+      ! index for them -- but the ZDA grid does not: its first node above the
+      ! limit sits 1.2e-5 of itself inside it, just past dust_extinction's
+      ! EDGE_TOL, so the same call that was served for two models was refused
+      ! for the third.  One node of the model's own table is not extrapolation;
+      ! widening the allowance instead would have weakened the guard for every
+      ! model at every wavelength.
+      real(wp), intent(in) :: lam(:)
+      integer :: k
+      i = 1
+      do k = 1, size(lam)
+         if (lam(k) > LAM_LYMAN_UM*(1.0_wp + LYMAN_TOL)) exit
+         i = k
+      end do
+   end function lyman_index
+
 
    function sedust_dir(data_dir, model) result(d)
       ! Everything a model owns lives in ONE directory, data_dir/<model>/:
@@ -197,10 +236,16 @@ contains
 
 
    subroutine read_sedust_kext(path, include_euv, n, lam, albedo, gbar, &
-                               Cext, Cabs, Csca, ok, Mdust_H)
+                               Cext, Cabs, Csca, ok, Mdust_H, group)
       ! The size-integrated extinction curve, in the argument order
       ! load_kext_table uses, so that a caller can take either source without
       ! reshaping anything.  albedo is the file's own C_sca/C_ext.
+      !
+      ! group names the curve inside the file, '/kext' by default.  A model
+      ! that stores more than one set of optics stores the matching curve
+      ! beside each -- zubko has /kext for the distributed tables and
+      ! /kext_mie_d03 for the recomputation -- so that the curve a host is
+      ! served is the size integral of the very optics its model was built on.
       character(len=*),      intent(in)  :: path
       logical,               intent(in)  :: include_euv
       integer,               intent(out) :: n
@@ -210,11 +255,14 @@ contains
       ! Dust mass per H [g/H] the K_abs column is normalized by; 0 when the
       ! group states none.
       real(wp), optional,    intent(out) :: Mdust_H
+      character(len=*), optional, intent(in) :: group
 
       integer(h5id_k) :: fid, gid
       logical :: got
       integer :: i_lyman, i0
+      character(len=64) :: grp
 
+      grp = 'kext';  if (present(group)) grp = group
       n = 0;  ok = .false.
       if (present(Mdust_H)) Mdust_H = 0.0_wp
       call h5_begin(got);  if (.not. got) return
@@ -224,7 +272,7 @@ contains
       call read_lyman_index(fid, i_lyman)
       i0 = lyman_offset(include_euv, i_lyman)
 
-      call h5_group_open(fid, 'kext', gid, got)
+      call h5_group_open(fid, trim(grp), gid, got)
       if (.not. got) then
          ! The file exists but carries no curve: make_qtable.x replaces the file
          ! and calc_kext.x has not run since.  Absence must be tellable from a

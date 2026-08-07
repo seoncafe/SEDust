@@ -14,6 +14,14 @@ radiation field; the fourth, `calc_P` in `sed/src/p_sub.f90`, was found on
 describe the library and have to be remeasured. Sections 1-9 are left as
 written, as the record of the first defect and of a fix that looked complete.
 
+**Layout note, 2026-08-07.** The paths in this document predate the HDF5
+migration and the data-layout rewrite that followed it. The optics are now one
+HDF5 file per model under `data/<model>/`, with the text products beside them;
+`data/kext_*.dat` and `tmatrix/output/q_astrodust_*.dat` referred to here now
+live under `data/astrodust/`. None of that changes the measurements above, which
+are about how the wavelength grid and the radiation field are confused in the
+solver, not about where files sit. See `HDF5_MIGRATION_STATUS.md`.
+
 What the 2026-08-01 entry claimed, and what is no longer true: that with the
 fix in place a Mathis field leaves the zubko output md5 identical to the
 baseline, and astrodust and dl07 byte-identical. With the fourth site repaired

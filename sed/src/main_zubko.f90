@@ -41,6 +41,7 @@ program main_zubko
 
    implicit none
 
+   character(len=*), parameter :: F_QT_ZU    = '../data/zubko/sedust_zubko.h5'
    character(len=*), parameter :: F_ZDA_CFG = '../data/zubko/ZDA_BARE_GR_S_Config.dat'
    character(len=*), parameter :: D_ZUBKO   = '../data/zubko/'
    real(wp),         parameter :: U_ISRF = 1.0_wp        ! reference field: U = 1
@@ -100,11 +101,8 @@ program main_zubko
    write(*,'(a,l1)')   ' EUV grid      : ', use_euv_grid
    write(*,'(a,l1)')   ' hard field    : ', add_hard_field
 
-   if (use_euv_grid) then
-      call build_zubko(m, F_ZDA_CFG, D_ZUBKO, NT_IN, T_LO, T_HI, status)
-   else
-      call build_zubko(m, F_ZDA_CFG, D_ZUBKO, NT_IN, T_LO, T_HI, status, lam_min=LAM_LYMAN)
-   end if
+   call build_zubko(m, F_ZDA_CFG, D_ZUBKO, NT_IN, T_LO, T_HI, status, &
+                    include_euv=use_euv_grid, qtable_path=F_QT_ZU)
    if (status /= 0) then
       write(*,'(a,i0)') ' main_zubko: build_zubko failed, status = ', status
       stop 1

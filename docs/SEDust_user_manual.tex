@@ -174,16 +174,19 @@ from the HDF5 products (\S\ref{sec:hdf5}); the four builders below it stay
 exported so that a host naming its own files keeps working:
 \begin{lstlisting}
 call build_dust     (m, model, data_dir [, NT, T_lo, T_hi] [, include_euv] &
-                     [, status] [, lam_min] [, kext_path] [, sd_index] [, u_isrf] &
+                     [, status] [, message] [, lam_min] [, kext_path] [, sd_index] [, u_isrf] &
                      [, sizedist_path] [, config_path] [, astrodust_index_path] &
                      [, euv_tmatrix])
 call build_astrodust(m, qtable_path, sizedist_path, NT, T_lo, T_hi &
                      [, status] [, lam_min] [, astrodust_index_path] [, kext_path] &
                      [, euv_tmatrix] [, include_euv])
 call build_dl07     (m, qtable_path, sizedist_path, sd_index, U, NT, T_lo, T_hi &
-                     [, status] [, lam_min] [, kext_path] [, lam_axis])
-call build_zubko    (m, config_path, data_dir, NT, T_lo, T_hi [, status] [, kext_path] [, lam_min])
-call build_from_files(m, descriptor_path, data_dir, NT, T_lo, T_hi [, status] [, kext_path])
+                     [, status] [, lam_min] [, kext_path] [, lam_axis] &
+                     [, include_euv] [, stored_q_dir])
+call build_zubko    (m, config_path, data_dir, NT, T_lo, T_hi [, status] [, kext_path] &
+                     [, lam_min] [, include_euv] [, qtable_path] [, optics])
+call build_from_files(m, descriptor_path, data_dir, NT, T_lo, T_hi [, status] &
+                     [, kext_path] [, lam_min] [, include_euv])
 \end{lstlisting}
 
 \begin{itemize}
@@ -197,6 +200,28 @@ call build_from_files(m, descriptor_path, data_dir, NT, T_lo, T_hi [, status] [,
 \item \code{status} (optional, all builders): error report; see
       \S\ref{sec:status}. When present, a missing or malformed input file is
       reported through it and the model is not built, so an RT host can recover.
+      \code{build\_dust} maps every builder's own stage number onto \emph{one}
+      vocabulary, so a host on the single entry point does not branch on the
+      model name to read a code, and takes an optional \code{message} carrying
+      the reason in words --- what an MPI host prints before a collective abort.
+\item \code{data\_dir} (\code{build\_dust}): the data root for the whole library
+      while the build runs. The dielectric functions, the default extinction
+      curves and the stored cross-section tables all resolve inside it, so a
+      host may call \code{build\_dust} from any working directory with an
+      absolute path, and a file that cannot be read arrives as a \code{status},
+      never as a runtime abort. A path the caller names itself is used as given
+      and never composed with the root. A host that calls the four builders
+      directly sets the root once with \code{sed\_set\_data\_root}, re-exported
+      from \code{dust\_lib}.
+\item \code{stored\_q\_dir} (optional, DL07): where this model's stored cross
+      sections come from. Omitted, the model's own directory under the data
+      root, with the \code{/qtable} of an HDF5 \code{qtable\_path} ahead of it.
+      Passed blank, nothing stored is read and every optic is solved from the
+      dielectric functions.
+\item \code{qtable\_path} (optional, Zubko): the model's HDF5 product, which is
+      where its stored cross sections then come from. This is an argument
+      rather than hidden state so that a program writing \code{/kext} into a
+      product takes its optics from the \code{/qtable} of that same product.
 \item \code{lam\_min} (optional, astrodust and DL07): shortest wavelength
       [\um] the model must cover, for a host that transports ionizing
       radiation. See \S\ref{sec:euv}. \textbf{Omitting it reproduces the previous
@@ -427,9 +452,37 @@ can recover; when it is omitted, the same condition prints a message and
 nonzero value only names the failing stage: the contract is simply
 \code{0} = built, nonzero = build failed.
 
+\code{build\_dust} carries a vocabulary of its own, and maps each builder's
+stage number onto it, so a host on the single entry point never branches on the
+model name to read a code. It also takes an optional \code{message}
+(\code{character, intent(out)}) carrying the reason in words, which is what an
+MPI host prints before a collective abort:
+
+\begin{center}
+\begin{tabular}{rl rl}
+\toprule
+\code{0} & built                & \code{6}  & calorimetry \\
+\code{1} & optics table         & \code{7}  & grid inconsistent between components \\
+\code{2} & size distribution    & \code{8}  & EUV spheroid optics unavailable \\
+\code{3} & dielectric function  & \code{9}  & model definition (config / descriptor) \\
+\code{4} & \code{lam\_min} not coverable & \code{90} & model name not one of the four \\
+\code{5} & extinction table     & \code{91} & \code{from\_files} without \code{config\_path} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The four builders keep their own numbering, listed below, for a host
+that calls them directly.
+
 \begin{itemize}
 \item \code{dust\_emission}: \code{1} unknown \code{stoch\_method};
-      \code{2} \code{'qm'} selected but a population's radii are unset.
+      \code{2} \code{'qm'} selected but a population's radii are unset;
+      \code{3} \code{m} is not the most recently built model. This routine
+      solves through \code{sed\_grain\_loop}, which reads the module grids the
+      last build filled, so it can answer for that model and no other; a stale
+      model used to be answered with another model's numbers in silence.
+      \code{dust\_extinction} and \code{size\_integrated\_extinction} are
+      \emph{not} restricted --- both read only the model argument.
 \item \code{dust\_extinction}: \code{1} an output array is not of size
       \code{m\%NLAM}; \code{2} no extinction table was loaded for this model;
       \code{3} \code{m\%lam} reaches outside the loaded table's wavelength
@@ -464,13 +517,17 @@ nonzero value only names the failing stage: the contract is simply
 \item \code{build\_zubko}: \code{1} config read; \code{2} fewer than 3 components;
       \code{3} a component's optics read; \code{4} grid inconsistent;
       \code{5} a component's calorimetry read failed;
-      \code{6} an explicitly named \code{kext\_path} failed to load.
+      \code{8} \code{optics} is neither \code{'zda'} nor \code{'mie\_d03'};
+      \code{6} an explicitly named \code{kext\_path} failed to load;
+      \code{7} \code{lam\_min} is shorter than this model's own optics table,
+      which it cannot extend.
 \item \code{build\_from\_files}: \code{1} descriptor open;
       \code{2} too many \code{pop:} lines; \code{3} invalid channel;
       \code{4} no \code{pop:} lines; \code{5} optics read;
       \code{6} grid inconsistent; \code{7} size-distribution read;
       \code{8} calorimetry read failed;
-      \code{9} an explicitly named \code{kext\_path} failed to load.
+      \code{9} an explicitly named \code{kext\_path} failed to load;
+      \code{10} \code{lam\_min} is shorter than the model's own optics tables.
 \end{itemize}
 
 \noindent A \emph{default} extinction table that cannot be read is not an error
@@ -1499,8 +1556,8 @@ with an eye and diffable.
 \subsection{One wavelength axis, and what \code{include\_euv} means}
 
 Each file carries \emph{one} wavelength axis --- the widest the model has ---
-and records \code{i\_lyman}, the index of the first wavelength at or longward of
-the Lyman limit, $0.0912$\um:
+and records \code{i\_lyman}, the index of the \emph{last} wavelength at or
+shortward of the Lyman limit, $0.0912$\um:
 
 \begin{lstlisting}
 /                   attrs: model, generator, layout
@@ -1522,9 +1579,20 @@ the two cannot disagree, and there is nothing to regenerate twice. That is what
 replaces the paired \code{*\_euv.dat} text products. The cut is an HDF5
 hyperslab, so a non-ionizing host reads only the rows it keeps.
 
-Measured \code{i\_lyman}: astrodust 634 of 1762, DL07 695 of 1823, Zubko 337 of
-1201 --- giving 1129, 1129 and 865 non-ionizing wavelengths, the lengths of the
+Measured \code{i\_lyman}: astrodust 634 of 1762, DL07 695 of 1823, Zubko 336 of
+1201 --- giving 1129, 1129 and 866 non-ionizing wavelengths, the lengths of the
 corresponding text products.
+
+The rule is the \emph{last} node at or below the limit, not the first at or
+above it, because the non-ionizing view is a table an RT host interpolates onto
+its own grid: it has to \emph{cover} the band the host transports. The
+astrodust and DL07 axes carry $0.0912$\um{} exactly, so for them the two rules
+return the same index. The ZDA grid does not, and its first node above the
+limit sits $1.2\times10^{-5}$ of itself inside it --- just past
+\code{dust\_extinction}'s edge allowance, so the same call that was served for
+two models used to be refused for the third. One extra node of the model's own
+table is not extrapolation; widening the allowance instead would have weakened
+the guard for every model at every wavelength.
 
 \begin{table}[h]
 \centering
@@ -1535,6 +1603,7 @@ model & components & $n_a$ \\
 astrodust & \code{astrodust}, \code{pah\_neu}, \code{pah\_ion} & 169 \\
 dl07      & \code{sil}, \code{gra}, \code{pah\_neu}, \code{pah\_ion} & 84 \\
 zubko     & \code{sil}, \code{gra}, \code{pah} & 121, 121, 28 \\
+          & \code{sil\_mie\_d03}, \code{gra\_mie\_d03}, \code{pah\_mie\_d03} & 121, 121, 28 \\
 \bottomrule
 \end{tabular}
 \caption{Grain populations each product carries. Astrodust does \emph{not}
@@ -1542,11 +1611,67 @@ split into silicate and graphite: one composite grain plus PAHs is the premise
 of HD23, and the \code{'sil'} grain-type tag its populations carry internally is
 a legacy label for the enthalpy route, not a claim about the material. A
 population whose cross sections are an absorption prescription rather than a Mie
-solution --- the PAHs --- carries \code{Q\_abs} alone, and its \code{scatters}
-attribute says so, so that an absent scattering term cannot be mistaken for a
-computed zero.}
+solution carries \code{Q\_abs} alone, and its \code{scatters} attribute says
+so, so that an absent scattering term cannot be mistaken for a computed zero.
+Zubko carries \emph{two} sets on one axis --- see \S\ref{sec:zubkooptics}.}
 \label{tab:h5comp}
 \end{table}
+
+\subsection{Zubko carries two sets of optics}\label{sec:zubkooptics}
+
+The ZDA BARE-GR-S model is defined by Zubko, Dwek \& Arendt (2004), and the
+paper is where it would have to be read from. What this tree ships beside it
+are the three grain-input files the Camps et al.\ (2015) benchmark
+distributes ---
+
+\begin{lstlisting}
+data/zubko/suvSil_121_1201.dat   data/zubko/Gra_121_1201.dat
+data/zubko/PAH_28_1201_neu.dat
+\end{lstlisting}
+
+\noindent byte-identical to \code{SHG\_Benchmark/DustModel/GrainInputs/} ---
+so that the participating codes all run one agreed reproduction. Their headers
+record how they were made: Zubko's multilayer-sphere code (1997--2002),
+converted by K.~Misselt in 2002, for the silicate and graphite; a 2009
+implementation by Misselt of Li \& Draine (2001) / Draine \& Li (2007) for the
+PAHs.
+
+Those files are the \textbf{default}. They are stored in \code{/qtable} of the
+product as they stand --- \code{check\_build\_dust.x} reads both sides and
+requires an exact match --- so a run against that benchmark measures the
+stochastic-heating solver and not an optics difference. This tree's own
+recomputation, Mie on the Draine (2003) optical constants, sits beside them
+under names suffixed \code{\_mie\_d03}, and each set has its own extinction
+curve so that what \code{dust\_extinction} serves is the size integral of the
+very optics the model was built on:
+
+\begin{lstlisting}
+/qtable/{sil,gra,pah}                  the benchmark's tables      <- default
+/kext                                    ... and their size integral
+/qtable/{sil,gra,pah}_mie_d03          Mie on the D03 constants
+/kext_mie_d03                            ... and their size integral
+
+call build_dust(m, 'zubko', '../data', status=st)                          ! default
+call build_dust(m, 'zubko', '../data', status=st, zubko_optics='mie_d03')
+\end{lstlisting}
+
+\noindent \code{build\_zubko} takes the same choice as \code{optics}, and
+\code{calc\_kext.x zubko [euv] [zda|mie\_d03]} writes the matching curve. A
+name that is neither is refused (\code{build\_zubko} status 8,
+\code{build\_dust} status 92) rather than silently defaulted.
+
+The recomputation reproduces the distributed silicate to a mean relative
+$2.4\times10^{-6}$ and the graphite to 0.45\% in $Q_{\rm sca}$ and 8\% in
+$Q_{\rm abs}$. Its PAH component is a different implementation of the same
+LD01/DL07 prescription; measured against \code{Gra\_121\_1201.dat} cell by
+cell, the distributed PAH file holds graphite $Q_{\rm sca}$ and $\langle\cos
+\theta\rangle$ at every size and all 1201 wavelengths, and graphite $Q_{\rm
+abs}$ shortward of $0.0585$\um{} (21.2\,eV, the DL07 PAH-to-graphite
+transition), so the ZDA PAHs scatter as the graphite sphere of their own
+radius. The recomputation now does the same. Through one builder and one size
+distribution the two sets differ by at most 0.17\% in $C_{\rm sca}$ and 8.4\%
+in $C_{\rm abs}$, the latter in the far-infrared where the graphite $Q_{\rm
+abs}$ discrepancy sits.
 
 \subsection{\code{build\_dust}: one entry point}
 
@@ -1560,7 +1685,8 @@ call build_dust(m, 'zubko', '../data', include_euv = .false., status = st)
 
 \begin{lstlisting}
 call build_dust(m, model, data_dir [, NT, T_lo, T_hi] [, include_euv] [, status] &
-                [, lam_min] [, kext_path] [, sd_index] [, u_isrf] &
+                [, message] [, lam_min] [, kext_path] [, sd_index] [, u_isrf] &
+                [, zubko_optics] &
                 [, sizedist_path] [, config_path] [, astrodust_index_path] &
                 [, euv_tmatrix])
 \end{lstlisting}
@@ -1581,10 +1707,21 @@ all three out.
 tables and the extinction curve alike. What is \emph{not} optics still comes
 from beside it: the size distribution
 (\code{data\_dir/release/size\_distribution.dat}, or the ZDA config) and the
-calorimetry. \code{include\_euv} decides the grid. \code{lam\_min} then keeps
-only its per-model meaning --- reach \emph{below} what that grid covers; it
-extends the grid for astrodust and DL07 and narrows it for Zubko and a
-file-defined model, for the reasons \S\ref{sec:euv} gives.
+calorimetry.
+
+\code{include\_euv} and \code{lam\_min} each mean \emph{one} thing, for every
+model. \code{include\_euv} selects the view: \code{.false.} cuts the model's own
+axis at \code{i\_lyman}, so the grid a host gets covers the Lyman limit whatever
+model it named. \code{lam\_min} states the shortest wavelength the model must
+\emph{cover}, and never truncates: astrodust and DL07 meet it by extending on
+the dielectric function their optics come from, while Zubko and a file-defined
+model, which have no dielectric function behind their tables, meet it when
+those tables already reach and \emph{refuse} it when they do not.
+
+Both used to be model-dependent, and a host with one call and one physically
+motivated floor met the difference: \code{include\_euv} was an index cut for two
+models and a wavelength cut for the third, and \code{lam\_min} extended two
+models and truncated the other two.
 
 The four builders of \S\ref{sec:models} are unchanged and still exported, so a
 host that names its own files keeps working. Two of them gained an optional

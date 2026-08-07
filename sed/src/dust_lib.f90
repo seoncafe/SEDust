@@ -132,6 +132,32 @@ module dust_lib
    ! than that file's own shortest wavelength (1.00003e-4 um = 12.4 keV) is
    ! refused rather than served with a frozen refractive index.
    !
+   ! WHERE THE DATA IS. build_dust's data_dir is the data root for the whole
+   ! library while the build runs: the dielectric functions, the default
+   ! extinction curves and the stored cross-section tables all resolve inside
+   ! it. It used to resolve the model directories only, the dielectric
+   ! functions being compile-time paths relative to the WORKING directory, so a
+   ! host that pointed data_dir elsewhere separated a model from the optical
+   ! constants its optics were computed on -- and the open had no iostat, so
+   ! the process died before any status could be set. Both are fixed: a host
+   ! may call build_dust from any directory with an absolute data_dir, and a
+   ! path that cannot be read arrives as a status, never as an abort. (A path
+   ! the caller names itself is used as given and never composed with the root,
+   ! so an absolute one stays absolute.)
+   !
+   ! ONE MODEL AT A TIME, FOR EMISSION. dust_emission solves through
+   ! sed_grain_loop, which reads the module-level grids (lam, NLAM, NT,
+   ! T_first) that the LAST build filled, so it can only answer for the most
+   ! recently built model. Passing an older one returns status 3 (or stops,
+   ! when status is omitted) rather than that other model's numbers, which is
+   ! what used to happen in silence. dust_build_table inherits this, being
+   ! built from dust_emission solves.
+   !
+   ! dust_extinction and size_integrated_extinction are NOT restricted: both
+   ! read only the model argument, so a host may hold several models and query
+   ! their optics in any order. (size_integrated_extinction's own header
+   ! claimed the restriction for a while; it never applied to it.)
+   !
    ! Two usage modes:
    !   (a) single-cell EXACT solve: dust_emission(m, J_lam, ...)  -- arbitrary J(lambda).
    !   (b) precomputed TABLE + interpolation, for when the cell field is a
@@ -175,9 +201,9 @@ module dust_lib
    ! the standalone calc_kext.x calls; it is re-exported here for a host that
    ! wants to redo the integral rather than read the product.
    !
-   ! The BUILDER loads the table, not dust_extinction, because the paths are
-   ! relative to the sed/ directory and a host is free to change directory once
-   ! the model is built. build_dust and each builder take an optional kext_path:
+   ! The BUILDER loads the table, not dust_extinction, because a host is free
+   ! to change directory once the model is built. build_dust and each builder
+   ! take an optional kext_path:
    !   call build_dust(m, 'astrodust', '../data', &
    !                   kext_path='../data/astrodust/sedust_astrodust.h5')
    ! A file named that way is a contract: if it cannot be read the build FAILS.
@@ -190,7 +216,28 @@ module dust_lib
    ! HDF5, or one whose product carries no /kext. A default that cannot be read
    ! either way leaves the model with no extinction to serve (dust_extinction
    ! then reports status 2) but does NOT fail the build, so a driver that only
-   ! wants emission still runs.
+   ! wants emission still runs. That holds THROUGH build_dust as well: it
+   ! forwards kext_path only when the caller gave one. It used to pass the
+   ! product path unconditionally, which made the soft default hard -- a tree
+   ! without the curve could then not build a model for emission alone -- and
+   ! it applied a text fallback to two models out of three. One route now, for
+   ! all four.
+   !
+   ! include_euv AND lam_min MEAN ONE THING EACH, FOR EVERY MODEL.
+   ! include_euv selects the view: .false. cuts the model's own axis at
+   ! i_lyman, the LAST node at or below 0.0912 um, so the grid a host gets
+   ! COVERS the Lyman limit whatever model it named. lam_min states the
+   ! shortest wavelength the model must COVER, and never truncates: astrodust
+   ! and DL07 meet it by extending on the dielectric function their optics come
+   ! from, zubko and from_files meet it when their own tables already reach and
+   ! refuse it (status 4 out of build_dust) when they do not.
+   !
+   ! Both were previously model-dependent, and a host with one call and one
+   ! floor met the difference: include_euv was an index cut for two models and
+   ! a wavelength cut for the third, whose grid then began 1.2e-5 of itself
+   ! INSIDE the Lyman limit -- past dust_extinction's edge allowance, so the
+   ! same call served for two models was refused for the third. lam_min
+   ! extended two models and truncated the other two.
    !
    ! The HDF5 product holds ONE axis and the index i_lyman at which it crosses
    ! the Lyman limit, so include_euv picks the view rather than the file. The
@@ -217,7 +264,8 @@ module dust_lib
    ! and contributes zero to the size integral. dust_extinction's status is 0
    ! on success, 1 if an output array is not of size m%NLAM, 2 if no table was
    ! loaded, and 3 if m%lam reaches outside the table; when status is omitted
-   ! such a call stops the run.
+   ! such a call stops the run. dust_emission adds status 3 = m is not the most
+   ! recently built model, and size_integrated_extinction the same.
    !
    ! DUST MASS. The cross sections above are per H nucleon. A host that carries
    ! a dust mass density instead converts with the model's own dust mass per H:
@@ -246,12 +294,28 @@ module dust_lib
    !                          2 size(lamI_total) /= tab%NLAM
    !                          3 lamI_chan present but not (tab%NLAM, tab%n_channel)
    !
+   ! build_dust HAS ONE STATUS VOCABULARY, whatever the model, plus an optional
+   ! `message` carrying the reason in words for a host that must print one line
+   ! before a collective abort:
+   !   0   built                      5   extinction table
+   !   1   optics table               6   calorimetry
+   !   2   size distribution          7   grid inconsistent between components
+   !   3   dielectric function        8   EUV spheroid optics unavailable
+   !   4   lam_min not coverable      9   model definition (config / descriptor)
+   !   90  model name not one of the four
+   !   91  from_files without config_path
+   ! The four builders below it keep their OWN numbering, which is not the same
+   ! one -- an unreadable extinction table is 5 for astrodust and DL07, 6 for
+   ! zubko and 9 for from_files, and 6 means something else again for
+   ! astrodust. A host calling them directly reads the list below; a host on
+   ! build_dust reads the list above and does not branch on the model name.
+   !
    ! The model builders take the same optional final argument, status (integer,
    ! 0 = success). When present, a missing or malformed input file is reported
    ! through it and the model is NOT built (so an RT host can recover); when
    ! omitted such a failure stops the process, which the CLI drivers rely on.
    ! The exact non-zero code only distinguishes the failing stage; the contract
-   ! is simply "0 = built, non-zero = build failed". Codes per builder:
+   ! is simply "0 = built, non-zero = build failed". Codes for each builder:
    !   build_astrodust / build_dl07:  1 Q-table load failed
    !                                  2 size-distribution load failed
    !                                  5 an explicitly named kext_path failed to
@@ -270,11 +334,13 @@ module dust_lib
    !                  3 a component's optics read  4 grid inconsistent
    !                  5 a component's calorimetry read failed
    !                  6 an explicitly named kext_path failed to load
+   !                  7 lam_min shorter than this model's own optics table
    !   build_from_files: 1 descriptor open   2 too many pop: lines
    !                     3 invalid channel   4 no pop: lines
    !                     5 optics read       6 grid inconsistent
    !                     7 size-dist read    8 calorimetry read failed
    !                     9 an explicitly named kext_path failed to load
+   !                     10 lam_min shorter than the model's own optics tables
    !
    ! LINKING. One archive, and one .mod search path:
    !   cd sed && make libsedust.a          # or ./build_lib.sh -> sed/lib/
@@ -294,6 +360,7 @@ module dust_lib
    ! is untouched; this module only re-exports the model API and adds the
    ! table/interpolation layer.
    use constants,         only: wp
+   use sed_paths,         only: sed_set_data_root, sed_get_data_root
    use sed_mathlib,           only: locate
    use sed_astrodust_mod, only: dust_model_t, build_dust, &
                                 build_astrodust, build_dl07, build_zubko, build_from_files, &
@@ -311,6 +378,12 @@ module dust_lib
    ! so that a host naming its own files keeps working unchanged.
    public :: dust_model_t, build_dust
    public :: build_astrodust, build_dl07, build_zubko, build_from_files
+   ! Where the library looks for the data it was not handed a path to.
+   ! build_dust sets this from its own data_dir and restores it, so a host on
+   ! that entry point never calls these.  A host that calls the four builders
+   ! directly, and keeps its data somewhere other than <workdir>/../data, sets
+   ! the root once before the first build.
+   public :: sed_set_data_root, sed_get_data_root
    public :: dust_emission, dust_emission_single_teq, dust_extinction
    public :: size_integrated_extinction, dust_mass_per_H
    ! Optics of the astrodust EUV band; see the EXTREME ULTRAVIOLET note above.

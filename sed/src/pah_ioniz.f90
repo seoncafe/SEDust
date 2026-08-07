@@ -40,16 +40,18 @@ module pah_ioniz_mod
    ! helpers (Mie, linear interpolation, Planck) are private to this module.
    ! ----------------------------------------------------------------------
    use constants, only: wp
+   use sed_paths, only: sed_data_path
    implicit none
    private
    public :: pah_ionfrac
+   public :: pah_ioniz_index_available
 
    ! --- numerical constants ------------------------------------------------
    real(wp), parameter :: PI = 3.141592653589793238462643383279502884197_wp
 
    ! --- graphite dielectric tables (D03) -----------------------------------
-   character(len=*), parameter :: F_CPA = '../data/dielectric/index_CpaD03'
-   character(len=*), parameter :: F_CPE = '../data/dielectric/index_CpeD03'
+   character(len=*), parameter :: F_CPA = 'dielectric/index_CpaD03'
+   character(len=*), parameter :: F_CPE = 'dielectric/index_CpeD03'
    integer,  parameter :: NCPA = 387
    integer,  parameter :: NCPE = 384
    real(wp), parameter :: T_GRAIN = 20.0_wp   ! K, Draine default (TG_COM=20)
@@ -59,6 +61,9 @@ module pah_ioniz_mod
    real(wp), parameter :: FGMIN = 0.01_wp     ! minimum graphitic contribution
 
    logical  :: initialized = .false.
+   ! Whether the dielectric tables loaded; see q_silicate_mod for why this is
+   ! separate from `initialized`.
+   logical  :: load_ok = .false.
    ! base tables (bound-electron eps), wavelengths in micron (descending)
    real(wp) :: cpa_eV(NCPA), cpa_eps1(NCPA), cpa_eps2(NCPA), cpa_wavl(NCPA)
    real(wp) :: cpe_eV(NCPE), cpe_eps1(NCPE), cpe_eps2(NCPE), cpe_wavl(NCPE)
@@ -756,6 +761,14 @@ contains
    ! ======================================================================
    !  Graphite optical-constant helpers (self-contained; mirror q_graphite)
    ! ======================================================================
+   logical function pah_ioniz_index_available()
+      ! Are the D03 graphite dielectric functions this module reads for the
+      ! PAH ionization balance available?  See silicate_index_available.
+      if (.not. initialized) call init_module()
+      pah_ioniz_index_available = load_ok
+   end function pah_ioniz_index_available
+
+
    subroutine init_module()
       call load_tables()
       initialized = .true.
@@ -763,13 +776,20 @@ contains
 
 
    subroutine load_tables()
-      integer  :: i, u
+      integer  :: i, u, ios
       real(wp) :: ener, rn1, rk, e1, e2
 
-      open(newunit=u, file=F_CPA, status='old', action='read')
-      read(u, '(/)')
+      load_ok = .false.
+      cpa_eV = 0.0_wp;  cpa_eps1 = 1.0_wp;  cpa_eps2 = 0.0_wp;  cpa_wavl = 1.0_wp
+      cpe_eV = 0.0_wp;  cpe_eps1 = 1.0_wp;  cpe_eps2 = 0.0_wp;  cpe_wavl = 1.0_wp
+
+      open(newunit=u, file=sed_data_path(F_CPA), status='old', action='read', iostat=ios)
+      if (ios /= 0) return
+      read(u, '(/)', iostat=ios)
+      if (ios /= 0) then;  close(u);  return;  end if
       do i = 1, NCPA
-         read(u, *) ener, rn1, rk, e1, e2
+         read(u, *, iostat=ios) ener, rn1, rk, e1, e2
+         if (ios /= 0) then;  close(u);  return;  end if
          cpa_eV(i)   = ener
          cpa_eps1(i) = e1
          cpa_eps2(i) = e2
@@ -777,16 +797,21 @@ contains
       end do
       close(u)
 
-      open(newunit=u, file=F_CPE, status='old', action='read')
-      read(u, '(/)')
+      open(newunit=u, file=sed_data_path(F_CPE), status='old', action='read', iostat=ios)
+      if (ios /= 0) return
+      read(u, '(/)', iostat=ios)
+      if (ios /= 0) then;  close(u);  return;  end if
       do i = 1, NCPE
-         read(u, *) ener, rn1, rk, e1, e2
+         read(u, *, iostat=ios) ener, rn1, rk, e1, e2
+         if (ios /= 0) then;  close(u);  return;  end if
          cpe_eV(i)   = ener
          cpe_eps1(i) = e1
          cpe_eps2(i) = e2
          cpe_wavl(i) = 1.23984_wp / ener
       end do
       close(u)
+
+      load_ok = .true.
    end subroutine load_tables
 
 

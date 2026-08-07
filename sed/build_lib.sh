@@ -106,7 +106,7 @@ esac
 
 # SEDust sources, in dependency order.  `sed_mathlib` is named so upstream to
 # avoid a clash with an RT host's own `mathlib` module.
-SED_SRCS="constants sed_mathlib sedust_h5 sedust_product enthalpy_v2 size_dist q_table \
+SED_SRCS="constants sed_paths sed_mathlib sedust_h5 sedust_product enthalpy_v2 size_dist q_table \
       enthalpy_astrodust mie \
       q_astrodust q_graphite q_graphite_d16 q_graphite_d16_sphere qpah radfield \
       p_sub stoch_qm pah_ioniz grain_dist q_silicate pah_ld01 dust_model_mod \

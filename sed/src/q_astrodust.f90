@@ -121,6 +121,7 @@ module q_astrodust_mod
    use constants,   only: wp
    use sed_mathlib, only: interp
    use mie_mod,     only: mie
+   use sed_paths,   only: sed_data_path
    implicit none
    private
    public :: astrodust_index_at
@@ -132,10 +133,13 @@ module q_astrodust_mod
    public :: astrodust_index_lambda_range
 
    character(len=*), parameter :: F_AD_DEFAULT = &
-        '../data/dielectric/index_DH21Ad_P0.20_0.00_1.400'
+        'dielectric/index_DH21Ad_P0.20_0.00_1.400'
    real(wp), parameter :: PI_LOC = 3.141592653589793238462643383279502884197_wp
 
-   character(len=512) :: f_ad   = F_AD_DEFAULT
+   ! Blank means "the default, wherever the data root currently points".  A
+   ! path a caller named is stored here as given and never composed with the
+   ! root, so an absolute path from a host stays absolute.
+   character(len=512) :: f_ad   = ''
    logical  :: loaded = .false.
    integer  :: nad    = 0
    real(wp), allocatable :: ad_eV(:), ad_n(:), ad_k(:), ad_wavl(:)
@@ -148,7 +152,7 @@ contains
       ! next optics call reloads from the new path.
       character(len=*), intent(in) :: path
 
-      if (trim(path) == trim(f_ad)) return
+      if (trim(path) == trim(get_astrodust_index_path())) return
       f_ad = path
       loaded = .false.
       if (allocated(ad_eV)) deallocate(ad_eV, ad_n, ad_k, ad_wavl)
@@ -158,9 +162,14 @@ contains
 
    function get_astrodust_index_path() result(path)
       ! The dielectric function currently selected, so a caller can report
-      ! which material its EUV band is made of.
+      ! which material its EUV band is made of.  Resolved, not stored: the
+      ! default follows the data root.
       character(len=512) :: path
-      path = f_ad
+      if (len_trim(f_ad) == 0) then
+         path = sed_data_path(F_AD_DEFAULT)
+      else
+         path = f_ad
+      end if
    end function get_astrodust_index_path
 
 
@@ -194,9 +203,9 @@ contains
       if (present(ok)) ok = .true.
       if (loaded) return
 
-      open(newunit=u, file=f_ad, status='old', action='read', iostat=ios)
+      open(newunit=u, file=get_astrodust_index_path(), status='old', action='read', iostat=ios)
       if (ios /= 0) then
-         write(*,'(a,a)') 'q_astrodust: cannot open ', trim(f_ad)
+         write(*,'(a,a)') 'q_astrodust: cannot open ', trim(get_astrodust_index_path())
          if (present(ok)) then
             ok = .false.;  return
          else
@@ -215,7 +224,7 @@ contains
          nad = nad + 1
       end do
       if (nad < 2) then
-         write(*,'(a,i0,a,a)') 'q_astrodust: only ', nad, ' data rows in ', trim(f_ad)
+         write(*,'(a,i0,a,a)') 'q_astrodust: only ', nad, ' data rows in ', trim(get_astrodust_index_path())
          close(u)
          nad = 0
          if (present(ok)) then
@@ -231,7 +240,7 @@ contains
       do i = 1, nad
          read(u, *, iostat=ios) ener, rn1, rk, e1, e2
          if (ios /= 0) then
-            write(*,'(a,i0,a,a)') 'q_astrodust: malformed data row ', i, ' in ', trim(f_ad)
+            write(*,'(a,i0,a,a)') 'q_astrodust: malformed data row ', i, ' in ', trim(get_astrodust_index_path())
             close(u)
             deallocate(ad_eV, ad_n, ad_k, ad_wavl)
             nad = 0
