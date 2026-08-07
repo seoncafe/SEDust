@@ -35,7 +35,7 @@ program calc_kext
    ! constant, so it is as well defined in the EUV as in the optical, and the
    ! header of each file states its value and where the densities came from.
    !
-   ! POLARIZED EXTINCTION.  ../data/kext_astrodust_MW.dat carries the dichroic
+   ! POLARIZED EXTINCTION.  ../data/astrodust/kext_astrodust_MW.dat carries the dichroic
    ! extinction as an eighth column, because that file is tracked and hosts
    ! read it; it comes from the same size_integrated_extinction call, as
    ! Cpol_ext.  (No column of it is read back by dust_extinction, which keeps
@@ -94,6 +94,7 @@ program calc_kext
    character(len=*), parameter :: F_SCA = '../data/release/scattering.dat'
    character(len=*), parameter :: F_REF_DL07 = &
       '../data/release/kext_albedo_WD_MW_3.1_60_D03.all_2003'
+   character(len=*), parameter :: F_QT_ZU    = '../data/zubko/sedust_zubko.h5'
    character(len=*), parameter :: F_ZDA_CFG  = '../data/zubko/ZDA_BARE_GR_S_Config.dat'
    character(len=*), parameter :: F_ZDA_DESC = '../data/zubko/zubko_descriptor.txt'
    character(len=*), parameter :: D_ZUBKO    = '../data/zubko/'
@@ -123,6 +124,7 @@ program calc_kext
    integer  :: narg, ios, nlam_out, iarg
    logical  :: euv, zubko_formula
    character(len=32)  :: model
+   character(len=16)  :: zubko_optics
    character(len=256) :: opt, fout, desc, ddir, arg
 
    call use_tmatrix_euv_band_optics()
@@ -136,6 +138,10 @@ program calc_kext
 
    euv = .false.;  lam_min = 0.0_wp
    opt = '';  desc = F_ZDA_DESC;  ddir = D_ZUBKO;  zubko_formula = .true.
+   ! Which of the two stored zubko optics sets this curve is the size integral
+   ! of.  The default matches build_dust's, so the shipped curve is the one a
+   ! host that names nothing is served.
+   zubko_optics = 'zda'
    if (narg >= 2) call get_command_argument(2, opt)
 
    nnote = 0
@@ -212,23 +218,40 @@ program calc_kext
          case ('formula');  zubko_formula = .true.
          case ('table');    zubko_formula = .false.
          case ('euv');      euv = .true.
+         case ('zda');      zubko_optics = 'zda'
+         case ('mie_d03');  zubko_optics = 'mie_d03'
          case default;      call print_usage();  stop 1
          end select
       end do
+      ! The optics come from the model's own product, so that /kext and
+      ! /qtable of one file are the same numbers.  Left to the text tables this
+      ! took the axis from the product and the optics from their seven written
+      ! digits, and filed the two together as though they matched.
       if (euv) then
          if (zubko_formula) then
-            call build_zubko(m, F_ZDA_CFG, D_ZUBKO, NT_IN, T_LO, T_HI)
+            call build_zubko(m, F_ZDA_CFG, D_ZUBKO, NT_IN, T_LO, T_HI, &
+                             include_euv=.true., qtable_path=F_QT_ZU, &
+                             optics=trim(zubko_optics))
          else
-            call build_from_files(m, F_ZDA_DESC, D_ZUBKO, NT_IN, T_LO, T_HI)
+            call build_from_files(m, F_ZDA_DESC, D_ZUBKO, NT_IN, T_LO, T_HI, &
+                                  include_euv=.true.)
          end if
-         fout = '../data/zubko/kext_zubko_BARE_GR_S_euv.dat'
+         fout = '../data/zubko/kext_zubko_BARE_GR_S'//trim(kext_tag())//'_euv.dat'
       else
+         ! The narrow product is an INDEX cut at the Lyman limit, as it is for
+         ! the other two models -- not a wavelength floor.  The ZDA grid has no
+         ! node at 0.0912 um, so a floor there used to start this curve 1.2e-5
+         ! of itself inside the limit and a host on its own Lyman-limit grid
+         ! was refused it.
          if (zubko_formula) then
-            call build_zubko(m, F_ZDA_CFG, D_ZUBKO, NT_IN, T_LO, T_HI, lam_min=LAM_LYMAN)
+            call build_zubko(m, F_ZDA_CFG, D_ZUBKO, NT_IN, T_LO, T_HI, &
+                             include_euv=.false., qtable_path=F_QT_ZU, &
+                             optics=trim(zubko_optics))
          else
-            call build_from_files(m, F_ZDA_DESC, D_ZUBKO, NT_IN, T_LO, T_HI, lam_min=LAM_LYMAN)
+            call build_from_files(m, F_ZDA_DESC, D_ZUBKO, NT_IN, T_LO, T_HI, &
+                                  include_euv=.false.)
          end if
-         fout = '../data/zubko/kext_zubko_BARE_GR_S.dat'
+         fout = '../data/zubko/kext_zubko_BARE_GR_S'//trim(kext_tag())//'.dat'
       end if
 
    ! ===================================================================
@@ -281,7 +304,7 @@ program calc_kext
    ! and so has a dust mass per H, and the header of each records the
    ! M_dust/N_H the column is normalized by. The normalization is one
    ! wavelength-independent constant, as well defined in the EUV as in the
-   ! optical. The tracked ../data/kext_astrodust_MW.dat is a regression
+   ! optical. The tracked ../data/astrodust/kext_astrodust_MW.dat is a regression
    ! reference, so it alone keeps the original narrow-field format; every other
    ! product uses the wider default fields. The dichroic C_polext column goes on
    ! BOTH astrodust products, because astrodust is the only model with polarized
@@ -312,6 +335,24 @@ program calc_kext
    end select
 
 contains
+
+   function kext_tag() result(t)
+      ! The suffix a zubko curve carries when it is NOT the default optics.
+      ! The default set is unmarked, so the shipped file names do not move.
+      character(len=16) :: t
+      t = ''
+      if (trim(model) == 'zubko' .and. trim(zubko_optics) /= 'zda') &
+         t = '_'//trim(zubko_optics)
+   end function kext_tag
+
+
+   function h5_kext_group() result(g)
+      ! Where that curve goes inside the product: /kext for the default set,
+      ! /kext_<optics> for another.
+      character(len=32) :: g
+      g = 'kext'//trim(kext_tag())
+   end function h5_kext_group
+
 
    ! ===================================================================
    subroutine print_usage()
@@ -367,7 +408,7 @@ contains
       character(len=*),   intent(in) :: path
       ! Dust mass per H [g/H]; when present a K_abs = C_abs/H / this column is added.
       real(wp), optional, intent(in) :: kabs_norm
-      ! The frozen on-disk field widths of ../data/kext_astrodust_MW.dat, kept
+      ! The frozen on-disk field widths of ../data/astrodust/kext_astrodust_MW.dat, kept
       ! so that tracked file is reproduced byte for byte.  It is also the only
       ! product carrying the dichroic C_polext/H column.  Everything else uses
       ! the wider default fields.
@@ -516,8 +557,11 @@ contains
          call h5_close_file(fid);  call h5_end();  return
       end if
 
-      if (h5_has(fid, 'kext')) call h5_unlink(fid, 'kext')
-      call h5_group(fid, 'kext', gid, ok)
+      ! /kext for the model as it is built by default; a second set of optics
+      ! gets its own group, so the curve a host is served is the size integral
+      ! of the very optics its model was built on and not of another set.
+      if (h5_has(fid, trim(h5_kext_group()))) call h5_unlink(fid, trim(h5_kext_group()))
+      call h5_group(fid, trim(h5_kext_group()), gid, ok)
       if (.not. ok) then
          write(*,'(a,a)') ' calc_kext: cannot create /kext in ', trim(path)
          call h5_close_file(fid);  call h5_end();  return
@@ -582,7 +626,7 @@ contains
    subroutine header_common_format_and_scope(density_source)
       ! Format and scope statements every new product carries, ending with the
       ! K_abs normalization and where that model's grain densities come from.
-      ! (The tracked ../data/kext_astrodust_MW.dat predates these lines and is
+      ! (The tracked ../data/astrodust/kext_astrodust_MW.dat predates these lines and is
       ! frozen, so header_astrodust_qtable_grid does not call this routine and
       ! that file keeps its own wording.)
       character(len=*), intent(in) :: density_source
@@ -638,7 +682,7 @@ contains
    ! ===================================================================
    subroutine header_astrodust_qtable_grid()
       ! FROZEN down to the dust-mass line.  Those lines reproduce
-      ! ../data/kext_astrodust_MW.dat as it has been tracked since before this
+      ! ../data/astrodust/kext_astrodust_MW.dat as it has been tracked since before this
       ! file carried a polarized column; do not reword them.  The C_polext/H
       ! block below them describes the eighth column and is not frozen.
       character(len=200) :: s

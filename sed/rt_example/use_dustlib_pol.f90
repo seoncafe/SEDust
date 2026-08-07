@@ -28,7 +28,7 @@ program use_dustlib_pol
    ! dust_extinction call fills its arguments from two different places:
    !
    !   Cext, Cabs, Csca, gbar  READ FROM A TABLE -- one of the
-   !                           ../data/kext_*.dat products of calc_kext.x,
+   !                           ../data/<model>/kext_*.dat products of calc_kext.x,
    !                           attached to the model at build time and
    !                           interpolated onto m%lam.
    !   Cpol_ext, Cbir_ext      COMPUTED FROM THE MODEL'S OWN ORIENTATION-

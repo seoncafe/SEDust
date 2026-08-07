@@ -16,6 +16,7 @@ module q_graphite_d16_sphere_mod
    !   lines 4-44        : 41 rows of 3501 Q_abs values; row i = radius i
 
    use constants, only: wp
+   use sed_paths, only: sed_data_path
    implicit none
    private
    public :: q_graphite_d16_sphere_abs, load_q_graphite_d16_sphere
@@ -26,7 +27,7 @@ module q_graphite_d16_sphere_mod
    public :: D16_LAM_MIN_UM
    real(wp), parameter :: D16_LAM_MIN_UM = 1.0e-3_wp
 
-   character(len=*), parameter :: F_D16S = '../data/dielectric/q_D16graphite.dat'
+   character(len=*), parameter :: F_D16S = 'dielectric/q_D16graphite.dat'
    integer,  parameter :: NA_S = 41
    integer,  parameter :: NW_S = 3501
 
@@ -45,12 +46,12 @@ contains
       character(len=512) :: hdr
 
       if (present(ok)) ok = .true.
-      open(newunit=u, file=F_D16S, status='old', action='read', iostat=ios)
+      open(newunit=u, file=sed_data_path(F_D16S), status='old', action='read', iostat=ios)
       if (ios /= 0) then
          if (present(ok)) then
             ok = .false.;  return
          else
-            write(*,'(a,a)') 'q_graphite_d16_sphere: cannot open ', F_D16S
+            write(*,'(a,a)') 'q_graphite_d16_sphere: cannot open ', trim(sed_data_path(F_D16S))
             stop 1
          end if
       end if

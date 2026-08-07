@@ -26,7 +26,7 @@ program use_dustlib_scatmat
    ! do NOT respond alike to a change of alignment:
    !
    !   Cext, Cabs, Csca, gbar   READ FROM A TABLE -- one of the
-   !     [cm^2/H]               ../data/kext_*.dat products of calc_kext.x,
+   !     [cm^2/H]               ../data/<model>/kext_*.dat products of calc_kext.x,
    !                            attached to the model at build time and
    !                            interpolated onto m%lam. Alignment does not
    !                            enter them at all.

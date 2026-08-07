@@ -14,17 +14,23 @@ module q_silicate_mod
    use constants, only: wp
    use sed_mathlib,   only: interp
    use mie_mod,   only: mie
+   use sed_paths, only: sed_data_path
    implicit none
    private
    public :: q_silicate_abs
    public :: q_silicate_full
    public :: silicate_index_lambda_range
+   public :: silicate_index_available
 
-   character(len=*), parameter :: F_SIL = '../data/dielectric/index_silD03'
+   character(len=*), parameter :: F_SIL = 'dielectric/index_silD03'
    integer,  parameter :: NSIL = 837
    real(wp), parameter :: PI_LOC = 3.141592653589793238462643383279502884197_wp
 
    logical  :: loaded = .false.
+   ! Whether the load succeeded.  Separate from `loaded`, which only records
+   ! that it was attempted: a caller must be able to learn that the file was
+   ! not there and refuse the build, instead of the open aborting the process.
+   logical  :: load_ok = .false.
    real(wp) :: sil_eV(NSIL), sil_n(NSIL), sil_k(NSIL), sil_wavl(NSIL)
 
 contains
@@ -42,23 +48,39 @@ contains
    end subroutine silicate_index_lambda_range
 
 
+   logical function silicate_index_available()
+      ! Is the D03 astrosilicate dielectric function readable where the data
+      ! root points?  Triggers the load, so a builder calls this once before
+      ! committing to a model and reports through its own status.
+      if (.not. loaded) call load_tables()
+      silicate_index_available = load_ok
+   end function silicate_index_available
+
+
    subroutine load_tables()
       ! index_silD03 columns: E[eV]  Re(n)-1  Im(n)  Re(eps)-1  Im(eps)
       ! (2 header lines). Silicate n,k read directly: n = 1 + col2, k = col3.
-      integer  :: i, u
+      integer  :: i, u, ios
       real(wp) :: ener, rn1, rk, e1, e2
 
-      open(newunit=u, file=F_SIL, status='old', action='read')
-      read(u, '(/)')
+      loaded  = .true.
+      load_ok = .false.
+      sil_eV = 0.0_wp;  sil_n = 1.0_wp;  sil_k = 0.0_wp;  sil_wavl = 1.0_wp
+
+      open(newunit=u, file=sed_data_path(F_SIL), status='old', action='read', iostat=ios)
+      if (ios /= 0) return
+      read(u, '(/)', iostat=ios)
+      if (ios /= 0) then;  close(u);  return;  end if
       do i = 1, NSIL
-         read(u, *) ener, rn1, rk, e1, e2
+         read(u, *, iostat=ios) ener, rn1, rk, e1, e2
+         if (ios /= 0) then;  close(u);  return;  end if
          sil_eV(i)   = ener
          sil_n(i)    = 1.0_wp + rn1
          sil_k(i)    = rk
          sil_wavl(i) = 1.23984_wp / ener     ! [um]
       end do
       close(u)
-      loaded = .true.
+      load_ok = .true.
    end subroutine load_tables
 
 

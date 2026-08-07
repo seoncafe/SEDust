@@ -54,8 +54,9 @@ program make_qtable
                                 gpar_qt => gpar, flag_qt => flag
    use sedust_h5
    use sed_astrodust_mod, only: sed_init_dl07, NLAM, NA, lam, aeff, &
-                                use_stored_q_tables, RHO_ASTROSIL, RHO_GRAPHITE, &
+                                RHO_ASTROSIL, RHO_GRAPHITE, &
                                 dl07_euv_lambda_floor
+   use sedust_product_mod, only: lyman_index
    use enthalpy_astrodust_mod, only: RHO_AD, RHO_PAH
    implicit none
 
@@ -91,12 +92,6 @@ program make_qtable
 
    character(len=32)  :: which
    integer :: narg
-
-   ! This program WRITES the stored tables, so it must not read them: a model
-   ! built from them would dump back what it just read, and the tables would
-   ! freeze at whatever they already held instead of following the optics
-   ! routines.  Solve from the dielectric functions here, always.
-   use_stored_q_tables = .false.
 
    narg = command_argument_count()
    which = 'all'
@@ -159,7 +154,7 @@ contains
       close(u1);  close(u2)
       write(*,'(a,i0,a,i0,a)') ' astrodust PAH: ', n_lam_qt, ' x ', n_aeff_qt, ' cells written'
 
-      call h5_model_file('astrodust', lam_qt, i_lyman_of(lam_qt))
+      call h5_model_file('astrodust', lam_qt, lyman_index(lam_qt))
       call h5_add_component('astrodust', 'astrodust', aeff_qt, qext_qt, qabs_qt, qsca_qt, &
                             gpar_qt, RHO_AD, &
                             'random-orientation T-matrix on the DH21 astrodust spheroid', &
@@ -176,17 +171,6 @@ contains
    end subroutine write_astrodust_tables
 
 
-   pure integer function i_lyman_of(lam) result(i)
-      ! First index at or longward of the Lyman limit.  A reader given
-      ! include_euv = .false. starts here; everything shortward is the ionizing
-      ! band, where an interstellar radiation field carries no photon.
-      real(wp), intent(in) :: lam(:)
-      integer :: k
-      i = 1
-      do k = 1, size(lam)
-         if (lam(k) >= LAM_LYMAN) then;  i = k;  exit;  end if
-      end do
-   end function i_lyman_of
 
    ! ===================================================================
    subroutine write_dl07_tables()
@@ -194,14 +178,20 @@ contains
       ! PAH cross sections, evaluated by the very routines sed_init_dl07 calls,
       ! so these tables are that model's own optics written down.
       call dl07_settings()
-      call sed_init_dl07(F_QT, F_SD, SD_INDEX, U_ISRF, NT_IN, T_LO, T_HI)
+      ! stored_q_dir = '' : this program WRITES the stored tables, so it must
+      ! not read them -- a model built from them would dump back what it just
+      ! read, and they would freeze at whatever they already held instead of
+      ! following the optics routines.  F_QT is a text table, so no HDF5
+      ! product is read either.  Solve from the dielectric functions, always.
+      call sed_init_dl07(F_QT, F_SD, SD_INDEX, U_ISRF, NT_IN, T_LO, T_HI, &
+                         stored_q_dir='')
       call dl07_dump('', .false.)
       call dl07_settings()
       ! The floor comes from the model, not from a number written here: the
       ! extinction curve of the same model is built on it too, and the two must
       ! land on the same wavelength grid to share one axis in the HDF5 file.
       call sed_init_dl07(F_QT_EUV, F_SD, SD_INDEX, U_ISRF, NT_IN, T_LO, T_HI, &
-                         lam_min=dl07_euv_lambda_floor())
+                         lam_min=dl07_euv_lambda_floor(), stored_q_dir='')
       ! The HDF5 file carries the WIDER of the two axes and the index where the
       ! non-ionizing part of it begins, so the narrow product is a slice of it
       ! rather than a second copy to keep in step.  Hence only this pass writes.
@@ -267,7 +257,7 @@ contains
       write(*,'(a,i0,a,i0,a)') ' dl07'//trim(tag)//': ', NLAM, ' x ', NA, ' cells written'
 
       if (to_h5) then
-         call h5_model_file('dl07', lam, i_lyman_of(lam))
+         call h5_model_file('dl07', lam, lyman_index(lam))
          call h5_add_component('dl07', 'sil', aeff, se, sa, ss, sg, RHO_ASTROSIL, &
               'Mie on the D03 astrosilicate dielectric function', F_SIL_D03)
          call h5_add_component('dl07', 'gra', aeff, ge, ga, gs, gg, RHO_GRAPHITE, &
@@ -291,21 +281,49 @@ contains
 
    ! ===================================================================
    subroutine write_zubko_tables()
-      ! Recomputed on the ZDA tables' own grids, by the SAME routines the DL07
-      ! model uses -- Mie on the Draine (2003) optical constants this tree
-      ! already carries.  Two things follow from that choice.  The D03 files
-      ! span 6.2e-5 to 1.24e5 um for the silicate and 1.24e6 for the graphite,
-      ! so the ZDA grid is covered outright and nothing is extrapolated; and
-      ! q_graphite_full rebuilds the graphite index for every radius, so the
-      ! size-dependent free-electron term is carried rather than frozen at one
-      ! grain size.  D03 is the 2003 revision of the same astronomical silicate
-      ! and graphite ZDA cited (Draine & Lee 1984, Laor & Draine 1993,
-      ! Weingartner & Draine 2001), and it is evidently what the shipped tables
-      ! were computed on: this route reproduces their silicate to a mean
-      ! 2.4e-6, whatever the label in their header says.
-      real(wp), allocatable :: a_sil(:), a_gra(:), a_pah(:), lz(:), qa2(:,:), qs2(:,:)
+      ! TWO sets of optics go into this model's product, and the file says which
+      ! is which.
+      !
+      !   /qtable/{sil,gra,pah}           the tables the Camps et al. (2015)
+      !                                   benchmark distributes, verbatim.  This
+      !                                   is the DEFAULT the model is built on:
+      !                                   the seven codes that benchmark compares
+      !                                   read these files, so a run against it
+      !                                   measures the solver and not an optics
+      !                                   difference.
+      !   /qtable/{sil,gra,pah}_mie_d03   this tree's own recomputation, Mie on
+      !                                   the Draine (2003) optical constants,
+      !                                   selectable through build_zubko's
+      !                                   optics argument.
+      !
+      ! The text q_zubko_*.dat products are the recomputation, as before.
+      !
+      ! WHAT THE DISTRIBUTED FILES ARE.  Their own headers: the silicate and
+      ! graphite are Zubko's multilayer-sphere code (1997-2002), converted by
+      ! Misselt in 2002; the PAH file is Misselt's 2009 implementation of Li &
+      ! Draine (2001) / Draine & Li (2007).  Measured against Gra_121_1201.dat
+      ! cell by cell, that PAH file holds graphite Q_sca and <cos> at every size
+      ! and all 1201 wavelengths, and graphite Q_abs shortward of 0.0585 um
+      ! (21.2 eV, the DL07 PAH-to-graphite transition, 1/17.25 um in qpah's
+      ! form) -- so the ZDA PAH population scatters as the graphite sphere of
+      ! its own radius.  The recomputation below does the same, by calling
+      ! q_graphite_full at the PAH radii; it used to store no scattering for
+      ! that population at all.
+      !
+      ! Draine (2003) is what the recomputation is on, and it is evidently what
+      ! the shipped tables were computed on too: this route reproduces their
+      ! silicate to a mean 2.4e-6, whatever the label in their header says.
+      real(wp), allocatable :: a_sil(:), a_gra(:), a_pah(:), lz(:)
+      ! The distributed Q columns.
+      real(wp), allocatable :: za_sil(:,:), zs_sil(:,:), zg_sil(:,:)
+      real(wp), allocatable :: za_gra(:,:), zs_gra(:,:), zg_gra(:,:)
+      real(wp), allocatable :: za_pah(:,:), zs_pah(:,:), zg_pah(:,:)
+      ! This tree's recomputation, on the same axes.
+      real(wp), allocatable :: se(:,:), sa(:,:), ss(:,:), sg(:,:)
+      real(wp), allocatable :: ge(:,:), ga(:,:), gs(:,:), gg(:,:)
+      real(wp), allocatable :: pe(:,:), pa(:,:), ps(:,:), pg(:,:)
       real(wp) :: r_sil, r_gra, r_pah
-      integer  :: n_sil, n_gra, n_pah, nw, nwc, i
+      integer  :: n_sil, n_gra, n_pah, nw, nwc, k0
 
       ! The ZDA PAHs are the Li & Draine (2001) / Draine & Li (2007) cross
       ! sections -- their own file says so, and states the density 2.24 g/cm^3
@@ -321,51 +339,122 @@ contains
       ! and ./make_qtable.x zubko wrote PAH tables differing by a mean 17%.
       call dl07_settings()
 
-      ! The ZDA tables are read for their AXES and densities only -- the radii
-      ! each component is tabulated on and the shared wavelength grid.  Their Q
-      ! columns are what this program recomputes.
+      ! Read them whole: the axes and densities the recomputation needs, and
+      ! the Q columns that are now a stored set in their own right.
       call read_zubko_optics(D_ZUBKO//'suvSil_121_1201.dat', n_sil, nw, a_sil, lz, &
-                             qa2, qs2, r_sil)
-      deallocate(qa2, qs2)
+                             za_sil, zs_sil, r_sil, gpar=zg_sil)
       call read_zubko_optics(D_ZUBKO//'Gra_121_1201.dat', n_gra, nw, a_gra, lz, &
-                             qa2, qs2, r_gra)
-      deallocate(qa2, qs2)
+                             za_gra, zs_gra, r_gra, gpar=zg_gra)
       call read_zubko_optics(D_ZUBKO//'PAH_28_1201_neu.dat', n_pah, nw, a_pah, lz, &
-                             qa2, qs2, r_pah)
-      deallocate(qa2, qs2)
+                             za_pah, zs_pah, r_pah, gpar=zg_pah)
 
-      ! The non-ionizing set is the same grid cut at the Lyman limit, which is
-      ! also where build_zubko's lam_min cuts it, so the stored pair matches
-      ! the pair a run can build.
-      nwc = 0
-      do i = 1, nw
-         if (lz(i) >= LAM_LYMAN) nwc = nwc + 1
-      end do
+      ! Recompute once, on the WIDE grid; the narrow product is a row slice of
+      ! it, so the two cannot drift apart.
+      call zubko_recompute(nw, lz, a_sil, a_gra, a_pah, se, sa, ss, sg, &
+                           ge, ga, gs, gg, pe, pa, ps, pg)
 
-      ! Only the wide pass writes HDF5; the narrow text product is the same
-      ! rows and the file records where they start.  See write_dl07_tables.
-      call zubko_dump('_euv', nw,  lz(nw-nw+1:nw),  a_sil, a_gra, a_pah, &
-                      r_sil, r_gra, r_pah, .true.)
-      call zubko_dump('',    nwc, lz(nw-nwc+1:nw), a_sil, a_gra, a_pah, &
-                      r_sil, r_gra, r_pah, .false.)
+      ! The non-ionizing set is the same grid cut where lyman_index cuts it,
+      ! which is also where build_zubko's include_euv cuts it, so the stored
+      ! pair matches the pair a run can build.
+      k0  = lyman_index(lz(1:nw))
+      nwc = nw - k0 + 1
+
+      call zubko_text('_euv', nw,  lz(1:nw), a_sil, a_gra, a_pah, r_sil, r_gra, r_pah, &
+                      se, sa, ss, sg, ge, ga, gs, gg, pe, pa, ps, pg)
+      call zubko_text('',    nwc, lz(k0:nw), a_sil, a_gra, a_pah, r_sil, r_gra, r_pah, &
+                      se(k0:,:), sa(k0:,:), ss(k0:,:), sg(k0:,:), &
+                      ge(k0:,:), ga(k0:,:), gs(k0:,:), gg(k0:,:), &
+                      pe(k0:,:), pa(k0:,:), ps(k0:,:), pg(k0:,:))
+
+      ! Only the wide pass goes into HDF5; the file records where the narrow
+      ! view starts.  See write_dl07_tables.
+      call h5_model_file('zubko', lz(1:nw), k0)
+
+      ! The model as the benchmark distributes it -- the default.
+      call h5_add_component('zubko', 'sil', a_sil, za_sil+zs_sil, za_sil, zs_sil, zg_sil, &
+           r_sil, 'ZDA BARE-GR-S as distributed: homogeneous-sphere Mie', &
+           D_ZUBKO//'suvSil_121_1201.dat (Zubko multilayer-sphere code, 1997-2002)')
+      call h5_add_component('zubko', 'gra', a_gra, za_gra+zs_gra, za_gra, zs_gra, zg_gra, &
+           r_gra, 'ZDA BARE-GR-S as distributed: homogeneous-sphere Mie', &
+           D_ZUBKO//'Gra_121_1201.dat (Zubko multilayer-sphere code, 1997-2002)')
+      call h5_add_component('zubko', 'pah', a_pah, za_pah+zs_pah, za_pah, zs_pah, zg_pah, &
+           r_pah, 'ZDA BARE-GR-S as distributed: LD01/DL07 absorption above ' // &
+           '0.0585 um, graphite Mie below it, graphite Q_sca and <cos> throughout', &
+           D_ZUBKO//'PAH_28_1201_neu.dat (Misselt 2009, from Li & Draine 2001 / ' // &
+           'Draine & Li 2007)')
+
+      ! This tree's recomputation, on the same axes -- the optics argument.
+      call h5_add_component('zubko', 'sil_mie_d03', a_sil, se, sa, ss, sg, r_sil, &
+           'Mie on the D03 astrosilicate dielectric function', &
+           F_SIL_D03//'; grids from '//D_ZUBKO//'suvSil_121_1201.dat')
+      call h5_add_component('zubko', 'gra_mie_d03', a_gra, ge, ga, gs, gg, r_gra, &
+           'Mie on the D03 graphite dielectric functions, 1/3 E||c + 2/3 ' // &
+           'E-perp-c, free-electron term at each radius', &
+           F_GRA_D03//'; grids from '//D_ZUBKO//'Gra_121_1201.dat')
+      call h5_add_component('zubko', 'pah_mie_d03', a_pah, pe, pa, ps, pg, r_pah, &
+           'DL07 PAH absorption cross sections (neutral) with the scattering ' // &
+           'of the graphite sphere of the same radius, as the distributed ' // &
+           'table carries it', &
+           'qpah.f90 + '//F_GRA_D03//'; grids from '//D_ZUBKO//'PAH_28_1201_neu.dat')
+
+      deallocate(za_sil, zs_sil, zg_sil, za_gra, zs_gra, zg_gra, za_pah, zs_pah, zg_pah)
+      deallocate(se, sa, ss, sg, ge, ga, gs, gg, pe, pa, ps, pg)
    end subroutine write_zubko_tables
 
 
-   subroutine zubko_dump(tag, nw, lz, a_sil, a_gra, a_pah, r_sil, r_gra, r_pah, to_h5)
+   subroutine zubko_recompute(nw, lz, a_sil, a_gra, a_pah, se, sa, ss, sg, &
+                              ge, ga, gs, gg, pe, pa, ps, pg)
+      ! This tree's own optics on the ZDA axes: Mie on the D03 constants for
+      ! the two solid components, and for the PAHs the DL07 absorption with the
+      ! scattering of the graphite sphere of the same radius -- which is what
+      ! the distributed PAH table holds, measured cell by cell.
+      integer,  intent(in) :: nw
+      real(wp), intent(in) :: lz(:), a_sil(:), a_gra(:), a_pah(:)
+      real(wp), allocatable, intent(out) :: se(:,:), sa(:,:), ss(:,:), sg(:,:)
+      real(wp), allocatable, intent(out) :: ge(:,:), ga(:,:), gs(:,:), gg(:,:)
+      real(wp), allocatable, intent(out) :: pe(:,:), pa(:,:), ps(:,:), pg(:,:)
+      real(wp) :: Qe, Qs, Qa, g, Qn
+      integer  :: jw, ja
+
+      allocate(se(nw,size(a_sil)), sa(nw,size(a_sil)), ss(nw,size(a_sil)), sg(nw,size(a_sil)))
+      allocate(ge(nw,size(a_gra)), ga(nw,size(a_gra)), gs(nw,size(a_gra)), gg(nw,size(a_gra)))
+      allocate(pe(nw,size(a_pah)), pa(nw,size(a_pah)), ps(nw,size(a_pah)), pg(nw,size(a_pah)))
+
+      do jw = 1, nw
+         do ja = 1, size(a_sil)
+            call q_silicate_full(a_sil(ja), lz(jw), Qe, Qs, Qa, g)
+            se(jw,ja) = Qe;  sa(jw,ja) = Qa;  ss(jw,ja) = Qs;  sg(jw,ja) = g
+         end do
+         do ja = 1, size(a_gra)
+            call q_graphite_full(a_gra(ja), lz(jw), Qe, Qs, Qa, g)
+            ge(jw,ja) = Qe;  ga(jw,ja) = Qa;  gs(jw,ja) = Qs;  gg(jw,ja) = g
+         end do
+         do ja = 1, size(a_pah)
+            call qpah_dl07(0, a_pah(ja), lz(jw), Qn)
+            ! Scattering from the graphite sphere at the SAME radius the PAH
+            ! table is tabulated on.  Its Q_abs is discarded: the absorption is
+            ! qpah's, which already hands over to graphite shortward of
+            ! 1/17.25 um itself.
+            call q_graphite_full(a_pah(ja), lz(jw), Qe, Qs, Qa, g)
+            pa(jw,ja) = Qn;  ps(jw,ja) = Qs;  pg(jw,ja) = g
+            pe(jw,ja) = Qn + Qs
+         end do
+      end do
+   end subroutine zubko_recompute
+
+
+   subroutine zubko_text(tag, nw, lz, a_sil, a_gra, a_pah, r_sil, r_gra, r_pah, &
+                         se, sa, ss, sg, ge, ga, gs, gg, pe, pa, ps, pg)
+      ! The text products, for reading with an eye and for diff.  They hold the
+      ! RECOMPUTATION; the distributed tables are already text, beside them.
       character(len=*), intent(in) :: tag
       integer,  intent(in) :: nw
       real(wp), intent(in) :: lz(:), a_sil(:), a_gra(:), a_pah(:)
       real(wp), intent(in) :: r_sil, r_gra, r_pah
-      logical,  intent(in) :: to_h5
-      real(wp) :: Qe, Qs, Qa, g, Qn
-      integer  :: u1, u2, u3, jw, ja
-      real(wp), allocatable :: se(:,:), sa(:,:), ss(:,:), sg(:,:)
-      real(wp), allocatable :: ge(:,:), ga(:,:), gs(:,:), gg(:,:)
-      real(wp), allocatable :: pa(:,:)
-
-      allocate(se(nw,size(a_sil)), sa(nw,size(a_sil)), ss(nw,size(a_sil)), sg(nw,size(a_sil)))
-      allocate(ge(nw,size(a_gra)), ga(nw,size(a_gra)), gs(nw,size(a_gra)), gg(nw,size(a_gra)))
-      allocate(pa(nw,size(a_pah)))
+      real(wp), intent(in) :: se(:,:), sa(:,:), ss(:,:), sg(:,:)
+      real(wp), intent(in) :: ge(:,:), ga(:,:), gs(:,:), gg(:,:)
+      real(wp), intent(in) :: pe(:,:), pa(:,:), ps(:,:), pg(:,:)
+      integer :: u1, u2, u3, jw, ja
 
       call open_table(u1, D_ZUBKO//'q_zubko_sil'//trim(tag)//'.dat', &
            'ZDA BARE-GR-S silicate: Mie on the D03 astrosilicate dielectric function', &
@@ -375,46 +464,24 @@ contains
            '1/3 E||c + 2/3 E-perp-c, free-electron term per radius', &
            nw, size(a_gra), .true., rho_in = r_gra)
       call open_table(u3, D_ZUBKO//'q_zubko_pah'//trim(tag)//'.dat', &
-           'ZDA BARE-GR-S PAH, neutral: the DL07 absorption cross sections (not Mie)', &
-           nw, size(a_pah), .false., rho_in = r_pah)
+           'ZDA BARE-GR-S PAH, neutral: DL07 absorption with the scattering of ' // &
+           'the graphite sphere of the same radius, as the distributed table has it', &
+           nw, size(a_pah), .true., rho_in = r_pah)
 
       do jw = 1, nw
          do ja = 1, size(a_sil)
-            call q_silicate_full(a_sil(ja), lz(jw), Qe, Qs, Qa, g)
-            call put_row(u1, lz(jw), a_sil(ja), Qe, Qa, Qs, g)
-            se(jw,ja) = Qe;  sa(jw,ja) = Qa;  ss(jw,ja) = Qs;  sg(jw,ja) = g
+            call put_row(u1, lz(jw), a_sil(ja), se(jw,ja), sa(jw,ja), ss(jw,ja), sg(jw,ja))
          end do
          do ja = 1, size(a_gra)
-            call q_graphite_full(a_gra(ja), lz(jw), Qe, Qs, Qa, g)
-            call put_row(u2, lz(jw), a_gra(ja), Qe, Qa, Qs, g)
-            ge(jw,ja) = Qe;  ga(jw,ja) = Qa;  gs(jw,ja) = Qs;  gg(jw,ja) = g
+            call put_row(u2, lz(jw), a_gra(ja), ge(jw,ja), ga(jw,ja), gs(jw,ja), gg(jw,ja))
          end do
          do ja = 1, size(a_pah)
-            call qpah_dl07(0, a_pah(ja), lz(jw), Qn)
-            call put_abs_row(u3, lz(jw), a_pah(ja), Qn)
-            pa(jw,ja) = Qn
+            call put_row(u3, lz(jw), a_pah(ja), pe(jw,ja), pa(jw,ja), ps(jw,ja), pg(jw,ja))
          end do
       end do
       close(u1);  close(u2);  close(u3)
       write(*,'(a,i0,a)') ' zubko'//trim(tag)//': ', nw, ' wavelengths written'
-
-      if (to_h5) then
-         ! The densities are the ZDA tables' own, read from their headers, not
-         ! the DL07 numbers -- these are that model's materials.
-         call h5_model_file('zubko', lz(1:nw), i_lyman_of(lz(1:nw)))
-         call h5_add_component('zubko', 'sil', a_sil, se, sa, ss, sg, r_sil, &
-              'Mie on the D03 astrosilicate dielectric function', &
-              F_SIL_D03//'; grids from '//D_ZUBKO//'suvSil_121_1201.dat')
-         call h5_add_component('zubko', 'gra', a_gra, ge, ga, gs, gg, r_gra, &
-              'Mie on the D03 graphite dielectric functions, 1/3 E||c + 2/3 ' // &
-              'E-perp-c, free-electron term at each radius', &
-              F_GRA_D03//'; grids from '//D_ZUBKO//'Gra_121_1201.dat')
-         call h5_add_component('zubko', 'pah', a_pah, absonly = pa, rho = r_pah, &
-              method = 'DL07 PAH absorption cross sections, neutral', &
-              source = 'qpah.f90; grids from '//D_ZUBKO//'PAH_28_1201_neu.dat')
-      end if
-      deallocate(se, sa, ss, sg, ge, ga, gs, gg, pa)
-   end subroutine zubko_dump
+   end subroutine zubko_text
 
 
 
@@ -458,7 +525,7 @@ contains
       call h5_put_attr_i(gid, 'i_lyman', i_lyman)
       call h5_put_attr_d(gid, 'lambda_lyman_um', LAM_LYMAN)
       call h5_put_attr_s(gid, 'i_lyman_meaning', &
-           'first index at or longward of the Lyman limit; include_euv=.false. starts here')
+           'last index at or shortward of the Lyman limit; include_euv=.false. starts here')
       call h5_group_close(gid)
       call h5_close_file(fid)
       call h5_end()

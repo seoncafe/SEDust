@@ -15,14 +15,16 @@ module q_graphite_mod
    use constants, only: wp
    use sed_mathlib,   only: interp
    use mie_mod,   only: mie
+   use sed_paths, only: sed_data_path
    implicit none
    private
    public :: q_graphite_abs
    public :: q_graphite_full
    public :: graphite_index_lambda_range
+   public :: graphite_index_available
 
-   character(len=*), parameter :: F_CPA = '../data/dielectric/index_CpaD03'
-   character(len=*), parameter :: F_CPE = '../data/dielectric/index_CpeD03'
+   character(len=*), parameter :: F_CPA = 'dielectric/index_CpaD03'
+   character(len=*), parameter :: F_CPE = 'dielectric/index_CpeD03'
 
    integer,  parameter :: NCPA = 387
    integer,  parameter :: NCPE = 384
@@ -31,6 +33,9 @@ module q_graphite_mod
 
    ! Base dielectric tables (without free-electron contribution)
    logical  :: loaded = .false.
+   ! Whether the load succeeded; see q_silicate_mod for why this is separate
+   ! from `loaded`.
+   logical  :: load_ok = .false.
    real(wp) :: cpa_eV(NCPA), cpa_eps1(NCPA), cpa_eps2(NCPA), cpa_wavl(NCPA)
    real(wp) :: cpe_eV(NCPE), cpe_eps1(NCPE), cpe_eps2(NCPE), cpe_wavl(NCPE)
 
@@ -60,14 +65,30 @@ contains
    end subroutine graphite_index_lambda_range
 
 
+   logical function graphite_index_available()
+      ! Are both D03 graphite dielectric functions readable where the data
+      ! root points?  See silicate_index_available.
+      if (.not. loaded) call load_tables()
+      graphite_index_available = load_ok
+   end function graphite_index_available
+
+
    subroutine load_tables()
-      integer  :: i, u
+      integer  :: i, u, ios
       real(wp) :: ener, rn1, rk, e1, e2
 
-      open(newunit=u, file=F_CPA, status='old', action='read')
-      read(u, '(/)')
+      loaded  = .true.
+      load_ok = .false.
+      cpa_eV = 0.0_wp;  cpa_eps1 = 1.0_wp;  cpa_eps2 = 0.0_wp;  cpa_wavl = 1.0_wp
+      cpe_eV = 0.0_wp;  cpe_eps1 = 1.0_wp;  cpe_eps2 = 0.0_wp;  cpe_wavl = 1.0_wp
+
+      open(newunit=u, file=sed_data_path(F_CPA), status='old', action='read', iostat=ios)
+      if (ios /= 0) return
+      read(u, '(/)', iostat=ios)
+      if (ios /= 0) then;  close(u);  return;  end if
       do i = 1, NCPA
-         read(u, *) ener, rn1, rk, e1, e2
+         read(u, *, iostat=ios) ener, rn1, rk, e1, e2
+         if (ios /= 0) then;  close(u);  return;  end if
          cpa_eV(i)   = ener
          cpa_eps1(i) = e1
          cpa_eps2(i) = e2
@@ -75,10 +96,13 @@ contains
       end do
       close(u)
 
-      open(newunit=u, file=F_CPE, status='old', action='read')
-      read(u, '(/)')
+      open(newunit=u, file=sed_data_path(F_CPE), status='old', action='read', iostat=ios)
+      if (ios /= 0) return
+      read(u, '(/)', iostat=ios)
+      if (ios /= 0) then;  close(u);  return;  end if
       do i = 1, NCPE
-         read(u, *) ener, rn1, rk, e1, e2
+         read(u, *, iostat=ios) ener, rn1, rk, e1, e2
+         if (ios /= 0) then;  close(u);  return;  end if
          cpe_eV(i)   = ener
          cpe_eps1(i) = e1
          cpe_eps2(i) = e2
@@ -86,7 +110,7 @@ contains
       end do
       close(u)
 
-      loaded = .true.
+      load_ok = .true.
    end subroutine load_tables
 
 

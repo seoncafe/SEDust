@@ -81,7 +81,6 @@ program test_euv_extension
    use dust_lib,  only: dust_model_t, build_astrodust, build_dl07, &
                         size_integrated_extinction, &
                         dust_has_polarized_optics, dust_nlam
-   use sed_astrodust_mod, only: use_stored_q_tables
    implicit none
 
    character(len=*), parameter :: QTAB  = &
@@ -280,22 +279,22 @@ program test_euv_extension
    ! question about the grid, not about where the optics were read: a stored
    ! table matches the unextended grid and not the extended one, so with them on
    ! the two builds would take different routes and differ by the tables' seven
-   ! written digits (1e-7) for a reason check 6 is not about.  The stored route
-   ! has its own comparison, in check_build_dust.x.
-   use_stored_q_tables = .false.
-   call build_dl07(m_dl_base, QTAB, SIZED, SD_INDEX, U_ISRF, NT_IN, T_LO, T_HI, status=st)
+   ! written digits (1e-7) for a reason check 6 is not about.  stored_q_dir = ''
+   ! is how a caller says "solve everything"; the stored route has its own
+   ! comparison, in check_build_dust.x.
+   call build_dl07(m_dl_base, QTAB, SIZED, SD_INDEX, U_ISRF, NT_IN, T_LO, T_HI, status=st, &
+                   stored_q_dir='')
    if (st /= 0) then
       write(*,'(a,i0)') ' FATAL: DL07 unextended build failed, status = ', st
       stop 2
    end if
    call build_dl07(m_dl_euv, QTAB, SIZED, SD_INDEX, U_ISRF, NT_IN, T_LO, T_HI, &
-                   status=st, lam_min=LAM_MIN)
+                   status=st, lam_min=LAM_MIN, stored_q_dir='')
    if (st /= 0) then
       write(*,'(a,i0)') ' FATAL: DL07 extended build failed, status = ', st
       stop 2
    end if
    call check_dl07(nfail)
-   use_stored_q_tables = .true.
 
    write(*,'(a)') '-------------------------------------------------------------------'
    if (nfail == 0) then

@@ -115,7 +115,7 @@ SRC_EUVTM = $(TMDIR)/driver/asymptotic_optics.f90 \
             src/euv_astrodust_tmatrix.f90
 
 # ---- source groups, in dependency order ------------------------------
-SRC_BASE    = src/constants.f90 src/sed_mathlib.f90
+SRC_BASE    = src/constants.f90 src/sed_paths.f90 src/sed_mathlib.f90
 
 # DL07-support modules (also used by sed_astrodust.f90, so required by every
 # target that links it): PAH ionization (WD01b charging), WD01/DL07 size
@@ -284,6 +284,14 @@ endif
 use_dustlib_scatmat.x: libsedust.a rt_example/use_dustlib_scatmat.f90
 	$(FC) $(FFLAGS) -I. rt_example/use_dustlib_scatmat.f90 libsedust.a $(H5LIBS) -o $@
 	@echo 'Built: ./use_dustlib_scatmat.x'
+
+# Builds every model from a foreign working directory with an absolute
+# data_dir, and checks that a bad one comes back as a status instead of an
+# abort.  Links the LIBRARY, not the pipeline sources, because that is what a
+# host sees.
+check_data_root.x: libsedust.a src/check_data_root.f90
+	$(FC) $(FFLAGS) -I. src/check_data_root.f90 libsedust.a $(H5LIBS) -o $@
+	@echo 'Built: ./check_data_root.x'
 
 use_dustlib.x: libsedust.a rt_example/use_dustlib.f90
 	$(FC) $(FFLAGS) -I. rt_example/use_dustlib.f90 libsedust.a $(H5LIBS) -o $@

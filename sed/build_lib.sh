@@ -109,7 +109,7 @@ esac
 # with an RT host's own `mathlib` module.  `q_table_jori` and `scatmat_aligned`
 # carry the polarized optics that sed_astrodust and dust_lib use, so leaving
 # either out builds an archive that compiles and then fails to link in the host.
-SED_SRCS="constants sed_mathlib sedust_h5 sedust_product enthalpy_v2 size_dist \
+SED_SRCS="constants sed_paths sed_mathlib sedust_h5 sedust_product enthalpy_v2 size_dist \
       q_table q_table_jori \
       enthalpy_astrodust mie \
       q_astrodust q_graphite q_graphite_d16 q_graphite_d16_sphere qpah radfield \
