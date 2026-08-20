@@ -405,15 +405,15 @@ the stochastic solve; the gate propagates forward in grain size.
 
 ## References
 
-- Draine, B. T., & Anderson, N. 1985, ApJ, 292, 494 ([ADS](https://ui.adsabs.harvard.edu/abs/1985ApJ...292..494D))
-- Guhathakurta, P., & Draine, B. T. 1989, ApJ, 345, 230 ([ADS](https://ui.adsabs.harvard.edu/abs/1989ApJ...345..230G))
-- Draine, B. T., & Li, A. 2001, ApJ, 551, 807 ([ADS](https://ui.adsabs.harvard.edu/abs/2001ApJ...551..807D))
-- Weingartner, J. C., & Draine, B. T. 2001, ApJ, 548, 296 ([ADS](https://ui.adsabs.harvard.edu/abs/2001ApJ...548..296W))
-- Zubko, V., Dwek, E., & Arendt, R. G. 2004, ApJS, 152, 211 ([ADS](https://ui.adsabs.harvard.edu/abs/2004ApJS..152..211Z))
-- Draine, B. T., & Li, A. 2007, ApJ, 657, 810 ([ADS](https://ui.adsabs.harvard.edu/abs/2007ApJ...657..810D))
-- Mishchenko, M. I., & Travis, L. D. 1998, JQSRT, 60, 309 ([ADS](https://ui.adsabs.harvard.edu/abs/1998JQSRT..60..309M))
-- Draine, B. T., & Hensley, B. S. 2021, ApJ, 909, 94 ([ADS](https://ui.adsabs.harvard.edu/abs/2021ApJ...909...94D))
-- Hensley, B. S., & Draine, B. T. 2023, ApJ, 948, 55 ([ADS](https://ui.adsabs.harvard.edu/abs/2023ApJ...948...55H))
+- [Draine & Anderson 1985, ApJ, 292, 494](https://ui.adsabs.harvard.edu/abs/1985ApJ...292..494D/abstract) — the Monte Carlo temperature-history method the `mc/` solver follows.
+- [Guhathakurta & Draine 1989, ApJ, 345, 230](https://ui.adsabs.harvard.edu/abs/1989ApJ...345..230G/abstract) — the transition-matrix solution for `P(T)` of stochastically heated grains.
+- [Draine & Li 2001, ApJ, 551, 807](https://ui.adsabs.harvard.edu/abs/2001ApJ...551..807D/abstract) — the grain enthalpy used here, and the LD01 PAH cross-section vintage.
+- [Weingartner & Draine 2001, ApJ, 548, 296](https://ui.adsabs.harvard.edu/abs/2001ApJ...548..296W/abstract) — the Milky Way size distributions the DL07 model is built on.
+- [Zubko, Dwek & Arendt 2004, ApJS, 152, 211](https://ui.adsabs.harvard.edu/abs/2004ApJS..152..211Z/abstract) — the ZDA BARE-GR-S composition, size distributions, and calorimetry.
+- [Draine & Li 2007, ApJ, 657, 810](https://ui.adsabs.harvard.edu/abs/2007ApJ...657..810D/abstract) — the DL07 PAH cross sections and emission model.
+- [Mishchenko & Travis 1998, JQSRT, 60, 309](https://ui.adsabs.harvard.edu/abs/1998JQSRT..60..309M/abstract) — the T-matrix method used for the spheroidal astrodust optics.
+- [Draine & Hensley 2021, ApJ, 909, 94](https://ui.adsabs.harvard.edu/abs/2021ApJ...909...94D/abstract) — the astrodust dielectric function.
+- [Hensley & Draine 2023, ApJ, 948, 55](https://ui.adsabs.harvard.edu/abs/2023ApJ...948...55H/abstract) — the astrodust+PAH model this package reproduces.
 
 ## Author
 
@@ -421,4 +421,4 @@ Kwang-il Seon (KASI/UST)
 
 ---
 
-Last updated: 2026-08-21 08:10 KST
+Last updated: 2026-08-21 08:31 KST
