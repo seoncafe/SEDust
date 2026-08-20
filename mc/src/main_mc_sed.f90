@@ -1,5 +1,5 @@
 program main_mc_sed
-   ! MC SED builder driver.  Mirrors main_astrodust.x but uses the MC
+   ! MC SED builder driver.  Mirrors calc_sed.x astrodust but uses the MC
    ! engine in place of the Guhathakurta-Draine matrix solver.
    !
    ! Inputs via namelist (positional arg 1):

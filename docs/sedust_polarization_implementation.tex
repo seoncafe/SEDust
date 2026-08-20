@@ -251,7 +251,7 @@ published \code{polarized\_extinction.dat}. Independent of \code{sed\_init}. \\[
 The extinction-table driver, one executable for every dust model
 (\code{./calc\_kext.x astrodust\,|\,dl07\,|\,zubko\,|\,from\_files}). In its
 \code{astrodust} mode it writes column 8, \code{C\_polext/H}, of
-\code{data/kext\_astrodust\_MW.dat} as
+\code{data/astrodust/kext\_astrodust\_MW.dat} as
 $\sum_a {\rm d}n_{\rm Ad}(a)\,C_{\rm pol,ext}(\lambda,a)\,\falign(a)$. Only that
 mode writes the column, because only the astrodust builder fills
 \code{Cpol\_ext}. \\
@@ -470,7 +470,7 @@ numbers. The scalar transport optics of a dust model do not depend on the
 transport, so recomputing the size integral inside an RT run buys nothing that
 reading the recorded integral does not. \code{dust\_extinction} therefore now
 serves \Cabs, $C_{\rm sca}$, $C_{\rm ext}$ and $\langle\cos\theta\rangle$ from a
-\code{data/kext\_*.dat} table, attached to the model by the builder (optional
+\code{data/<model>/kext\_*.dat} table, attached to the model by the builder (optional
 \code{kext\_path}; the defaults are the EUV products, the widest grid each model
 has) and interpolated onto \code{m\%lam}, exactly at the nodes the two grids
 share. The host's call site is unchanged, and so is the requirement that the
@@ -1538,7 +1538,7 @@ later step uses the five derived arrays only. Releasing them removes
 to \code{q\_table\_jori}, so no consumer can depend on their surviving the
 build.
 
-Measured on \code{main\_astrodust.x}, the maximum resident set size falls from
+Measured on \code{calc\_sed.x astrodust}, the maximum resident set size falls from
 51232\,kB to 40088\,kB, a reduction of about 10.9\,MB. The peak does not fall by the full 13.7\,MB because it
 is a high-water mark: once the orientation-resolved arrays are gone, the
 later SED solution stages set the peak instead. The steady-state occupancy

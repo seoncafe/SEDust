@@ -5,7 +5,7 @@ Run from the repository root:
     python3 pyutil/tests/test_sedust_h5.py [data_dir]
 
 Three things are checked for every shipped model, against the text products
-`make_qtable.x` and `calc_kext.x` write beside the HDF5 file:
+`calc_qtable.x` and `calc_kext.x` write beside the HDF5 file:
 
   * the CUT.  include_euv=False must return exactly the wavelengths the narrow
     text product carries -- same count, same values.  That is the claim the
@@ -34,13 +34,25 @@ from pyutil.sedust_h5 import (read_grid, read_kext, read_qtable, read_polarized,
                               components, model_file, describe)
 
 # model -> (component -> text basename stem), and the kext product stems.
+# zubko: the q_zubko_* text products are the D03 Mie recomputation, which the
+# file stores as the *_mie_d03 groups; the sil/gra/pah groups hold the ZDA
+# tables as distributed, whose text form (suvSil_121_1201.dat, ...) is a
+# different format this test does not parse.
 QTEXT = {
     'astrodust': {'pah_neu': 'q_astrodust_pah_neu',
                   'pah_ion': 'q_astrodust_pah_ion'},
     'dl07':      {'sil': 'q_dl07_sil', 'gra': 'q_dl07_gra',
                   'pah_neu': 'q_dl07_pah_neu', 'pah_ion': 'q_dl07_pah_ion'},
-    'zubko':     {'sil': 'q_zubko_sil', 'gra': 'q_zubko_gra',
-                  'pah': 'q_zubko_pah'},
+    'zubko':     {'sil_mie_d03': 'q_zubko_sil', 'gra_mie_d03': 'q_zubko_gra',
+                  'pah_mie_d03': 'q_zubko_pah'},
+}
+# The full component set each file carries (astrodust's Q table itself lives
+# in /qtable/astrodust with no text counterpart on this grid).
+COMPONENTS = {
+    'astrodust': ['astrodust', 'pah_ion', 'pah_neu'],
+    'dl07':      ['gra', 'pah_ion', 'pah_neu', 'sil'],
+    'zubko':     ['gra', 'gra_mie_d03', 'pah', 'pah_mie_d03',
+                  'sil', 'sil_mie_d03'],
 }
 KTEXT = {
     'astrodust': ('kext_astrodust_MW_euv.dat', 'kext_astrodust_MW.dat'),
@@ -99,9 +111,13 @@ def main(data_dir: str) -> int:
         check(narrow.n == wide.n - wide.i_lyman + 1, 'narrow count = n - i_lyman + 1')
         check(np.array_equal(narrow.lam, wide.lam[wide.i_lyman - 1:]),
               'narrow axis is the wide axis sliced at i_lyman')
-        check(narrow.lam[0] >= 0.0912 > wide.lam[wide.i_lyman - 2],
-              'i_lyman brackets the Lyman limit',
-              f'{wide.lam[wide.i_lyman-2]:.6e} < 0.0912 <= {narrow.lam[0]:.6e}')
+        # The writer's covering rule (lyman_index in sedust_product.f90):
+        # i_lyman is the LAST node at or below the limit, so the narrow view
+        # starts at or just below 0.0912 um and the next node is above it.
+        lim = 0.0912 * (1.0 + 1.0e-9)
+        check(narrow.lam[0] <= lim < narrow.lam[1],
+              'i_lyman is the last node at or below the Lyman limit',
+              f'{narrow.lam[0]:.6e} <= 0.0912 < {narrow.lam[1]:.6e}')
 
         # ---- Q tables vs the text products --------------------------------
         for comp, stem in QTEXT[model].items():
@@ -175,8 +191,7 @@ def main(data_dir: str) -> int:
                       'K_abs = C_abs / M_dust_per_H')
 
         # ---- what the file says it holds ----------------------------------
-        check(sorted(components(path)) == sorted(QTEXT[model]) or
-              model == 'astrodust',
+        check(sorted(components(path)) == COMPONENTS[model],
               'components as expected', str(sorted(components(path))))
 
     check_polarized(data_dir)

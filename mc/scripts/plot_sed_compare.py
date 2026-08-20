@@ -17,8 +17,8 @@ SED_REF_DIR = os.path.join(ROOT, "..", "sed", "output")
 
 MC_DEFAULT = os.path.join(ROOT, "output", "sed_default_S2_U1.585_irem_mc.dat")
 MC_ALL     = os.path.join(ROOT, "output", "sed_mc_all_S2_U1.585_irem_mc.dat")
-REF_S2     = os.path.join(SED_REF_DIR, "astrodust_irem_ours_S2.dat")
-REF_PAH    = os.path.join(SED_REF_DIR, "astrodust_irem_ours_PAH.dat")
+REF_S2     = os.path.join(SED_REF_DIR, "sed_astrodust_S2.dat")
+REF_PAH    = os.path.join(SED_REF_DIR, "sed_astrodust_PAH.dat")
 
 
 def load_mc(path):

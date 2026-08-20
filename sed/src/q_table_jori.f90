@@ -75,7 +75,7 @@ module q_table_jori_mod
    public :: load_q_table_jori, falign_hd23, falign_powerlaw
    ! The raw orientation-resolved arrays, before the dichroic and
    ! random-orientation combinations are formed from them.  Exposed so that
-   ! sed/make_polarized.x can store what the table actually holds rather
+   ! sed/calc_polarized_optics.x can store what the table actually holds rather
    ! than a quantity derived from it.
    public :: read_jori_stream
    public :: nj_lam, nj_aeff, lam_j, aeff_j

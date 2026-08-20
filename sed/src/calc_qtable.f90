@@ -1,4 +1,4 @@
-program make_qtable
+program calc_qtable
    ! Writes the (lambda, a_eff) cross-section tables of every shipped model, in
    ! two forms: the text products under data/qtable/, one on the non-ionizing
    ! grid and one carried into the ionizing band, and one HDF5 file per model,
@@ -10,7 +10,7 @@ program make_qtable
    ! The narrow product is then a slice rather than a second copy, so the pair
    ! cannot disagree.  A build without HDF5 writes the text alone.
    !
-   !   ./make_qtable.x [astrodust | dl07 | zubko | all]     (default: all)
+   !   ./calc_qtable.x [astrodust | dl07 | zubko | all]     (default: all)
    !
    ! The optics are computed HERE, from the dielectric functions and the PAH
    ! cross sections, by the same routines the SED solver calls -- these are our
@@ -45,7 +45,7 @@ program make_qtable
    use constants,         only: wp, PI
    use q_silicate_mod,    only: q_silicate_full
    use q_graphite_mod,    only: q_graphite_full
-   use qpah,              only: qpah_dl07, qpah_use_d03_graphite, nc_coeff, nc_integer
+   use qpah,              only: qpah_dl07, qpah_graphite_source, nc_coeff, nc_integer
    use grain_dist_mod,    only: gd_apply_d03_reduction
    use zubko_io,          only: read_zubko_optics
    use q_table_mod,       only: load_q_table, n_lam_qt => n_lam, n_aeff_qt => n_aeff, &
@@ -58,6 +58,8 @@ program make_qtable
                                 dl07_euv_lambda_floor
    use sedust_product_mod, only: lyman_index
    use enthalpy_astrodust_mod, only: RHO_AD, RHO_PAH
+   use sed_run_options, only: run_options_t, declare_run_options, &
+                              read_run_subject, read_run_option
    implicit none
 
    ! This program WRITES data/astrodust/sedust_astrodust.h5, so it cannot read
@@ -77,7 +79,7 @@ program make_qtable
    ! ships data/<model>/ for what it runs.
    character(len=*), parameter :: D_ASTRODUST = '../data/astrodust/'
    character(len=*), parameter :: D_DL07      = '../data/dl07/'
-   ! DL07 reference model, as main_dl07.x runs it.
+   ! DL07 reference model, as calc_sed.x dl07 runs it.
    integer,  parameter :: SD_INDEX = 7
    real(wp), parameter :: U_ISRF = 1.0_wp
    integer,  parameter :: NT_IN = 100
@@ -91,11 +93,37 @@ program make_qtable
         '../data/dielectric/index_CpaD03 + index_CpeD03'
 
    character(len=32)  :: which
-   integer :: narg
+   integer :: narg, iarg
+   logical :: taken
+   type(run_options_t) :: o
+   character(len=64)   :: arg
 
+   ! Which model's tables to compute is the only axis here.  These tables ARE
+   ! the model definition -- the graphite of the xi blend, the PAH cross-section
+   ! vintage, the size distribution are all fixed by which model this is -- so
+   ! no other axis has a referent, and a word naming one is refused by name.
+   call declare_run_options(o, program='calc_qtable', &
+        subjects=[character(len=16):: 'astrodust', 'dl07', 'zubko', 'all'])
    narg = command_argument_count()
    which = 'all'
-   if (narg >= 1) call get_command_argument(1, which)
+   if (narg >= 1) then
+      call get_command_argument(1, which)
+      call read_run_subject(o, trim(which), taken)
+      if (.not. taken) then
+         write(*,'(a,a)') ' calc_qtable: unknown model ', trim(which)
+         write(*,'(a)')   ' usage: ./calc_qtable.x [astrodust | dl07 | zubko | all]'
+         stop 1
+      end if
+   end if
+   do iarg = 2, narg
+      call get_command_argument(iarg, arg)
+      call read_run_option(trim(arg), o, taken)
+      if (.not. taken) then
+         write(*,'(a,a)') ' calc_qtable: unknown argument ', trim(arg)
+         write(*,'(a)')   ' usage: ./calc_qtable.x [astrodust | dl07 | zubko | all]'
+         stop 1
+      end if
+   end do
 
    select case (trim(which))
    case ('astrodust');  call write_astrodust_tables()
@@ -103,9 +131,6 @@ program make_qtable
    case ('zubko');      call write_zubko_tables()
    case ('all');        call write_astrodust_tables()
                         call write_dl07_tables();  call write_zubko_tables()
-   case default
-      write(*,'(a)') ' usage: ./make_qtable.x [astrodust | dl07 | zubko | all]'
-      stop 1
    end select
 
 contains
@@ -129,7 +154,7 @@ contains
 
       call load_q_table(F_QT_EUV)
       allocate(Qn(n_lam_qt, n_aeff_qt), Qi(n_lam_qt, n_aeff_qt))
-      qpah_use_d03_graphite = .false.        ! HD23: Nc = 417, D16 graphite
+      qpah_graphite_source = 'd16_sphere'    ! HD23: Nc = 417, D16 graphite
       nc_coeff   = 417.0_wp
       nc_integer = .false.
       do ja = 1, n_aeff_qt
@@ -200,8 +225,8 @@ contains
 
 
    subroutine dl07_settings()
-      ! The 2003 DL07 model, exactly as main_dl07.x sets it up.
-      qpah_use_d03_graphite  = .true.
+      ! The 2003 DL07 model, exactly as calc_sed.x dl07 sets it up.
+      qpah_graphite_source   = 'd03_sphere'
       gd_apply_d03_reduction = .true.
       nc_coeff   = 470.0_wp
       nc_integer = .true.
@@ -335,8 +360,8 @@ contains
       !
       ! Stated here rather than inherited: these are saved module variables, so
       ! without this line the tables this pass writes would depend on whether
-      ! the DL07 pass had run first in the same process -- ./make_qtable.x all
-      ! and ./make_qtable.x zubko wrote PAH tables differing by a mean 17%.
+      ! the DL07 pass had run first in the same process -- ./calc_qtable.x all
+      ! and ./calc_qtable.x zubko wrote PAH tables differing by a mean 17%.
       call dl07_settings()
 
       ! Read them whole: the axes and densities the recomputation needs, and
@@ -506,17 +531,17 @@ contains
       integer(h5id_k) :: fid, gid
       logical :: ok
       if (.not. sedust_has_hdf5) then
-         write(*,'(a)') ' make_qtable: built without HDF5, writing text only'
+         write(*,'(a)') ' calc_qtable: built without HDF5, writing text only'
          return
       end if
       call h5_begin(ok);  if (.not. ok) return
       call h5_create_file(h5_path(model), fid, ok)
       if (.not. ok) then
-         write(*,'(a,a)') ' make_qtable: cannot create ', h5_path(model)
+         write(*,'(a,a)') ' calc_qtable: cannot create ', h5_path(model)
          call h5_end();  return
       end if
       call h5_put_attr_s(fid, 'model', model)
-      call h5_put_attr_s(fid, 'generator', 'SEDust sed/make_qtable.x')
+      call h5_put_attr_s(fid, 'generator', 'SEDust sed/calc_qtable.x')
       call h5_put_attr_s(fid, 'layout', &
            'cross sections are (n_a, n_lam) in h5py; lambda is the fastest Fortran axis')
       call h5_group(fid, 'grid', gid, ok)
@@ -616,8 +641,8 @@ contains
       write(u,'(a,a)')     '# ', what
       write(u,'(a,i0)')    '# a_eff stride: every 1 of ', na_
       write(u,'(a,i0)')    '# lambda stride: every 1 of ', nw
-      write(u,'(a)')       '# Written by sed/make_qtable.x from this tree''s own optics'
-      write(u,'(a)')       '#   routines; see src/make_qtable.f90 for the grids and inputs.'
+      write(u,'(a)')       '# Written by sed/calc_qtable.x from this tree''s own optics'
+      write(u,'(a)')       '#   routines; see src/calc_qtable.f90 for the grids and inputs.'
       if (present(rho_in)) write(u,'(a,es13.6)') '# density [g/cm^3]: ', rho_in
       if (len_trim(note) > 0) then
          write(u,'(a,a)') '# ', note
@@ -649,4 +674,4 @@ contains
 
 
    ! ===================================================================
-end program make_qtable
+end program calc_qtable

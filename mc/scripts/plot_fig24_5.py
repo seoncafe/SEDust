@@ -24,7 +24,7 @@ OUT  = os.path.join(ROOT, "output", "fig24_5")
 
 SIZES    = ["200A", "100A", "50A", "20A", "10A"]   # PIIM Fig 24.5 top-to-bottom
 U_LABELS = ["U1", "U100"]
-U_TITLES = ["U = 1", r"U = $10^{2}$"]
+U_TITLES = [r"$U = 1$", r"$U = 10^{2}$"]
 
 
 def load_traj(path):
@@ -65,8 +65,7 @@ def plot_panel(ax, t_traj, T_traj, t_evt, T_pre, T_post, title):
     ax.set_ylim(2.0, 2.0e3)            # extends below T_CMB = 2.725 K
     ax.set_xlim(0, 1.0e5)
     ax.text(0.97, 0.92, title, transform=ax.transAxes,
-            ha="right", va="top", fontsize=8,
-            bbox=dict(boxstyle="round,pad=0.2", fc="w", ec="0.7", alpha=0.85))
+            ha="right", va="top", fontsize=8)
     ax.tick_params(labelsize=8)
 
 
@@ -76,7 +75,9 @@ def main():
         for i, sz in enumerate(SIZES):
             t_traj, T_traj = load_traj(os.path.join(OUT, f"{sz}_{Ulbl}_Tt.dat"))
             t_evt, T_pre, T_post = load_evt(os.path.join(OUT, f"{sz}_{Ulbl}_evt.dat"))
-            title = f"a = {sz},  {Utitle},  N_evt = {max(len(t_evt) - 1, 0)}"
+            n_evt = max(len(t_evt) - 1, 0)
+            title = (rf"$a = {sz[:-1]}\,$\AA, " + Utitle + ", "
+                     + rf"$N_{{\rm evt}} = {n_evt}$")
             plot_panel(axes[i, j], t_traj, T_traj, t_evt, T_pre, T_post, title)
     for ax in axes[-1, :]:
         ax.set_xlabel(r"$t$ (s)", fontsize=9)

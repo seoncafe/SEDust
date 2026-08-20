@@ -1,18 +1,18 @@
-program make_polarized
+program calc_polarized_optics
    ! Writes the /polarized groups of data/astrodust/sedust_astrodust.h5: the
    ! orientation-resolved cross sections of the DH21 astrodust spheroid, and
    ! the random-orientation and aligned scattering matrices.
    !
-   !   ./make_polarized.x [qjori | scatmat | all]        (default: all)
+   !   ./calc_polarized_optics.x [qjori | scatmat | all]        (default: all)
    !
    ! These are the products of the polarized branch, and they belong in the
    ! astrodust model's own file beside its scalar optics: one file per model is
    ! what a host ships.  This program APPENDS, exactly as calc_kext.x does --
-   ! make_qtable.x replaces the file, so the running order is
+   ! calc_qtable.x replaces the file, so the running order is
    !
-   !   ./make_qtable.x astrodust      (lays down /grid and /qtable)
-   !   ./calc_kext.x astrodust euv    (adds /kext)
-   !   ./make_polarized.x             (adds /polarized)
+   !   ./calc_qtable.x astrodust          (lays down /grid and /qtable)
+   !   ./calc_kext.x astrodust euv        (adds /kext)
+   !   ./calc_polarized_optics.x          (adds /polarized)
    !
    ! WHY /polarized CARRIES ITS OWN WAVELENGTH AXIS.  The scalar products run
    ! into the ionizing band; the orientation-resolved table does not.  It stops
@@ -36,6 +36,8 @@ program make_polarized
                                  scm_cext_ref, scm_csca_ref, scm_F_tot, scm_F_ref, &
                                  scm_Z, scm_profile_name, scm_fmax, scm_a_align, &
                                  scm_alpha
+   use sed_run_options, only: run_options_t, declare_run_options, &
+                              read_run_subject, read_run_option
    implicit none
 
    character(len=*), parameter :: H5FILE  = '../data/astrodust/sedust_astrodust.h5'
@@ -49,14 +51,41 @@ program make_polarized
    real(wp), parameter :: LAM_LYMAN = 0.0912_wp
 
    character(len=32) :: which
-   integer :: narg
+   integer :: narg, iarg
+   logical :: taken
+   type(run_options_t) :: o
+   character(len=64)   :: arg
 
+   ! Which polarized product to write is the only axis here.  Both products are
+   ! read from the DH21 tables on those tables' own grids, so there is no
+   ! wavelength-grid axis, no field and no solver; a word naming one of those
+   ! is refused by name.
+   call declare_run_options(o, program='calc_polarized_optics', &
+        subjects=[character(len=16):: 'qjori', 'scatmat', 'all'])
    narg = command_argument_count()
    which = 'all'
-   if (narg >= 1) call get_command_argument(1, which)
+   if (narg >= 1) then
+      call get_command_argument(1, which)
+      call read_run_subject(o, trim(which), taken)
+      if (.not. taken) then
+         write(*,'(a,a)') ' calc_polarized_optics: unknown product ', trim(which)
+         write(*,'(a)')   ' usage: ./calc_polarized_optics.x [qjori | scatmat | all]'
+         stop 1
+      end if
+   end if
+   do iarg = 2, narg
+      call get_command_argument(iarg, arg)
+      call read_run_option(trim(arg), o, taken)
+      if (.not. taken) then
+         write(*,'(a,a)') ' calc_polarized_optics: unknown argument ', trim(arg)
+         write(*,'(a)')   ' usage: ./calc_polarized_optics.x [qjori | scatmat | all]'
+         stop 1
+      end if
+   end do
 
    if (.not. sedust_has_hdf5) then
-      write(*,'(a)') ' make_polarized: built without HDF5; there is nothing to write'
+      write(*,'(a)') ' calc_polarized_optics: built without HDF5;'// &
+                     ' there is nothing to write'
       stop 1
    end if
 
@@ -64,9 +93,6 @@ program make_polarized
    case ('qjori');    call write_qjori()
    case ('scatmat');  call write_scatmat()
    case ('all');      call write_qjori();  call write_scatmat()
-   case default
-      write(*,'(a)') ' usage: ./make_polarized.x [qjori | scatmat | all]'
-      stop 1
    end select
 
 contains
@@ -91,7 +117,7 @@ contains
       call read_jori_stream(F_QJ, F_WAVE, F_AEFF, NA_J, NW_J, &
                             lam, aeff, qe, qa, qs, qr, bir, ok, msg)
       if (.not. ok) then
-         write(*,'(a,a)') ' make_polarized: ', trim(msg)
+         write(*,'(a,a)') ' calc_polarized_optics: ', trim(msg)
          stop 1
       end if
       write(*,'(a,i0,a,i0,a,l1)') ' qjori: ', size(lam), ' wavelengths x ', &
@@ -102,7 +128,7 @@ contains
       if (h5_has(fid, 'polarized/qjori')) call h5_unlink(fid, 'polarized/qjori')
       call h5_group(fid, 'polarized/qjori', gid, ok)
       if (.not. ok) then
-         write(*,'(a)') ' make_polarized: cannot create /polarized/qjori'
+         write(*,'(a)') ' calc_polarized_optics: cannot create /polarized/qjori'
          call h5_close_file(fid);  call h5_end();  stop 1
       end if
 
@@ -148,7 +174,7 @@ contains
 
       call load_scatmat_aligned(F_SCAT, stat)
       if (stat /= 0 .or. .not. scm_loaded) then
-         write(*,'(a,a,a,i0)') ' make_polarized: cannot read ', F_SCAT, ', status = ', stat
+         write(*,'(a,a,a,i0)') ' calc_polarized_optics: cannot read ', F_SCAT, ', status = ', stat
          stop 1
       end if
       write(*,'(a,i0,a,i0,a,i0,a,i0,a)') ' scatmat: ', scm_nband, ' bands, Z is (', &
@@ -239,7 +265,7 @@ contains
       ! orientation-resolved table: /polarized/lambda is its wavelength grid.
       ! The scattering matrices are banded and carry their own band_lambda on
       ! each group, so they pass no lam and never define the axis -- running
-      ! `make_polarized.x scatmat` on a fresh file must not leave /polarized
+      ! `calc_polarized_optics.x scatmat` on a fresh file must not leave /polarized
       ! claiming a five-point wavelength axis.
       integer(h5id_k),    intent(out) :: fid
       logical,            intent(out) :: ok
@@ -249,8 +275,8 @@ contains
       call h5_begin(ok);  if (.not. ok) return
       call h5_open_rw(H5FILE, fid, ok)
       if (.not. ok) then
-         write(*,'(a,a)') ' make_polarized: cannot open ', H5FILE
-         write(*,'(a)')   '   write it first with  ./make_qtable.x astrodust'
+         write(*,'(a,a)') ' calc_polarized_optics: cannot open ', H5FILE
+         write(*,'(a)')   '   write it first with  ./calc_qtable.x astrodust'
          call h5_end();  return
       end if
 
@@ -271,7 +297,7 @@ contains
                  '0 = the ionizing band is absent from this product; a dichroic '// &
                  'extinction of zero below pol_valid_from is an omission, not physics')
          end if
-         call h5_put_attr_s(pid, 'generator', 'SEDust sed/make_polarized.x')
+         call h5_put_attr_s(pid, 'generator', 'SEDust sed/calc_polarized_optics.x')
          call h5_group_close(pid)
       end if
    end subroutine open_polarized
@@ -288,4 +314,4 @@ contains
    end subroutine h5_write_3d_jori
 
 
-end program make_polarized
+end program calc_polarized_optics

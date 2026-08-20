@@ -12,37 +12,56 @@ module qpah
    ! the DL07 prescription.
    !
    ! Implements the QPAH_DL07 + drude_DL07 + cutoff
-   ! trio); graphite branch reads Draine's precomputed *sphere* Q_abs
-   ! table for D16 turbostratic graphite (MG EMT) via
-   ! q_graphite_d16_sphere_mod, EXCEPT above the PAH cutoff, where the
-   ! table's smallest radius (1e-3 um) is larger than the grains that
-   ! matter and graphite is taken from the D03 dielectric functions
-   ! instead (see the branch in qpah_dl07).
+   ! trio); the graphite of the blend comes from whichever of three optics
+   ! qpah_graphite_source names (see below), EXCEPT above the PAH cutoff,
+   ! where the D16 tables' smallest radius (1e-3 um for the sphere table)
+   ! is larger than the grains that matter and graphite is taken from the
+   ! D03 dielectric functions in all three cases (see the branch in
+   ! qpah_dl07).
    ! Empirically (sed_total_d16_threeway.pdf)
-   ! the sphere variant agrees with HD23 PAH_irem.dat better than the
-   ! b/a=1.4 oblate spheroid variant in the 30-3000 um sub-mm band
-   ! (PAH-only median ratio +0.1% vs +25%), consistent with HD23 inheriting
-   ! DL07's spherical-PAH framework. The D03 sphere path (q_graphite_mod)
-   ! and the D16 spheroid path (q_graphite_d16_mod) are retained in the
-   ! tree for sensitivity testing.
+   ! the D16 sphere agrees with HD23 PAH_irem.dat best in the
+   ! 300-3000 um sub-mm band (PAH-only band-integrated ratio 0.99, against
+   ! 1.05 for the D16 b/a=1.4 oblate spheroid and 0.61 for the D03 sphere),
+   ! consistent with HD23 inheriting DL07's spherical-PAH framework.
 
    use constants,                 only: wp, pi
-   use q_graphite_d16_sphere_mod, only: q_graphite_d16_abs => q_graphite_d16_sphere_abs
+   use q_graphite_d16_sphere_mod, only: q_graphite_d16_sphere_abs
+   use q_graphite_d16_mod,        only: q_graphite_d16_spheroid_abs => q_graphite_d16_abs
    use q_graphite_mod,            only: q_graphite_d03_abs => q_graphite_abs
    implicit none
    private
    public :: qpah_dl07
    public :: qpah_ld01     ! Li & Draine 2001 PAH variant
-   ! Graphite optics used for the carbonaceous PAH<->graphite blend.
-   ! Default .false. = Draine 2016 (D16) sphere, the astrodust/HD23 choice
-   ! (production path unchanged). Set .true. for the original DL07 D03
-   ! graphite (1/3 + 2/3, q_graphite_abs) when reproducing DL07.
-   public :: qpah_use_d03_graphite
-   logical, save :: qpah_use_d03_graphite = .false.
+   ! Which published PAH absorption cross section the carbonaceous blend takes:
+   !   'dl07'  Draine & Li (2007), qpah_dl07 -- the default, and what the DL07
+   !           model and the astrodust PAH population are defined with.  It
+   !           carries the PAH cation near-infrared additions of DL07 eq. 2
+   !           (the 1.05 and 1.26 um Drude resonances, the 1.905 um negative
+   !           term and the NIR continuum, after Mattioda et al. 2005).
+   !   'ld01'  Li & Draine (2001), qpah_ld01 -- the earlier vintage, with none
+   !           of those, and with its own N_C = 468 (a/10A)^3 rather than
+   !           nc_coeff.  Draine's 2003 kext_albedo table was computed with it.
+   ! qpah_abs dispatches on this, so a caller that wants whichever vintage the
+   ! model is configured for asks for it once rather than branching itself.
+   public :: qpah_xsec_vintage
+   public :: qpah_abs
+   character(len=8), save :: qpah_xsec_vintage = 'dl07'
+   ! Graphite optics used for the carbonaceous PAH<->graphite blend:
+   !   'd16_sphere'    Draine 2016 turbostratic graphite, Maxwell-Garnett
+   !                   effective medium, on a sphere (q_D16graphite.dat).
+   !                   The HD23 choice and the production default.
+   !   'd03_sphere'    Draine 2003 graphite dielectric functions with Mie on
+   !                   a sphere, (1/3)E||c + (2/3)E_|_c. The original DL07
+   !                   choice; what the dl07 model of calc_sed and calc_kext selects.
+   !   'd16_spheroid'  the same D16 turbostratic material on Draine's
+   !                   b/a = 1.4 oblate spheroid (qlib_gra_D16MGemt_1.400),
+   !                   random-orientation averaged. Sensitivity test only.
+   public :: qpah_graphite_source
+   character(len=16), save :: qpah_graphite_source = 'd16_sphere'
    ! Carbon-atom-count coefficient Nc = nc_coeff*(a/10A)^3. Default 417 =
    ! HD23 eq.21 (rho_PAH = 2.0 g/cm^3), used by the astrodust path. Draine's
    ! DL07 prescription uses 470 (rho ~ 2.2; makeqlib NCAR = NINT(4.70e11*a_um^3))
-   ! and rounds Nc to an integer -- main_dl07 sets nc_coeff=470, nc_integer=.true.
+   ! and rounds Nc to an integer -- the dl07 model sets nc_coeff=470, nc_integer=.true.
    ! to match Draine exactly on the DL07-model path.
    public :: nc_coeff, nc_integer
    real(kind=wp), save :: nc_coeff   = 417.0d0
@@ -62,7 +81,7 @@ module qpah
    integer, parameter :: NMODE_PUB = 30
    logical, save :: use_tuned_pah = .false.
    ! Multiplicative correction factor for each mode; default 1.0 (no change).
-   ! Set by main_astrodust.f90 or by external tuner before sed_solve.
+   ! Set by calc_sed.f90 or by an external tuner before sed_solve.
    real(kind=wp), save :: sigma_tune_neu(NMODE_PUB) = 1.0_wp
    real(kind=wp), save :: sigma_tune_ion(NMODE_PUB) = 1.0_wp
    ! Multiplier for the Drude width gamma_j of each mode (DL07 Table 1
@@ -76,6 +95,54 @@ module qpah
    real(kind=wp), save :: xi_FGMIN  = 0.01_wp
 
 contains
+
+   subroutine q_graphite_xi_blend_abs(radius, lambda, Qabs_gra)
+      ! Graphite Q_abs entering the xi_gra blend of DL07 eq. 5-7 /
+      ! HD23 eq. 15-16, taken from the optics qpah_graphite_source names.
+      ! Every one of the three is a random-orientation-averaged absorption
+      ! efficiency, which is what an unaligned carbonaceous population needs.
+      ! All three underlying modules load their table on first use, and every
+      ! caller reaches this from serial code, so no explicit load is issued
+      ! here.
+      real(kind=wp), intent(in)  :: radius        ! [um]
+      real(kind=wp), intent(in)  :: lambda        ! [um]
+      real(kind=wp), intent(out) :: Qabs_gra
+
+      select case (trim(qpah_graphite_source))
+      case ('d16_sphere')
+         call q_graphite_d16_sphere_abs(radius, lambda, Qabs_gra)
+      case ('d03_sphere')
+         call q_graphite_d03_abs(radius, lambda, Qabs_gra)
+      case ('d16_spheroid')
+         call q_graphite_d16_spheroid_abs(radius, lambda, Qabs_gra)
+      case default
+         write(*,'(a)') 'qpah: unknown qpah_graphite_source "'// &
+                        trim(qpah_graphite_source)//'"'
+         write(*,'(a)') '      expected d16_sphere, d03_sphere or d16_spheroid'
+         stop 1
+      end select
+   end subroutine q_graphite_xi_blend_abs
+
+
+   subroutine qpah_abs(charge, radius, lambda, Qabs)
+      ! Carbonaceous absorption efficiency in whichever published vintage
+      ! qpah_xsec_vintage names.  An unrecognized value stops the run rather
+      ! than silently selecting one of the two.
+      integer,       intent(in)  :: charge        ! 0 = neutral, 1 = cation
+      real(kind=wp), intent(in)  :: radius        ! [um]
+      real(kind=wp), intent(in)  :: lambda        ! [um]
+      real(kind=wp), intent(out) :: Qabs
+      select case (trim(qpah_xsec_vintage))
+      case ('dl07');  call qpah_dl07(charge, radius, lambda, Qabs)
+      case ('ld01');  call qpah_ld01(charge, radius, lambda, Qabs)
+      case default
+         write(*,'(a)') 'qpah: unknown qpah_xsec_vintage "'// &
+                        trim(qpah_xsec_vintage)//'"'
+         write(*,'(a)') '      expected dl07 or ld01'
+         stop 1
+      end select
+   end subroutine qpah_abs
+
 
    subroutine qpah_dl07(charge, radius, lambda, Qabs)
       integer,       intent(in)  :: charge        ! 0 = neutral, 1 = cation
@@ -131,16 +198,18 @@ contains
          end do
       end if
 
-      ! Cation continuum boost (DL07 eq. 12)
+      ! Cation near-IR continuum, DL07 eq. 2 (Mattioda et al. 2005a):
+      !   C_abs/N_C = 3.5e-19 * 10^(-1.45/x) * exp[-(0.1x)^2] cm^2, x = 1/lambda[um].
+      ! The Gaussian factor carries 0.1x inside the square, as in Draine.
       if (charge /= 0 .and. x < 17.25d0) then
-         CPAH = CPAH + 3.5d0 * 10d0**(-19d0 - 1.45d0/x) * exp(-0.1d0*x*x)
+         CPAH = CPAH + 3.5d0 * 10d0**(-19d0 - 1.45d0/x) * exp(-(0.1d0*x)**2)
       end if
 
       ! C^PAH is the cross section per C atom [cm^2]; convert to Q via Q = C·Nc/(πa²).
       Qabs_pah = CPAH * Nc / (pi * (radius*1d-4)**2)
 
       ! DL07 eq. 5-7 / HD23 eq. 15-16: blend with random-orient graphite Q.
-      if (x >= 17.25d0 .or. qpah_use_d03_graphite) then
+      if (x >= 17.25d0) then
          ! Above the PAH cutoff (21.4 eV) C^PAH = 0, so graphite IS the whole
          ! carbonaceous absorption -- and there it is needed down to
          ! a ~ 4e-4 um, below the D16 sphere table's smallest radius
@@ -150,17 +219,19 @@ contains
          ! overestimates the absorption by a/1e-3 um, up to 2.4x.  So take
          ! graphite from the D03 dielectric functions instead: Mie on the
          ! random-orientation average (1/3 E||c + 2/3 E_|_c) with no radius
-         ! clamp, valid to 6.2e-5 um.  Longward of the cutoff the D16 table
-         ! stays in use: there xi_gra weights graphite by only 0.01 for the
-         ! small grains, and the table is what matches HD23 PAH_irem.dat in
-         ! the 30-3000 um band (see the module header).
+         ! clamp, valid to 6.2e-5 um.  This is done for every setting of
+         ! qpah_graphite_source, since it is the tables' radius floor and not
+         ! a preference that forces it.  Longward of the cutoff the selected
+         ! source takes over: there xi_gra weights graphite by only 0.01 for
+         ! the small grains, and the D16 sphere is what matches HD23
+         ! PAH_irem.dat in the sub-mm (see the module header).
          ! This branch is unreachable unless the caller's wavelength grid is
          ! carried below 1/17.25 um = 0.05797 um.  The T-matrix Q table stops
          ! at 0.0912 um (1/0.0912 = 10.96 < 17.25), so a run on the plain
          ! table grid never enters it and is unaffected.
          call q_graphite_d03_abs(radius, lambda, Qabs_gra)   ! DL07 D03 graphite
       else
-         call q_graphite_d16_abs(radius, lambda, Qabs_gra)   ! HD23 D16 (default)
+         call q_graphite_xi_blend_abs(radius, lambda, Qabs_gra)
       end if
       if (radius <= xi_A_T_um) then
          xi_gra = xi_FGMIN
@@ -301,11 +372,11 @@ contains
       Qabs_pah = CPAH * Nc / (pi * (radius*1d-4)**2)
 
       ! Above the PAH cutoff graphite is the whole carbonaceous absorption and
-      ! is needed below the D16 table's smallest radius; see qpah_dl07.
-      if (x >= 17.25d0 .or. qpah_use_d03_graphite) then
+      ! is needed below the D16 tables' smallest radius; see qpah_dl07.
+      if (x >= 17.25d0) then
          call q_graphite_d03_abs(radius, lambda, Qabs_gra)
       else
-         call q_graphite_d16_abs(radius, lambda, Qabs_gra)
+         call q_graphite_xi_blend_abs(radius, lambda, Qabs_gra)
       end if
       if (radius <= xi_A_T_um) then
          xi_gra = xi_FGMIN

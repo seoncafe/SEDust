@@ -5,9 +5,15 @@ program calc_kext
    ! for any dust model this library can build.
    !
    !   ./calc_kext.x astrodust [euv | <lam_min in um>]
-   !   ./calc_kext.x dl07      [euv | <lam_min in um>]
+   !   ./calc_kext.x dl07 [ld01] [euv | <lam_min in um>]
    !   ./calc_kext.x zubko     [formula | table] [euv]
    !   ./calc_kext.x from_files <descriptor> [data_dir]
+   !
+   ! `ld01` asks for the DL07 model with the Li & Draine (2001) carbonaceous
+   ! absorption in place of the Draine & Li (2007) one -- everything else the
+   ! same.  Both are curves of the same model, so both land in ../data/dl07/,
+   ! as kext_dl07_MW[_euv].dat and kext_ld01_MW[_euv].dat, and inside that
+   ! model's own product as /kext and /kext_ld01.
    !
    ! Every model goes through the same two calls -- one build_* to set the
    ! model up, then size_integrated_extinction to do the size integral over its
@@ -78,6 +84,17 @@ program calc_kext
    ! so with it nothing is left for this route to solve.
    use euv_astrodust_tmatrix, only: use_tmatrix_euv_band_optics
    use sedust_h5
+   ! One command-line system for every program here: this one declares the
+   ! wavelength-grid axis, the DL07 model's carbonaceous vintage, and (for
+   ! zubko) that model's size-distribution and optics-set axes, and nothing
+   ! else.  A word of any other axis -- a solver, a radiation field, an
+   ! emission term -- is refused by name, because a size-integrated transport
+   ! curve has no referent for one.  Nor is the graphite of the PAH xi blend
+   ! offered: these products ARE the model definition.
+   use sed_run_options,   only: run_options_t, declare_run_options, &
+                                widen_run_options, read_run_subject, &
+                                read_run_option, check_run_options, &
+                                write_run_option_usage
    implicit none
 
    ! ---- model inputs shared with the SED drivers -------------------------
@@ -123,26 +140,78 @@ program calc_kext
    real(wp) :: lam_min, lam_lo, lam_hi, lam_lo2, Mdust_H
    integer  :: narg, ios, nlam_out, iarg
    logical  :: euv, zubko_formula
+   ! Which published PAH absorption cross section the DL07-model curve is the
+   ! size integral of, and which model's data directory and HDF5 product the
+   ! curve belongs in.  The two are not the same thing: 'dl07' and 'ld01' are
+   ! two vintages of ONE model, so both land in ../data/dl07/ and in that
+   ! model's own product, distinguished by the file name and the group.
+   character(len=8)   :: pah_xsec
+   character(len=16)  :: product
    character(len=32)  :: model
+   type(run_options_t) :: o
+   logical            :: taken
+   integer            :: n_free
    character(len=16)  :: zubko_optics
    character(len=256) :: opt, fout, desc, ddir, arg
 
    call use_tmatrix_euv_band_optics()
 
    ! ---- command line -----------------------------------------------------
+   ! The axes this program has a referent for, declared before any argument is
+   ! read; the DL07 model and zubko add their own once the subject is known.
+   call declare_run_options(o, program='calc_kext', &
+        subjects=[character(len=16):: 'astrodust', 'dl07', 'zubko', &
+                                      'from_files'], &
+        grid=.true.)
+
    narg = command_argument_count()
    if (narg < 1) then
       call print_usage();  stop
    end if
    call get_command_argument(1, model)
 
+   call read_run_subject(o, trim(model), taken)
+   if (.not. taken) then
+      write(*,'(a,a)') ' calc_kext: unknown model ', trim(model)
+      call print_usage();  stop 1
+   end if
+   if (trim(model) == 'zubko') &
+      call widen_run_options(o, zubko_sizedist=.true., zubko_optics=.true.)
+   ! The DL07 model is defined with the DL07 (2007) carbonaceous absorption and
+   ! can be built with the earlier LD01 (2001) one instead; both are curves of
+   ! the same model, filed beside each other.
+   if (trim(model) == 'dl07') call widen_run_options(o, pah_xsec=.true.)
+
    euv = .false.;  lam_min = 0.0_wp
-   opt = '';  desc = F_ZDA_DESC;  ddir = D_ZUBKO;  zubko_formula = .true.
+   pah_xsec = 'dl07';  product = trim(model)
+   opt = '';  desc = F_ZDA_DESC;  ddir = D_ZUBKO
+   ! Every word after the model, through the shared parser.  What it does not
+   ! recognize is this program's own positional argument: a wavelength floor
+   ! for astrodust and the DL07 model, a descriptor path and a data directory
+   ! for from_files.
+   n_free = 0
+   do iarg = 2, narg
+      call get_command_argument(iarg, arg)
+      call read_run_option(trim(arg), o, taken)
+      if (.not. taken) then
+         n_free = n_free + 1
+         select case (n_free)
+         case (1);  opt  = trim(arg)
+         case (2);  ddir = trim(arg)
+         case default
+            write(*,'(a,a)') ' calc_kext: unexpected argument ', trim(arg)
+            call print_usage();  stop 1
+         end select
+      end if
+   end do
+   call check_run_options(o)
+   euv = o%euv
    ! Which of the two stored zubko optics sets this curve is the size integral
    ! of.  The default matches build_dust's, so the shipped curve is the one a
    ! host that names nothing is served.
-   zubko_optics = 'zda'
-   if (narg >= 2) call get_command_argument(2, opt)
+   zubko_formula = o%zubko_formula
+   zubko_optics  = o%zubko_optics
+   pah_xsec      = o%pah_xsec
 
    nnote = 0
    Mdust_H = 0.0_wp
@@ -151,12 +220,12 @@ program calc_kext
 
    ! ===================================================================
    case ('astrodust')
+      ! A bare number is a wavelength floor in um, and asking for one is asking
+      ! for the band below the Q table's own short end.
       if (len_trim(opt) > 0) then
          euv = .true.
-         if (trim(opt) /= 'euv') then
-            read(opt, *, iostat=ios) lam_min
-            if (ios /= 0 .or. lam_min <= 0.0_wp) then;  call print_usage();  stop 1;  end if
-         end if
+         read(opt, *, iostat=ios) lam_min
+         if (ios /= 0 .or. lam_min <= 0.0_wp) then;  call print_usage();  stop 1;  end if
       end if
       if (euv) then
          ! The requested floor is tested against the DH21 astrodust dielectric
@@ -178,12 +247,17 @@ program calc_kext
 
    ! ===================================================================
    case ('dl07')
+      ! One model, two published carbonaceous absorption vintages.  Everything
+      ! else -- the WD01 size distribution, the D03 silicate Mie optics, the D03
+      ! graphite scattering, the charge mixing -- is shared, so the pair
+      ! isolates that one cross section.  `ld01` is the vintage Draine's 2003
+      ! kext_albedo table was computed with, which is why the comparison this
+      ! program prints at the end is the sharper test for it.
+      product = 'dl07'
       if (len_trim(opt) > 0) then
          euv = .true.
-         if (trim(opt) /= 'euv') then
-            read(opt, *, iostat=ios) lam_min
-            if (ios /= 0 .or. lam_min <= 0.0_wp) then;  call print_usage();  stop 1;  end if
-         end if
+         read(opt, *, iostat=ios) lam_min
+         if (ios /= 0 .or. lam_min <= 0.0_wp) then;  call print_usage();  stop 1;  end if
       end if
       if (euv) then
          ! This model's optics are Mie on the D03 dielectric functions at every
@@ -197,11 +271,12 @@ program calc_kext
          if (lam_min <= 0.0_wp) lam_min = dl07_euv_lambda_floor()
          write(*,'(a,es12.5,a)') ' requested lam_min = ', lam_min, ' um'
          call build_dl07(m, F_QT_DL, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI, &
-                         lam_min=lam_min, include_euv=.true.)
-         fout = '../data/dl07/kext_dl07_MW_euv.dat'
+                         lam_min=lam_min, include_euv=.true., pah_xsec=pah_xsec)
+         fout = '../data/dl07/kext_'//trim(pah_xsec)//'_MW_euv.dat'
       else
-         call build_dl07(m, F_QT_DL, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI)
-         fout = '../data/dl07/kext_dl07_MW.dat'
+         call build_dl07(m, F_QT_DL, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI, &
+                         pah_xsec=pah_xsec)
+         fout = '../data/dl07/kext_'//trim(pah_xsec)//'_MW.dat'
       end if
 
    ! ===================================================================
@@ -212,17 +287,6 @@ program calc_kext
       ! the grid at the Lyman limit, exactly as for the other two models -- with
       ! the difference that here the wide product is the tables' own range and
       ! the narrow one is that range cut, rather than the other way round.
-      do iarg = 2, narg
-         call get_command_argument(iarg, arg)
-         select case (trim(arg))
-         case ('formula');  zubko_formula = .true.
-         case ('table');    zubko_formula = .false.
-         case ('euv');      euv = .true.
-         case ('zda');      zubko_optics = 'zda'
-         case ('mie_d03');  zubko_optics = 'mie_d03'
-         case default;      call print_usage();  stop 1
-         end select
-      end do
       ! The optics come from the model's own product, so that /kext and
       ! /qtable of one file are the same numbers.  Left to the text tables this
       ! took the axis from the product and the optics from their seven written
@@ -258,11 +322,7 @@ program calc_kext
    case ('from_files')
       if (len_trim(opt) == 0) then;  call print_usage();  stop 1;  end if
       desc = opt
-      if (narg >= 3) then
-         call get_command_argument(3, ddir)
-      else
-         ddir = dirname_of(desc)
-      end if
+      if (n_free < 2) ddir = dirname_of(desc)
       call build_from_files(m, trim(desc), trim(ddir), NT_IN, T_LO, T_HI)
       fout = '../data/' // trim(m%name) // '/kext_' // trim(m%name) // '.dat'
 
@@ -325,7 +385,7 @@ program calc_kext
    ! one wavelength axis, and a reader asked for the non-ionizing part slices
    ! it at /grid/i_lyman.  The narrow text product is that slice, so writing it
    ! here as well would be a second copy of the same numbers on a shorter axis.
-   if (euv) call write_kext_h5(trim(model))
+   if (euv) call write_kext_h5(trim(product))
 
    ! ---- checks -----------------------------------------------------------
    call check_internal_consistency()
@@ -337,12 +397,16 @@ program calc_kext
 contains
 
    function kext_tag() result(t)
-      ! The suffix a zubko curve carries when it is NOT the default optics.
-      ! The default set is unmarked, so the shipped file names do not move.
+      ! The suffix a curve carries when it is NOT the model's default optics:
+      ! the second stored optics set for zubko, the earlier cross-section
+      ! vintage for the DL07 model.  Each model's own choice is unmarked, so
+      ! the shipped file names and the /kext group do not move.
       character(len=16) :: t
       t = ''
       if (trim(model) == 'zubko' .and. trim(zubko_optics) /= 'zda') &
          t = '_'//trim(zubko_optics)
+      if (trim(product) == 'dl07' .and. trim(pah_xsec) /= 'dl07') &
+         t = '_'//trim(pah_xsec)
    end function kext_tag
 
 
@@ -358,7 +422,7 @@ contains
    subroutine print_usage()
       write(*,'(a)') ' usage:'
       write(*,'(a)') '   ./calc_kext.x astrodust [euv | <lam_min in um>]'
-      write(*,'(a)') '   ./calc_kext.x dl07      [euv | <lam_min in um>]'
+      write(*,'(a)') '   ./calc_kext.x dl07 [ld01] [euv | <lam_min in um>]'
       write(*,'(a)') '   ./calc_kext.x zubko     [formula | table] [euv]'
       write(*,'(a)') '   ./calc_kext.x from_files <descriptor> [data_dir]'
       write(*,'(a)') ''
@@ -368,6 +432,11 @@ contains
       write(*,'(a)') ' dl07 it extends the grid down to whatever the model dielectric'
       write(*,'(a)') ' function itself covers; for zubko, whose own tables already reach'
       write(*,'(a)') ' 1.24 keV, it keeps the band that the default cuts at the Lyman limit.'
+      write(*,'(a)') ' `dl07 ld01` is the DL07 model with the Li & Draine (2001) carbonaceous'
+      write(*,'(a)') ' absorption in place of the Draine & Li (2007) one -- everything else'
+      write(*,'(a)') ' the same -- and lands beside it as ../data/dl07/kext_ld01_MW[_euv].dat.'
+      write(*,'(a)') ''
+      call write_run_option_usage(o)
       write(*,'(a)') ' kext_astrodust_MW.dat alone also carries the dichroic C_polext/H.'
    end subroutine print_usage
 
@@ -489,8 +558,12 @@ contains
 
    ! ===================================================================
    subroutine write_kext_h5(model)
+      ! The MODEL whose product this is -- 'dl07' for both vintages of the DL07
+      ! model -- not the word the command line used.  Which curve inside that
+      ! product is kext_tag()'s business.
+      !
       ! Append the size-integrated curve to ../data/<model>/sedust_<model>.h5, beside
-      ! the (lambda, a_eff) tables make_qtable.x wrote into the same file.
+      ! the (lambda, a_eff) tables calc_qtable.x wrote into the same file.
       !
       ! The file holds ONE wavelength axis and every wavelength-indexed array
       ! is filed against it, so this refuses to write unless the grid the size
@@ -530,7 +603,7 @@ contains
       call h5_open_rw(trim(path), fid, ok)
       if (.not. ok) then
          write(*,'(a,a)') ' calc_kext: no HDF5 file to extend at ', trim(path)
-         write(*,'(a,a)') '            write it first with  ./make_qtable.x ', model
+         write(*,'(a,a)') '            write it first with  ./calc_qtable.x ', model
          call h5_end();  return
       end if
 
@@ -807,9 +880,9 @@ contains
    subroutine header_dl07()
       character(len=200) :: s
       if (euv) then
-         call add_note('# model = dl07_MW_euv')
+         call add_note('# model = '//trim(pah_xsec)//'_MW_euv')
       else
-         call add_note('# model = dl07_MW')
+         call add_note('# model = '//trim(pah_xsec)//'_MW')
       end if
       call add_note('# Size-integrated extinction, albedo and scattering asymmetry per H')
       call add_note('# for the Draine & Li (2007) / Weingartner & Draine (2001) Milky-Way')
@@ -823,12 +896,29 @@ contains
       call add_note('# Optics:')
       call add_note('#   silicate     : Mie on the D03 astrosilicate dielectric function')
       call add_note('#     ' // '../data/dielectric/index_silD03')
-      call add_note('#   carbonaceous : absorption from the DL07 PAH <-> graphite xi-blend')
+      if (trim(pah_xsec) == 'ld01') then
+         call add_note('#   carbonaceous : absorption from the PAH <-> graphite xi-blend in')
+         call add_note('#     the Li & Draine (2001) cross-section vintage (qpah_ld01),')
+         call add_note('#     N_C = 468 (a/10A)^3, WITHOUT the PAH cation near-infrared')
+         call add_note('#     additions Draine & Li (2007) eq. 2 makes after Mattioda et al.')
+         call add_note('#     (2005) -- the 1.05 and 1.26 um resonances, the 1.905 um')
+         call add_note('#     negative term and the NIR continuum.  This is the vintage the')
+         call add_note('#     2003 reference table below was computed with.')
+      else
+         call add_note('#   carbonaceous : absorption from the DL07 PAH <-> graphite xi-blend')
+      end if
       call add_note('#     (neutral and cation mixed by the ionization fraction, a > 100 A')
       call add_note('#     fully ionized); scattering and <cos> from random-orientation D03')
       call add_note('#     graphite (1/3 parallel + 2/3 perpendicular), which is the')
       call add_note('#     standard DL07 treatment -- PAH scattering is Rayleigh-negligible.')
       call add_note('#     ' // '../data/dielectric/index_CpaD03, index_CpeD03')
+      ! Said on the LD01 side only, so that the DL07 products keep the header
+      ! they were tracked with.
+      if (trim(pah_xsec) == 'ld01') then
+         call add_note('#   The two vintages differ in the carbonaceous ABSORPTION only, so')
+         call add_note('#   this file and kext_dl07_MW*.dat share their C_sca and <cos>')
+         call add_note('#   exactly and a ratio of the two isolates that one cross section.')
+      end if
       if (euv) then
          call header_wavelength_range('The floor is set by the D03 dielectric ' // &
               'functions: the shorter-reaching')

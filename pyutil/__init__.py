@@ -2,7 +2,7 @@
 
 Exposes single-grain `sed_equilibrium` and `sed_stochastic` for
 prototyping and verification. Use the Fortran library
-(`sed/main_astrodust.x`) when running the full size-distribution sum.
+(`sed/calc_sed.x astrodust`) when running the full size-distribution sum.
 
 `sedust_h5` reads the optics products themselves -- the wavelength axis, the
 cross-section tables and the extinction curve of `data/<model>/sedust_<model>.h5` --

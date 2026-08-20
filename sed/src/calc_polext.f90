@@ -29,6 +29,7 @@ program calc_polext
    use q_table_jori_mod, only: load_q_table_jori, falign_hd23, &
                                nj_lam, nj_aeff, lam_j, aeff_j, qpol_ext
    use size_dist_mod,    only: load_size_dist, n_size, a_dist, dn_ad
+   use sed_run_options,  only: run_options_t, declare_run_options, read_run_option
    implicit none
 
    character(len=*), parameter :: F_Q    = '../data/astrodust/q_DH21Ad_P0.20_Fe0.00_1.400.dat.gz'
@@ -46,8 +47,29 @@ program calc_polext
    real(wp), allocatable :: wt(:)            ! (n_size) dn * f_align * pi a^2
    real(wp) :: qi, x, t, med, dmax, ratio
    integer  :: n_ref, jw, ia, i, lo, hi, mid, u, ios, ncmp
-   logical  :: ok
+   integer  :: narg, iarg
+   logical  :: ok, taken
+   type(run_options_t) :: o
+   character(len=64)  :: arg
    character(len=512) :: line
+
+   ! This program has NO axis.  It sums one model's orientation-resolved table
+   ! on that table's own wavelength grid against one published reference file:
+   ! there is no radiation field, no solver, no grid to extend (the EUV
+   ! companion of the orientation-resolved table is not shipped) and no model
+   ! choice.  The declaration is still made, so that a word naming any axis is
+   ! refused with the reason instead of being ignored.
+   call declare_run_options(o, program='calc_polext')
+   narg = command_argument_count()
+   do iarg = 1, narg
+      call get_command_argument(iarg, arg)
+      call read_run_option(trim(arg), o, taken)
+      if (.not. taken) then
+         write(*,'(a,a)') ' calc_polext: unknown argument ', trim(arg)
+         write(*,'(a)')   ' usage: ./calc_polext.x   (it takes none)'
+         stop 1
+      end if
+   end do
 
    write(*,'(a)') ' calc_polext: loading orientation-resolved DH21 optics ...'
    call load_q_table_jori(F_Q, F_WAVE, F_AEFF, ok)

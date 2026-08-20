@@ -315,7 +315,7 @@ miss in a comparison against HAWC+ vectors.
 
 The single most useful finding of this audit is that no new T-matrix
 computation is required to get started. The file
-\code{astrodust/data/dielectric/q\_DH21Ad\_P0.20\_Fe0.00\_1.400.dat.gz}
+\code{data/astrodust/q\_DH21Ad\_P0.20\_Fe0.00\_1.400.dat.gz}
 is not an orientation average. It contains three separate orientation
 blocks for each of $Q_{\rm ext}$, $Q_{\rm abs}$, $Q_{\rm sca}$, on the
 native $169$ sizes $\times$ $1129$ wavelengths grid. Its header states
@@ -424,12 +424,19 @@ DF09 (\code{2009ApJ...696....1D}) & $j = 1$ & $j = 2$ & $j = 3$ \\
 \end{tabular}
 \end{table}
 
-A third convention exists in the same tree: in
-\code{qlib\_gra\_D16MGemt\_1.400}, \code{jori = 1} is the
-\emph{random-orientation average}, not $k \parallel a$. This is
-documented in the code at
-\code{astrodust/sed/src/q\_graphite\_d16.f90:23--26}. Any reader routine
-must therefore dispatch on the file identity, never on the index alone.
+A third file in the same tree, \code{qlib\_gra\_D16MGemt\_1.400}, was for a
+time read as though it carried a third convention, with \code{jori = 1}
+taken for the \emph{random-orientation average}. It does not: it uses the
+same Mishchenko ordering as \code{q\_DH21Ad\_*}, so \code{jori = 1} is
+$k \parallel a$ there as well, and \emph{none} of the three indices is the
+random-orientation average. That average has to be built,
+$\langle Q\rangle_{\rm random} = \tfrac{1}{3}Q_\parallel +
+\tfrac{2}{3}Q_\perp = \tfrac{1}{3}\,\code{jori}2 + \tfrac{2}{3}\,\code{jori}3$,
+which is what \code{sed/src/q\_graphite\_d16.f90} now does on load; taking
+\code{jori = 1} for it instead overstates $Q_{\rm abs}$ by ${\sim}22\%$ in the
+Rayleigh limit, because that orientation carries no $Q_\parallel$ at all. A
+reader routine still has to dispatch on the file identity rather than on the
+index alone, since DF09 and the astrodust tables genuinely differ.
 
 \subsection{HD23 alignment assumptions}
 
@@ -844,7 +851,7 @@ follow:
 \item \code{dust\_emission} takes an optional \code{lamI\_pol} of the
       same shape and units as \code{lamI\_total}, returning the
       \emph{intrinsic} polarized emission;
-\item \code{../data/kext\_astrodust\_MW.dat} carries the polarized
+\item \code{../data/astrodust/kext\_astrodust\_MW.dat} carries the polarized
       extinction per H as an eighth column, appended so that readers of
       the first seven columns are unaffected;
 \item \code{calc\_polext.x} regenerates the comparison against the
@@ -1069,7 +1076,7 @@ MoCafe links this as a library; the same discipline was used for the
 \code{dust\_emission(m, J\_lam, lamI\_total [, lamI\_chan] [, status]
 [, lamI\_pol])}\emph{. The polarized \emph{extinction} took a different
 route: rather than a second library accessor, it is written as column~8
-of \code{../data/kext\_astrodust\_MW.dat}, because that file is already
+of \code{../data/astrodust/kext\_astrodust\_MW.dat}, because that file is already
 how a host consumes extinction and \code{dust\_lib} exposes no
 extinction surface for an accessor to sit beside.}
 

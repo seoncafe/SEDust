@@ -1,8 +1,7 @@
 # SEDust -- SED solver build.
 #
 # Targets:
-#   make                     main_astrodust.x main_dl07.x main_zubko.x
-#                            make_enthalpy.x calc_kext.x
+#   make                     calc_sed.x calc_enthalpy.x calc_kext.x
 #   make libsedust.a         the model-agnostic dust-emission library, with no
 #                            T-matrix in it (see below)
 #   WITH_TMATRIX=1 make libsedust.a
@@ -17,11 +16,26 @@
 #   make clean / cleanall
 #
 # Run (from this directory; data paths are relative to ../):
-#   ./make_enthalpy.x
-#   ./main_astrodust.x                 # GD solver (default)
-#   ./main_astrodust.x qm              # energy-space, thermal-discrete
-#   ./main_astrodust.x qm_dbcon        # energy-space, thermal-continuous
-#   ./main_dl07.x
+#   ./calc_enthalpy.x            # astrodust enthalpy tables (add c2 for the
+#                                #   Stage-1 density-corrected prefactor)
+#   ./calc_sed.x astrodust             # astrodust+PAH SED  -> output/
+#   ./calc_sed.x dl07                  # Draine & Li (2007) SED
+#   ./calc_sed.x zubko                 # Zubko/ZDA SED
+#
+#   Every program here takes ONE vocabulary of run settings
+#   (src/sed_run_options.f90) and declares which axes it has a referent for;
+#   each setting tags the output filename.  calc_sed.x declares:
+#     solver    heuristic (default) | draine | equil | qm | qm_dbcon | qm_stati
+#     grid      euv                  solve the ionizing band as well
+#     field     mathis_orig, logU=X, hardfield
+#     emission  induced, photcut
+#     qm sizes  nstate=N, nisrf=N
+#     graphite  gra_d03_sphere | gra_d16_sphere | gra_d16_spheroid
+#               (astrodust, dl07: the PAH xi blend)
+#     enthalpy  c2                   (astrodust: Stage-1 prefactor)
+#   ./calc_sed.x astrodust qm_stati nstate=500
+#   ./calc_sed.x dl07 lmc2_10 draine euv
+#   ./calc_sed.x zubko euv hardfield
 #   ./calc_kext.x astrodust            # -> ../data/kext_astrodust_MW.dat
 #   ./calc_kext.x astrodust euv        # carried into the ionizing band
 #   ./calc_kext.x dl07
@@ -97,7 +111,7 @@ FFLAGS += -frecursive
 #   * `WITH_TMATRIX=1 make libsedust.a` adds the T-matrix and the spheroid
 #     route to the same archive, so an RT host still links only -lsedust.  The
 #     host calls use_tmatrix_euv_band_optics() once before build_astrodust.
-#   * the two astrodust CLI drivers (main_astrodust.x, calc_kext.x) always
+#   * the two astrodust CLI programs (calc_sed.x, calc_kext.x) always
 #     take the spheroid route, so they are always built against
 #     $(TMDIR)/libtmatrix.a.  Build it first:
 #         cd ../tmatrix && make libtmatrix.a
@@ -138,9 +152,19 @@ SRC_PIPE    = $(SRC_BASE) $(SRC_H5) src/enthalpy_v2.f90 \
               src/kext_table.f90 src/q_component.f90 src/sed_astrodust.f90
 
 SRC_ENTH    = $(SRC_BASE) src/enthalpy_v2.f90 \
-              src/enthalpy_astrodust.f90 src/make_enthalpy.f90
+              src/enthalpy_astrodust.f90 $(SRC_CLIOPT) src/calc_enthalpy.f90
 
-all: make_enthalpy.x main_astrodust.x main_dl07.x main_zubko.x calc_kext.x
+# The command-line SYSTEM every program here shares: one vocabulary, one
+# parser, one refusal, one filename-tag rule, with each program declaring which
+# axes it has a referent for.  It reads the module state of the solver, the
+# radiation field and the optics, so it follows SRC_PIPE wherever the pipeline
+# is linked; it is NOT part of libsedust.a, a host having no command line.
+SRC_CLIOPT  = src/sed_run_options.f90
+# Where a setting LANDS: the module state the solver, the field and the optics
+# read.  Only the programs that HAVE those modules link it.
+SRC_CLIAPPLY = src/sed_apply_options.f90
+
+all: calc_enthalpy.x calc_sed.x calc_kext.x
 
 # Fail with an instruction rather than a link error when the T-matrix archive is
 # absent.  No prerequisites, so this recipe runs only if the file does not
@@ -150,35 +174,24 @@ $(TMARCH):
 	@echo '*** Build it first:   cd $(TMDIR) && make libtmatrix.a'
 	@false
 
-make_enthalpy.x: $(SRC_ENTH)
+calc_enthalpy.x: $(SRC_ENTH)
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
-	@echo 'Built: ./make_enthalpy.x'
+	@echo 'Built: ./calc_enthalpy.x'
 
 # Stored (lambda, a_eff) cross-section tables for the DL07 and Zubko models,
 # the counterpart of tmatrix/output/q_astrodust_*.dat.  Both grids of each
 # model, computed by this tree's own optics routines.
-make_qtable.x: $(SRC_PIPE) src/make_qtable.f90
+calc_qtable.x: $(SRC_PIPE) $(SRC_CLIOPT) src/calc_qtable.f90
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
-	@echo 'Built: ./make_qtable.x     (writes ../data/<model>/)'
+	@echo 'Built: ./calc_qtable.x     (writes ../data/<model>/)'
 
-main_astrodust.x: $(SRC_PIPE) $(SRC_EUVTM) src/main_astrodust.f90 | $(TMARCH)
+# Thermal-emission SED of any of the three shipped models, for one
+# illuminated cell.  It is built against the T-matrix because the astrodust
+# EUV band, when one is asked for, is solved on the oblate spheroid of the Q
+# table rather than on a volume-equivalent sphere.
+calc_sed.x: $(SRC_PIPE) $(SRC_EUVTM) $(SRC_CLIOPT) $(SRC_CLIAPPLY) src/calc_sed.f90 | $(TMARCH)
 	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
-	@echo 'Built: ./main_astrodust.x'
-
-# DL07 emission. Its own optics are Mie on the D03 dielectric functions, which
-# already run to 6.2e-5 um, so this driver reaches no astrodust EUV band and
-# needs no T-matrix.
-main_dl07.x: $(SRC_PIPE) src/main_dl07.f90
-	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
-	@echo 'Built: ./main_dl07.x'
-
-# Zubko/ZDA emission.  Its optics grid (1.0e-3 um, from the ZDA optics tables)
-# reaches far past the illuminated band, so it is the one that exercises the
-# difference between "hardest photon the field carries" and "short end of the
-# grid".
-main_zubko.x: $(SRC_PIPE) src/main_zubko.f90
-	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
-	@echo 'Built: ./main_zubko.x'
+	@echo 'Built: ./calc_sed.x'
 
 # Size-integrated transport optics (lambda, albedo, <cos>, C_ext/C_abs/C_sca
 # per H) for astrodust, DL07, Zubko or any file-defined model -> ../data/.
@@ -186,24 +199,24 @@ main_zubko.x: $(SRC_PIPE) src/main_zubko.f90
 # principles (size_integrated_extinction); the tables it writes here are the
 # very ones dust_extinction reads back for an RT host.  The astrodust product
 # also carries the dichroic C_polext/H column.
-calc_kext.x: $(SRC_PIPE) $(SRC_EUVTM) src/calc_kext.f90 | $(TMARCH)
+calc_kext.x: $(SRC_PIPE) $(SRC_EUVTM) $(SRC_CLIOPT) src/calc_kext.f90 | $(TMARCH)
 	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
 	@echo 'Built: ./calc_kext.x'
 
 # Polarized extinction per H from the orientation-resolved DH21 spheroid
 # table, compared against ../data/release/polarized_extinction.dat.
 SRC_POLEXT = $(SRC_BASE) src/size_dist.f90 src/q_table_jori.f90 \
-             src/calc_polext.f90
+             $(SRC_CLIOPT) src/calc_polext.f90
 
 # The /polarized groups of data/sedust_astrodust.h5: the orientation-resolved
 # cross sections and the two scattering matrices.  It APPENDS, so run it after
-# make_qtable.x (which replaces the file) and calc_kext.x.
+# calc_qtable.x (which replaces the file) and calc_kext.x.
 SRC_POLH5 = $(SRC_BASE) $(SRC_H5) src/q_table_jori.f90 src/scatmat_aligned.f90 \
-            src/make_polarized.f90
+            $(SRC_CLIOPT) src/calc_polarized_optics.f90
 
-make_polarized.x: $(SRC_POLH5)
+calc_polarized_optics.x: $(SRC_POLH5)
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
-	@echo 'Built: ./make_polarized.x   (writes /polarized into ../data/sedust_astrodust.h5)'
+	@echo 'Built: ./calc_polarized_optics.x   (writes /polarized into ../data/astrodust/sedust_astrodust.h5)'
 
 calc_polext.x: $(SRC_POLEXT)
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
@@ -306,11 +319,12 @@ clean:
 	rm -rf tmarch.d
 
 cleanall: clean
-	rm -f *.a make_enthalpy.x main_astrodust.x main_dl07.x main_zubko.x \
-	      calc_kext.x calc_polext.x \
+	rm -f *.a calc_enthalpy.x calc_sed.x calc_qtable.x \
+	      calc_kext.x calc_polext.x calc_polarized_optics.x \
 	      test_scatmat_aligned.x test_scalar_mode.x test_euv_extension.x \
-	      use_dustlib_scatmat.x use_dustlib.x use_dustlib_pol.x
-	rm -f output/astrodust_irem_ours_*.dat output/enthalpy_*.dat
+	      use_dustlib_scatmat.x use_dustlib.x use_dustlib_pol.x \
+	     
+	rm -f output/sed_*.dat output/enthalpy_*.dat
 
 .PHONY: all clean cleanall
 
