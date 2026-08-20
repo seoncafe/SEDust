@@ -3,14 +3,17 @@
 One file per dust model -- astrodust, dl07, zubko -- holding the wavelength
 axis, the (lambda, a_eff) cross-section tables of each grain population, the
 size-integrated extinction curve, and (in the polarized branch) the
-orientation-resolved and scattering-matrix products.  `sed/make_qtable.x` and
+orientation-resolved and scattering-matrix products.  `sed/calc_qtable.x` and
 `sed/calc_kext.x` write them; `sed/src/sedust_product.f90` is the Fortran
 counterpart of this module, and the two are meant to return the same numbers
 from the same file.
 
 THE IONIZING BAND.  Each file carries ONE wavelength axis, the widest the model
-has, and /grid records `i_lyman`, the 1-based index of the first wavelength at
-or longward of the Lyman limit (0.0912 um).  Every reader here takes
+has, and /grid records `i_lyman`, the 1-based index of the LAST wavelength at
+or below the Lyman limit (0.0912 um) -- the covering rule of the Fortran
+writer's `lyman_index` -- so the non-ionizing view starts at or just below the
+limit and a host whose transport floor is the limit interpolates inside the
+table.  Every reader here takes
 
     include_euv=False   lambda[i_lyman:] and the same slice of every
                         wavelength-indexed array -- the non-ionizing product
@@ -162,14 +165,14 @@ def read_kext(path: str, include_euv: bool = False) -> Kext:
     the one an RT host gets back from `dust_extinction`.
 
     Raises KeyError when the file carries no /kext -- which is what a product
-    written by `make_qtable.x` and not yet extended by `calc_kext.x` looks
+    written by `calc_qtable.x` and not yet extended by `calc_kext.x` looks
     like.  Absence is an error rather than an empty array on purpose: a curve
     of zeros is a physical statement, and this is not one.
     """
     with h5py.File(path, 'r') as f:
         if 'kext' not in f:
             raise KeyError(f'{path} carries no /kext; run  ./calc_kext.x '
-                           f'{f.attrs.get("model", "<model>")} euv  after make_qtable.x')
+                           f'{f.attrs.get("model", "<model>")} euv  after calc_qtable.x')
         i0 = _lam_start(f, include_euv)
         g = f['kext']
         opt = lambda n: g[n][i0:] if n in g else None

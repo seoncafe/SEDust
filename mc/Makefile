@@ -17,18 +17,41 @@ FC       = gfortran
 #   do-subscript: false positives from the guarded trapezoid loops.
 WARN     = -Wall -Wextra -Wno-compare-reals -Wno-unused-dummy-argument \
            -Wno-unused-parameter -Wno-do-subscript
-FFLAGS   = -O2 -ffree-line-length-none $(WARN)
+
+# ---- HDF5 ---------------------------------------------------------------
+# Same switch as ../sed/Makefile: the pipeline modules read the HDF5 optics
+# products by default.  make HDF5=0 compiles the HDF5 paths out and the
+# readers fall back to the text products.
+HDF5        ?= 1
+ifeq ($(FC),ifort)
+   HDF5_PREFIX ?= /data/opt/hdf5_intel
+else
+   HDF5_PREFIX ?= /data/opt/hdf5_gfortran
+endif
+ifneq ($(HDF5),0)
+   H5FLAGS = -DSEDUST_HDF5 -I$(HDF5_PREFIX)/include
+   H5LIBS  = $(HDF5_PREFIX)/lib/libhdf5_fortran.a $(HDF5_PREFIX)/lib/libhdf5.a \
+             -lsz -lz -ldl -lm
+else
+   H5FLAGS =
+   H5LIBS  =
+endif
+
+FFLAGS   = -O2 -ffree-line-length-none -cpp $(WARN) $(H5FLAGS)
 OMPFLAGS = -fopenmp
 
 SED_DIR = ../sed/src
 
-SHARED_BASE = $(SED_DIR)/constants.f90 $(SED_DIR)/sed_mathlib.f90
+SHARED_BASE = $(SED_DIR)/constants.f90 $(SED_DIR)/sed_paths.f90 \
+              $(SED_DIR)/sed_mathlib.f90
 SHARED_GRA  = $(SED_DIR)/q_graphite_d16_sphere.f90
 SHARED_RAD  = $(SED_DIR)/radfield.f90
 SHARED_ENT  = $(SED_DIR)/enthalpy_v2.f90 $(SED_DIR)/enthalpy_astrodust.f90
 
 # Astrodust pipeline modules pulled in for the SED comparison
-SED_PIPELINE = $(SED_DIR)/size_dist.f90 $(SED_DIR)/q_table.f90 \
+# (same set and order as SRC_PIPE in ../sed/Makefile)
+SED_PIPELINE = $(SED_DIR)/sedust_h5.f90 $(SED_DIR)/sedust_product.f90 \
+               $(SED_DIR)/size_dist.f90 $(SED_DIR)/q_table.f90 \
                $(SED_DIR)/mie.f90 $(SED_DIR)/q_astrodust.f90 \
                $(SED_DIR)/q_graphite.f90 \
                $(SED_DIR)/q_graphite_d16.f90 \
@@ -36,7 +59,8 @@ SED_PIPELINE = $(SED_DIR)/size_dist.f90 $(SED_DIR)/q_table.f90 \
                $(SED_DIR)/p_sub.f90 $(SED_DIR)/stoch_qm.f90 \
                $(SED_DIR)/pah_ioniz.f90 $(SED_DIR)/grain_dist.f90 \
                $(SED_DIR)/q_silicate.f90 $(SED_DIR)/pah_ld01.f90 \
-               $(SED_DIR)/dust_model_mod.f90 $(SED_DIR)/zubko_io.f90 \
+               $(SED_DIR)/dust_model_mod.f90 $(SED_DIR)/kext_table.f90 \
+               $(SED_DIR)/zubko_io.f90 $(SED_DIR)/q_component.f90 \
                $(SED_DIR)/sed_astrodust.f90
 
 # MC engine + RNG + grain type (shared by all executables)
@@ -68,11 +92,11 @@ main_mc.x: $(SRC_MC_ALL) | output
 	@echo 'Built: ./main_mc.x'
 
 main_mc_sed.x: $(SRC_MC_SED_ALL) | output
-	$(FC) $(FFLAGS) $(OMPFLAGS) $^ -o $@
+	$(FC) $(FFLAGS) $(OMPFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./main_mc_sed.x (OpenMP)'
 
 main_pT_compare.x: $(SRC_PT_COMPARE_ALL) | output
-	$(FC) $(FFLAGS) $(OMPFLAGS) $^ -o $@
+	$(FC) $(FFLAGS) $(OMPFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./main_pT_compare.x'
 
 clean:

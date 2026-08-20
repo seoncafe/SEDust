@@ -29,7 +29,7 @@ program check_build_dust
    ! The TEXT side of the comparison.  Everything else in the tree now reads the
    ! HDF5 product, which is exactly what this program checks the text against,
    ! so these two are among the last readers of the text tables.  They are not
-   ! shipped: run sed/make_qtable.x (and the T-matrix sweep for the astrodust
+   ! shipped: run sed/calc_qtable.x (and the T-matrix sweep for the astrodust
    ! pair) before this test.
    character(len=*), parameter :: F_QT   = '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400.dat'
    character(len=*), parameter :: F_QT_E = '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400_euv.dat'

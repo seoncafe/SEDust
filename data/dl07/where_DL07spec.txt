@@ -1,0 +1,14 @@
+Reference emission spectra of Draine & Li (2007), ApJ 657, 810.
+
+Files: U1.00_1.00_{MW3.1_00..MW3.1_60,LMC2_00,LMC2_05,LMC2_10,smc}.txt
+       (U = 1, single starlight intensity, 11 published dust models)
+
+Distributed by B. T. Draine at
+  https://www.astro.princeton.edu/~draine/dust/irem.html
+as the DL07spec archive, whose README.txt describes the models and the
+file format (the spectra start after 61 header lines; column 1 is
+lambda in um, column 2 is nu*dP/dnu per H in erg s^-1 H^-1).
+
+Copies of the DL07spec/U1.00/ files that were unpacked at the root of
+this working tree. They are read directly by the figure scripts of the
+JKAS paper; the code itself does not use them.

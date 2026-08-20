@@ -3,7 +3,7 @@ module sedust_product_mod
    ! wavelength axis, the (lambda, a_eff) cross-section tables, and the
    ! size-integrated extinction curve.  sedust_h5.f90 knows HDF5; this knows
    ! where SEDust puts things inside one, and is the only place that does on
-   ! the reading side (sed/make_qtable.f90 and sed/calc_kext.f90 are the two on
+   ! the reading side (sed/calc_qtable.f90 and sed/calc_kext.f90 are the two on
    ! the writing side).
    !
    ! WHAT include_euv MEANS.  A file holds ONE wavelength axis, the widest the
@@ -274,7 +274,7 @@ contains
 
       call h5_group_open(fid, trim(grp), gid, got)
       if (.not. got) then
-         ! The file exists but carries no curve: make_qtable.x replaces the file
+         ! The file exists but carries no curve: calc_qtable.x replaces the file
          ! and calc_kext.x has not run since.  Absence must be tellable from a
          ! computed zero, so this is a failure, not an empty result.
          call h5_close_file(fid);  call h5_end();  return

@@ -1,0 +1,5 @@
+# columns: t[s]  T_pre[K]  T_post[K]  dt_event[s]
+#   T_pre  : cooling-segment endpoint (just BEFORE the photon jump)
+#   T_post : grain T immediately AFTER the photon jump
+0.0000000E+000 2.7250000E+000 2.7250000E+000 0.0000000E+000
+1.0000000E+005 2.5448865E+000 2.5448865E+000 1.0000000E+005

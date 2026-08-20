@@ -15,13 +15,21 @@ module stoch_qm_mod
    !   - Emission from P(state) using the thermal-discrete Planck formula:
    !     sum_J P(J) * B_lam(T_J) * Cabs * 8*pi/lam^4
    !
-   ! Two cooling treatments are provided:
+   ! Three cooling treatments are provided:
    !   'dbdis'  thermal-discrete: all downward transitions f < i retained
    !            (the production reference).
    !   'dbcon'  thermal-continuous: the downward rates are collapsed into
    !            the nearest-neighbour transition, reproducing the
    !            continuous-cooling approximation of the Guhathakurta-Draine
    !            temperature-space recursion.
+   !   'stati'  exact-statistical (microcanonical): the downward rate
+   !            carries the degeneracy ratio g_f/g_i instead of a Planck
+   !            factor, with g(U) counted exactly by the Beyer-Swinehart
+   !            algorithm over the vibrational mode spectrum.  Emission is
+   !            then the degeneracy-weighted kernel rather than a bin
+   !            blackbody.  This treatment needs the full mode spectrum and
+   !            a feasible state count, so it is used for PAH grains with
+   !            a <= 25 A and reverts to 'dbdis' elsewhere.
    !
    ! Units: internally CGS (wavelengths cm, energies erg, cross sections
    ! cm^2, radiation field c*u_lambda erg/cm^3/s). The public API
@@ -35,9 +43,10 @@ module stoch_qm_mod
    public :: qm_solve_grain   ! single-grain QM P(state) solver + emission
    public :: qm_nstate_default
    public :: qm_nisrf_max     ! ISRF downsampling cap for the transition matrix
-   public :: qm_method        ! 'dbdis' (thermal-discrete, production) or
+   public :: qm_method        ! 'dbdis' (thermal-discrete, production),
                               ! 'dbcon' (thermal-continuous / GD
-                              ! nearest-neighbour collapse)
+                              ! nearest-neighbour collapse), or
+                              ! 'stati' (exact-statistical / microcanonical)
    public :: qm_verbose       ! single-grain stderr diagnostics on/off
 
    ! Method selector (set once before solving). Default = validated dbdis path.
@@ -149,6 +158,54 @@ contains
    end subroutine interp_rf_cabs
 
 
+   !====================================================================
+   ! 3. Photon overlap integral G_{fi} between two enthalpy bins.
+   !    For cooling (downward) transitions the convention is
+   !    initial = upper bin, final = lower bin.
+   !====================================================================
+   subroutine calc_glu(wl_cm, uia, uib, ufa, ufb, gfi)
+      implicit none
+      real(wp), intent(in)  :: wl_cm, uia, uib, ufa, ufb
+      real(wp), intent(out) :: gfi
+
+      real(wp) :: e_ph, e1, e2, e3, e4, dui, duf
+
+      e_ph = HC_CGS / wl_cm
+
+      ! For cooling: initial bin [UIA,UIB] is UPPER, final [UFA,UFB] is LOWER
+      ! Energy released = U_initial - U_final, so photon energies span:
+      e1 = uia - ufb
+      e2 = min(uia - ufa, uib - ufb)
+      e3 = max(uia - ufa, uib - ufb)
+      e4 = uib - ufa
+
+      dui = uib - uia
+      duf = ufb - ufa
+
+      if (e1 /= e2) then
+         if (e_ph < e1) then
+            gfi = 0.0_wp
+         else if (e_ph >= e1 .and. e_ph < e2) then
+            gfi = (e_ph - e1) / duf
+         else if (e_ph >= e2 .and. e_ph <= e3) then
+            if (e2 == e3) then
+               gfi = 1.0_wp
+            else
+               gfi = min(dui, duf) / duf
+            end if
+         else if (e_ph > e3 .and. e_ph < e4) then
+            gfi = (e4 - e_ph) / duf
+         else
+            gfi = 0.0_wp
+         end if
+      else
+         if (e_ph < e1 .or. e_ph >= e4) then
+            gfi = 0.0_wp
+         else
+            gfi = 1.0_wp
+         end if
+      end if
+   end subroutine calc_glu
 
 
    !====================================================================
@@ -251,7 +308,86 @@ contains
    end function intrabin_heating_funct
 
 
+   !====================================================================
+   ! 7. Exact-statistical cooling integrand.
+   !    Spontaneous plus stimulated photon emission, with no thermal
+   !    (Planck) weight:
+   !       G_lu(E) * E^3 * C_abs(E) * (8*pi / (h * (hc)^2))
+   !                                 * (1 + (hc)^3/(8*pi*E^3) * u_E)
+   !====================================================================
+   function stat_cooling_funct(e_ph, nisrf, isrf_wl, isrf, cabs_arr, &
+                               e1, e2, e3, e4, dui, duf) result(cf)
+      implicit none
+      real(wp) :: cf
+      real(wp), intent(in) :: e_ph
+      integer,  intent(in) :: nisrf
+      real(wp), intent(in) :: isrf_wl(nisrf), isrf(nisrf), cabs_arr(nisrf)
+      real(wp), intent(in) :: e1, e2, e3, e4, dui, duf
 
+      real(wp) :: wl, crssct, radfld, radfld_e, glu_e
+
+      cf = 0.0_wp
+      if (e_ph == 0.0_wp) return
+
+      wl = HC_CGS / e_ph
+      call interp_rf_cabs(wl, nisrf, isrf_wl, isrf, cabs_arr, crssct, radfld)
+      radfld_e = radfld * wl**2 / (HC_CGS * C_CGS)
+
+      if (e1 /= e2) then
+         if (e_ph < e1) then
+            glu_e = 0.0_wp
+         else if (e_ph >= e1 .and. e_ph < e2) then
+            glu_e = (e_ph - e1) / duf
+         else if (e_ph >= e2 .and. e_ph <= e3) then
+            if (e2 == e3) then
+               glu_e = 1.0_wp
+            else
+               glu_e = min(dui, duf) / duf
+            end if
+         else if (e_ph > e3 .and. e_ph < e4) then
+            glu_e = (e4 - e_ph) / duf
+         else
+            glu_e = 0.0_wp
+         end if
+         cf = glu_e * (e_ph**3) * crssct * &
+              (8.0_wp * PI_CGS / (H_CGS * HC_CGS**2)) * &
+              (1.0_wp + HC_CGS**3 / (8.0_wp * PI_CGS * e_ph**3) * radfld_e)
+      else
+         if (e_ph < e1 .or. e_ph >= e4) then
+            cf = 0.0_wp
+         else
+            cf = (e_ph**3) * crssct * &
+                 (8.0_wp * PI_CGS / (H_CGS * HC_CGS**2)) * &
+                 (1.0_wp + HC_CGS**3 / (8.0_wp * PI_CGS * e_ph**3) * radfld_e)
+         end if
+      end if
+   end function stat_cooling_funct
+
+
+   !====================================================================
+   ! 8. Intrabin exact-statistical cooling integrand
+   !====================================================================
+   function intrabin_stat_cooling_funct(e_ph, dui, nisrf, isrf_wl, isrf, &
+                                        cabs_arr) result(cf)
+      implicit none
+      real(wp) :: cf
+      real(wp), intent(in) :: e_ph, dui
+      integer,  intent(in) :: nisrf
+      real(wp), intent(in) :: isrf_wl(nisrf), isrf(nisrf), cabs_arr(nisrf)
+
+      real(wp) :: wl, crssct, radfld, radfld_e
+
+      cf = 0.0_wp
+      if (e_ph == 0.0_wp) return
+
+      wl = HC_CGS / e_ph
+      call interp_rf_cabs(wl, nisrf, isrf_wl, isrf, cabs_arr, crssct, radfld)
+      radfld_e = radfld * wl**2 / (HC_CGS * C_CGS)
+
+      cf = (8.0_wp * PI_CGS / (H_CGS * HC_CGS**2)) * &
+           (1.0_wp - e_ph / dui) * (e_ph**3) * crssct * &
+           (1.0_wp + HC_CGS**3 / (8.0_wp * PI_CGS * e_ph**3) * radfld_e)
+   end function intrabin_stat_cooling_funct
 
 
 
@@ -405,7 +541,103 @@ contains
    end subroutine simpson_intrabin_heating
 
 
+   ! --- Simpson integrator for the interbin exact-statistical cooling rate ---
+   subroutine simpson_stat_cooling(e1_io, e2_io, e3_io, e4_io, dui, duf, &
+                                   nisrf, isrf_wl, isrf, cabs_arr, &
+                                   rate_cooling)
+      implicit none
+      integer,  intent(in)    :: nisrf
+      real(wp), intent(inout) :: e1_io, e2_io, e3_io, e4_io
+      real(wp), intent(in)    :: dui, duf
+      real(wp), intent(in)    :: isrf_wl(nisrf), isrf(nisrf), cabs_arr(nisrf)
+      real(wp), intent(out)   :: rate_cooling
 
+      real(wp) :: elow_cut, eupp_cut, hstep, t1, t2, s1, s2, p, xval
+      integer  :: n, k
+
+      elow_cut = HC_CGS / isrf_wl(nisrf)
+      eupp_cut = HC_CGS / isrf_wl(1)
+
+      e1_io = max(min(e1_io, eupp_cut), elow_cut)
+      e2_io = max(min(e2_io, eupp_cut), elow_cut)
+      e3_io = max(min(e3_io, eupp_cut), elow_cut)
+      e4_io = max(min(e4_io, eupp_cut), elow_cut)
+
+      if (e1_io == e4_io) then
+         rate_cooling = 0.0_wp; return
+      end if
+
+      n = 1
+      hstep = e4_io - e1_io
+      t1 = 0.5_wp * hstep * ( &
+           stat_cooling_funct(e1_io, nisrf, isrf_wl, isrf, cabs_arr, &
+                              e1_io, e2_io, e3_io, e4_io, dui, duf) + &
+           stat_cooling_funct(e4_io, nisrf, isrf_wl, isrf, cabs_arr, &
+                              e1_io, e2_io, e3_io, e4_io, dui, duf))
+      s1 = t1
+      do
+         p = 0.0_wp
+         do k = 0, n - 1
+            xval = e1_io + (k + 0.5_wp) * hstep
+            p = p + stat_cooling_funct(xval, nisrf, isrf_wl, isrf, cabs_arr, &
+                                       e1_io, e2_io, e3_io, e4_io, dui, duf)
+         end do
+         t2 = (t1 + hstep * p) / 2.0_wp
+         s2 = (4.0_wp * t2 - t1) / 3.0_wp
+         if (abs(s1) > 0.0_wp .and. abs((s2 - s1) / s1) < EPS_SIMP) exit
+         if (abs(s1) == 0.0_wp .and. abs(s2) == 0.0_wp) exit
+         t1 = t2; n = n * 2; hstep = hstep / 2.0_wp; s1 = s2
+         if (n > 2**16) exit
+      end do
+      rate_cooling = s2
+   end subroutine simpson_stat_cooling
+
+
+   ! --- Simpson integrator for the intrabin exact-statistical cooling rate ---
+   subroutine simpson_intrabin_stat_cooling(e1_io, e2_io, dui, &
+                                            nisrf, isrf_wl, isrf, cabs_arr, &
+                                            rate_cooling)
+      implicit none
+      integer,  intent(in)    :: nisrf
+      real(wp), intent(inout) :: e1_io, e2_io
+      real(wp), intent(in)    :: dui
+      real(wp), intent(in)    :: isrf_wl(nisrf), isrf(nisrf), cabs_arr(nisrf)
+      real(wp), intent(out)   :: rate_cooling
+
+      real(wp) :: elow_cut, eupp_cut, hstep, t1, t2, s1, s2, p, xval
+      integer  :: n, k
+
+      elow_cut = HC_CGS / isrf_wl(nisrf)
+      eupp_cut = HC_CGS / isrf_wl(1)
+
+      e1_io = max(min(e1_io, eupp_cut), elow_cut)
+      e2_io = max(min(e2_io, eupp_cut), elow_cut)
+
+      if (e1_io == e2_io) then
+         rate_cooling = 0.0_wp; return
+      end if
+
+      n = 1
+      hstep = e2_io - e1_io
+      t1 = 0.5_wp * hstep * ( &
+           intrabin_stat_cooling_funct(e1_io, dui, nisrf, isrf_wl, isrf, cabs_arr) + &
+           intrabin_stat_cooling_funct(e2_io, dui, nisrf, isrf_wl, isrf, cabs_arr))
+      s1 = t1
+      do
+         p = 0.0_wp
+         do k = 0, n - 1
+            xval = e1_io + (k + 0.5_wp) * hstep
+            p = p + intrabin_stat_cooling_funct(xval, dui, nisrf, isrf_wl, isrf, cabs_arr)
+         end do
+         t2 = (t1 + hstep * p) / 2.0_wp
+         s2 = (4.0_wp * t2 - t1) / 3.0_wp
+         if (abs(s1) > 0.0_wp .and. abs((s2 - s1) / s1) < EPS_SIMP) exit
+         if (abs(s1) == 0.0_wp .and. abs(s2) == 0.0_wp) exit
+         t1 = t2; n = n * 2; hstep = hstep / 2.0_wp; s1 = s2
+         if (n > 2**16) exit
+      end do
+      rate_cooling = s2
+   end subroutine simpson_intrabin_stat_cooling
 
 
 
@@ -666,6 +898,74 @@ contains
    end subroutine calc_heating_afi
 
 
+   !====================================================================
+   ! 11. STAT_COOLING_AFI -- exact-statistical cooling transition rate
+   !     from bin I (upper) to bin F (lower).  The microcanonical rate
+   !     carries the degeneracy ratio g_f/g_i = exp(lnG_f - lnG_i) in
+   !     place of the Planck factor of the thermal treatment.
+   !====================================================================
+   subroutine calc_stat_cooling_afi(ibin, ui, uia, uib, lngui, &
+                                    fbin, uf, ufa, ufb, lnguf, &
+                                    nisrf, isrf_wl, isrf, cabs_arr, &
+                                    afi_cooling)
+      implicit none
+      integer,  intent(in)  :: ibin, fbin, nisrf
+      real(wp), intent(in)  :: ui, uia, uib, lngui
+      real(wp), intent(in)  :: uf, ufa, ufb, lnguf
+      real(wp), intent(in)  :: isrf_wl(nisrf), isrf(nisrf), cabs_arr(nisrf)
+      real(wp), intent(out) :: afi_cooling
+
+      real(wp) :: e1, e2, e3, e4, dui, duf
+      real(wp) :: afi_cooling0, afi_intrabin_cooling
+      real(wp) :: lng_diff, e1c, e2c
+
+      ! Guard: if ui == uf the rate is undefined
+      if (abs(ui - uf) < tiny(1.0_wp)) then
+         afi_cooling = 0.0_wp; return
+      end if
+
+      ! Photon energies for this transition
+      e1 = uia - ufb
+      e2 = min(uia - ufa, uib - ufb)
+      e3 = max(uia - ufa, uib - ufb)
+      e4 = uib - ufa
+
+      dui = uib - uia
+      duf = ufb - ufa
+
+      lng_diff = lnguf - lngui
+
+      if (ibin /= fbin + 1) then
+         ! Non-adjacent downward transition
+         call simpson_stat_cooling(e1, e2, e3, e4, dui, duf, &
+                                   nisrf, isrf_wl, isrf, cabs_arr, afi_cooling)
+
+         if (lng_diff < -1.0d300 .or. lng_diff > 1.0d300) then
+            afi_cooling = 0.0_wp
+         else
+            afi_cooling = afi_cooling / (ui - uf) * exp(lng_diff)
+         end if
+
+      else
+         ! Adjacent downward transition (I = F + 1): interbin + intrabin
+         call simpson_stat_cooling(e1, e2, e3, e4, dui, duf, &
+                                   nisrf, isrf_wl, isrf, cabs_arr, afi_cooling0)
+
+         if (lng_diff < -1.0d300 .or. lng_diff > 1.0d300) then
+            afi_cooling0 = 0.0_wp
+         else
+            afi_cooling0 = afi_cooling0 / (ui - uf) * exp(lng_diff)
+         end if
+
+         ! Intrabin cooling correction
+         e1c = uia - ufb
+         e2c = dui
+         call simpson_intrabin_stat_cooling(e1c, e2c, dui, &
+                                            nisrf, isrf_wl, isrf, cabs_arr, &
+                                            afi_intrabin_cooling)
+         afi_cooling = afi_cooling0 + afi_intrabin_cooling / (ui - uf)
+      end if
+   end subroutine calc_stat_cooling_afi
 
 
    !====================================================================
@@ -756,17 +1056,19 @@ contains
 
    !====================================================================
    ! 12. Build transition matrix (AMATRIX)
-   !     Transition-matrix construction, 'dbdis' branch, following Draine's method.
+   !     Transition-matrix construction, following Draine's method. The
+   !     upward rates are shared; `method` selects the downward kernel.
    !====================================================================
-   subroutine build_transition_matrix(nstate, u, ua, ub, t_bins, &
+   subroutine build_transition_matrix(nstate, u, ua, ub, lngu, t_bins, &
                                       nisrf, isrf_wl, isrf, cabs_arr, &
                                       method, amatrix, pstate_gd)
       implicit none
       integer,  intent(in)  :: nstate, nisrf
-      real(wp), intent(in)  :: u(nstate), ua(nstate), ub(nstate)
+      real(wp), intent(in)  :: u(nstate), ua(nstate), ub(nstate), lngu(nstate)
       real(wp), intent(in)  :: t_bins(nstate)
       real(wp), intent(in)  :: isrf_wl(nisrf), isrf(nisrf), cabs_arr(nisrf)
-      character(len=*), intent(in) :: method   ! 'dbdis' or 'dbcon' (thread-private)
+      character(len=*), intent(in) :: method   ! 'dbdis', 'dbcon' or 'stati'
+                                               ! (thread-private)
       real(wp), intent(out) :: amatrix(nstate, nstate)
       real(wp), intent(out) :: pstate_gd(nstate) ! Guhathakurta-Draine preconditioner
 
@@ -781,7 +1083,7 @@ contains
       eupp_lim = HC_CGS / isrf_wl(1)       ! highest photon energy
 
       ! ---- UPWARD (heating) transitions: ibin -> fbin, fbin > ibin ----
-      ! These are identical for both methods (dbdis/dbcon).
+      ! These are identical for all methods (dbdis/dbcon/stati).
       do ibin = 1, nstate
          do fbin = ibin + 1, nstate
             ! Skip if initial bin has zero width (ground state)
@@ -812,22 +1114,35 @@ contains
 
       do ibin = 2, nstate
          if (ub(ibin) <= ua(ibin)) cycle
-         if (t_bins(ibin) <= 0.0_wp) cycle
+         ! The T>0 guard only matters for the thermal (dbdis/dbcon) kernel;
+         ! the exact-statistical rate carries no temperature.
+         if (method /= 'stati' .and. t_bins(ibin) <= 0.0_wp) cycle
 
          do fbin = ibin - 1, 1, -1
             if (fbin /= 1 .and. ub(fbin) <= ua(fbin)) cycle
             if (u(ibin) <= u(fbin)) cycle
 
-            ! Thermal-discrete (dbdis): Planck-suppressed beyond ~20kT,
-            ! so distant downward transitions are negligible and skipped.
-            if (ua(ibin) - ub(fbin) > 20.0_wp * KB_CGS * t_bins(ibin)) exit
+            if (method == 'stati') then
+               ! Exact-statistical cooling: the rate follows g_f/g_i and has
+               ! no Planck suppression, so the 20kT cutoff must NOT apply.
+               call calc_stat_cooling_afi(ibin, u(ibin), ua(ibin), ub(ibin), &
+                                          lngu(ibin), &
+                                          fbin, u(fbin), ua(fbin), ub(fbin), &
+                                          lngu(fbin), &
+                                          nisrf, isrf_wl, isrf, cabs_arr, &
+                                          afi_val)
+            else
+               ! Thermal-discrete (dbdis): Planck-suppressed beyond ~20kT,
+               ! so distant downward transitions are negligible and skipped.
+               if (ua(ibin) - ub(fbin) > 20.0_wp * KB_CGS * t_bins(ibin)) exit
 
-            call calc_therm_cooling_afi(ibin, t_bins(ibin), &
-                                        u(ibin), ua(ibin), ub(ibin), &
-                                        fbin, u(fbin), ua(fbin), ub(fbin), &
-                                        delta_u2, nstate, &
-                                        nisrf, isrf_wl, isrf, cabs_arr, &
-                                        afi_val)
+               call calc_therm_cooling_afi(ibin, t_bins(ibin), &
+                                           u(ibin), ua(ibin), ub(ibin), &
+                                           fbin, u(fbin), ua(fbin), ub(fbin), &
+                                           delta_u2, nstate, &
+                                           nisrf, isrf_wl, isrf, cabs_arr, &
+                                           afi_val)
+            end if
             amatrix(fbin, ibin) = afi_val
          end do
       end do
@@ -1060,6 +1375,36 @@ contains
    end subroutine linbcg
 
 
+   !====================================================================
+   ! 14. Debye-limit degeneracy ln(g) for an enthalpy bin.
+   !     g(U) dU ~ U^(3N-8) dU for 3N-7 harmonic modes in the Debye
+   !     (high-U) limit, so ln g_i = (3N-7) ln(Ub_i / Ua_i).
+   !
+   !     This limit is smooth in U but not monotonic in the bin index once
+   !     the bins are mode-tracking, so it is only a labeling for the
+   !     thermal kernels (which never read lngu).  The exact-statistical
+   !     kernel needs the counted degeneracies of beyer_swinehart instead;
+   !     build_enthalpy_bins_qm reports which of the two it produced.
+   !====================================================================
+   subroutine compute_debye_lngu(nstate, ua, ub, natom, lngu)
+      implicit none
+      integer,  intent(in)  :: nstate, natom
+      real(wp), intent(in)  :: ua(nstate), ub(nstate)
+      real(wp), intent(out) :: lngu(nstate)
+
+      integer  :: i
+      real(wp) :: nmodes
+
+      nmodes = real(3 * natom - 7, wp)
+      lngu(1) = 0.0_wp
+      do i = 2, nstate
+         if (ua(i) > 0.0_wp .and. ub(i) > ua(i)) then
+            lngu(i) = nmodes * log(ub(i) / ua(i))
+         else
+            lngu(i) = 0.0_wp
+         end if
+      end do
+   end subroutine compute_debye_lngu
 
 
    !====================================================================
@@ -1318,12 +1663,240 @@ contains
    end subroutine pah_vibrational_modes
 
 
+   !====================================================================
+   ! 14e. BEYER_SWINEHART -- density of states by exact state counting.
+   !
+   !      Given NMODES harmonic mode frequencies (cm^-1), counts the number
+   !      of vibrational quantum states g(E) on the grid E = j*DE by the
+   !      Beyer-Swinehart recursion: adding one mode of quantum dje shifts
+   !      and accumulates the running count, so after all modes g(j) is the
+   !      exact number of ways to distribute j quanta.
+   !
+   !      The count grows roughly as exp(sqrt(E)) and overflows IEEE double
+   !      well below the top of the enthalpy range, so the grid is truncated
+   !      where the count is still representable and continued above that
+   !      with the thermodynamic asymptotic d ln g = dE/kT + d ln(dE), the
+   !      temperature being the exact mode-sum inverse of E(T).
+   !
+   !      Returns:
+   !        jemax_out = index of the last energy point
+   !        energy(0:jemax_out) = energy grid (cm^-1)
+   !        lngsum(0:jemax_out) = ln[cumulative number of states up to E]
+   !        ebs_out = energy (erg) below which the direct count was feasible
+   !====================================================================
+   subroutine beyer_swinehart(nmodes, emodes, de, emax_erg, &
+                              jemax_out, energy, lngsum, ebs_out)
+      implicit none
+      integer,  intent(in)    :: nmodes
+      real(wp), intent(in)    :: emodes(nmodes), de
+      real(wp), intent(in)    :: emax_erg
+      integer,  intent(out)   :: jemax_out
+      real(wp), allocatable, intent(out) :: energy(:), lngsum(:)
+      real(wp), intent(out)   :: ebs_out
+
+      ! Number of grid points reserved for the asymptotic continuation
+      integer,  parameter :: NEXT_MAX = 2000
+      real(wp), allocatable :: gcount(:), gsum_tmp(:)
+      real(wp), allocatable :: lng_ext(:)     ! ln(g) on the same grid
+      real(wp) :: emax_cm1, fac, deltae, e_mid, temp, de2
+      integer  :: jemax, jm, dje, je, j, ntotal, jebs
+
+      emax_cm1 = emax_erg / HC_CGS
+
+      jemax = nint(emax_cm1 / de)
+      if (jemax < 1) jemax = 1
+
+      ! Working arrays: counted part [0:jemax] plus room for the continuation
+      ntotal = jemax + NEXT_MAX
+      allocate(gcount(0:ntotal))
+      allocate(gsum_tmp(0:ntotal))
+      allocate(energy(0:ntotal))
+      allocate(lngsum(0:ntotal))
+      allocate(lng_ext(0:ntotal))
+
+      ! Initialize: ground state g(0) = 1, all others 0
+100   continue
+      gcount(0:jemax) = 0.0_wp
+      gcount(0) = 1.0_wp
+
+      ! Beyer-Swinehart recursion over the mode spectrum
+      do jm = 1, nmodes
+         dje = nint(emodes(jm) / de)
+         if (dje == 0) dje = 1   ! do not allow rounding to zero
+         do je = dje, jemax
+            gcount(je) = gcount(je) + gcount(je - dje)
+         end do
+         ! Truncate the grid and restart before the count overflows
+         if (gcount(jemax) > 1.0d305) then
+            if (jm < nmodes / 32) then
+               jemax = int(jemax / 2.0_wp)
+            else if (jm < nmodes / 16) then
+               jemax = int(jemax / 1.4_wp)
+            else if (jm < nmodes / 8) then
+               jemax = int(jemax / 1.2_wp)
+            else if (jm < nmodes / 4) then
+               jemax = int(jemax / 1.1_wp)
+            else
+               jemax = int(jemax / 1.05_wp)
+            end if
+            if (jemax < 1) jemax = 1
+            goto 100
+         end if
+      end do
+
+      ! Cumulative sum and logarithms over the counted part
+      ebs_out = jemax * de * HC_CGS
+
+      gsum_tmp(0) = gcount(0)
+      do je = 1, jemax
+         gsum_tmp(je) = gsum_tmp(je - 1) + gcount(je)
+      end do
+
+      do je = 0, jemax
+         energy(je)  = real(je, wp) * de
+         lng_ext(je) = log(gcount(je) + 1.0d-99)
+         lngsum(je)  = log(gsum_tmp(je))
+      end do
+
+      ! Continue above the counted range with the dS = dE/T asymptotic.
+      ! Three pieces matter and none may be dropped: the d ln(dE) bin-width
+      ! term, the widening grid (double DE until the fractional width reaches
+      ! 0.005, then geometric with f = 1.01), and the exact mode-sum
+      ! temperature.  Without them ln(g) grows incorrectly and drops at the
+      ! counted/asymptotic boundary, making the degeneracies non-monotonic
+      ! and the exact-statistical rates overflow.
+      if (jemax * de < emax_cm1 .and. energy(jemax) > 0.0_wp) then
+         jebs = jemax          ! last exactly counted bin
+
+         ! Step 1: double the bin width until the fractional width >= 0.005
+         de2 = de
+         je  = jemax
+         do
+            if (de2 / energy(je) >= 0.005_wp) exit
+            if (je + 1 > ntotal) exit
+            je  = je + 1
+            de2 = 2.0_wp * de2
+            energy(je) = energy(je - 1) + de2
+            if (energy(je) >= emax_cm1) exit
+         end do
+
+         ! Step 2: geometric spacing with f = 1.01 up to emax
+         if (energy(je) < emax_cm1 .and. je < ntotal) then
+            fac = 1.01_wp
+            j   = int(log(emax_cm1 / energy(je)) / log(fac)) + 1
+            if (j > ntotal - je) j = ntotal - je
+            do jm = 1, j
+               energy(je + jm) = energy(je) * fac**jm
+            end do
+            jemax = je + j
+         else
+            jemax = je
+         end if
+
+         ! Fill ln(g), ln(gsum) over the continuation (je = jebs+1 .. jemax)
+         do je = jebs + 1, jemax
+            e_mid  = 0.5_wp * (energy(je) + energy(je - 1))   ! arithmetic midpoint
+            deltae = energy(je) - energy(je - 1)
+            ! Exact vibrational mode sum, not the Debye model, so that the
+            ! temperature matches the spectrum the count was made from.
+            temp = T_from_U_modes(e_mid * HC_CGS, nmodes, emodes)
+            if (temp <= 0.0_wp) temp = 1.0_wp
+            ! d ln g = dE/kT + d ln(dE), with dE in cm^-1 and T in K, so the
+            ! coefficient is hc/k = 1.43877 cm K.  Draine's dens_states.f
+            ! carries 1.48377 here (a digit transposition; every other use of
+            ! hc/k in his source is 1.43877).  This branch is never reached
+            ! for the grains the exact-statistical path runs on, so the
+            ! correction does not change any output of the released solver.
+            lng_ext(je) = lng_ext(je - 1) &
+                          + 1.43877_wp * deltae / temp &
+                          + log(deltae / (energy(je - 1) - energy(je - 2)))
+            if ((lng_ext(je) - lngsum(je - 1)) < 100.0_wp) then
+               lngsum(je) = lngsum(je - 1) + &
+                            log(1.0_wp + exp(lng_ext(je) - lngsum(je - 1)))
+            else
+               lngsum(je) = lng_ext(je)
+            end if
+         end do
+      end if
+
+      jemax_out = jemax
+
+      deallocate(gcount, gsum_tmp, lng_ext)
+   end subroutine beyer_swinehart
 
 
+   !====================================================================
+   ! 14f. T_FROM_U_MODES -- invert E(T) = sum_j E_j/(exp(E_j/kT)-1) for the
+   !      temperature of a grain holding energy U_target (erg), using the
+   !      explicit mode spectrum (emodes in cm^-1) rather than a Debye
+   !      model.  Bisection; returns T in K, and 0 K for U <= 0.
+   !====================================================================
+   function T_from_U_modes(U_target, nmodes, emodes) result(T)
+      implicit none
+      real(wp),         intent(in) :: U_target
+      integer,          intent(in) :: nmodes
+      real(wp),         intent(in) :: emodes(nmodes)
+      real(wp) :: T
+
+      real(wp) :: U_cm1, T_lo, T_hi, T_mid, E_mid
+      integer  :: iter
+
+      if (U_target <= 0.0_wp .or. nmodes <= 0) then
+         T = 0.0_wp; return
+      end if
+
+      ! Convert erg -> cm^-1:  1 cm^-1 = hc = 1.98645e-16 erg
+      U_cm1 = U_target / HC_CGS
+
+      ! Bracket: E(T) is monotonically increasing
+      T_lo = 0.5_wp
+      T_hi = 5000.0_wp
+      do iter = 1, 20
+         E_mid = thermal_energy_modes(T_hi, nmodes, emodes)
+         if (E_mid >= U_cm1) exit
+         T_hi = T_hi * 2.0_wp
+      end do
+
+      ! Bisection
+      do iter = 1, 60
+         T_mid = 0.5_wp * (T_lo + T_hi)
+         E_mid = thermal_energy_modes(T_mid, nmodes, emodes)
+         if (E_mid < U_cm1) then
+            T_lo = T_mid
+         else
+            T_hi = T_mid
+         end if
+         if (abs(T_hi - T_lo) < 0.01_wp) exit
+      end do
+      T = 0.5_wp * (T_lo + T_hi)
+   end function T_from_U_modes
 
 
+   !====================================================================
+   ! 14f2. THERMAL_ENERGY_MODES -- E(T) = sum_j E_j / (exp(E_j/kT) - 1)
+   !       over the explicit harmonic mode spectrum.  Energies in cm^-1;
+   !       hc/k = 1.43877 cm K converts a mode energy in cm^-1 to kT.
+   !====================================================================
+   function thermal_energy_modes(T, nmodes, emodes) result(Etot)
+      implicit none
+      real(wp), intent(in) :: T
+      integer,  intent(in) :: nmodes
+      real(wp), intent(in) :: emodes(nmodes)
+      real(wp) :: Etot
 
+      real(wp), parameter :: hc_over_k = 1.43877_wp   ! cm K
+      real(wp) :: x
+      integer  :: j
 
+      Etot = 0.0_wp
+      if (T <= 0.0_wp) return
+      do j = 1, nmodes
+         x = hc_over_k * emodes(j) / T
+         if (x < 500.0_wp) then
+            Etot = Etot + emodes(j) / (exp(x) - 1.0_wp)
+         end if
+      end do
+   end function thermal_energy_modes
 
 
    !====================================================================
@@ -1396,26 +1969,35 @@ contains
    !      Returns:
    !        u, ua, ub   = bin center, lower bound, upper bound (erg)
    !        t_bins      = temperature (K) labeling each bin
+   !        lngu        = ln(degeneracy) of each bin
    !        nset_out    = number of mode-tracking bins used
+   !        lngu_counted = .true. iff lngu came from the exact
+   !                       Beyer-Swinehart count, .false. if it is the
+   !                       Debye limit (which the 'stati' kernel may not use)
    !====================================================================
    subroutine build_enthalpy_bins_qm(grain_type, a_cm, natom, nc, nh, &
                                       umin, umax, nstate, &
-                                      u, ua, ub, t_bins, nset_out)
+                                      u, ua, ub, t_bins, lngu, nset_out, &
+                                      lngu_counted)
       implicit none
       character(len=*), intent(in)  :: grain_type
       real(wp),         intent(in)  :: a_cm, umin, umax
       integer,          intent(in)  :: natom, nc, nh, nstate
       real(wp),         intent(out) :: u(nstate), ua(nstate), ub(nstate)
-      real(wp),         intent(out) :: t_bins(nstate)
+      real(wp),         intent(out) :: t_bins(nstate), lngu(nstate)
       integer,          intent(out) :: nset_out
+      logical,          intent(out) :: lngu_counted
 
       integer  :: nmodes, i, nset, nset_max, jset
-      real(wp) :: de, dlgu, umax_cm1
+      real(wp) :: de, dlgu, umax_cm1, ebs
+      integer  :: jemax_bs, jemax_est
       real(wp), allocatable :: emodes(:), emodes_new(:)
+      real(wp), allocatable :: energy_bs(:), lngsum_bs(:)
       logical  :: skip_modes
 
       ! ---- Step 1: Get vibrational mode spectrum ----
-      ! With UMIN /= 0 the bins are purely log-spaced, so the explicit mode
+      ! With UMIN /= 0 the bins are purely log-spaced and the exact
+      ! degeneracy count is out of reach anyway, so the explicit mode
       ! spectrum is unnecessary and is skipped.  It is needed only for the
       ! mode-tracking bins of the UMIN = 0 branch below.  Skipping keeps very
       ! large grains (natom > 1e6) feasible.
@@ -1429,7 +2011,8 @@ contains
          call pah_vibrational_modes(nc, nh, nmodes, emodes)
       end if
 
-      ! ---- Step 2: Determine DE (bin-boundary snapping quantum) ----
+      ! ---- Step 2: Determine DE (bin-boundary snapping quantum, and the
+      !      energy grid spacing of the Beyer-Swinehart count) ----
       de = 1.0_wp
       if (nmodes >= 2) then
          call select_de(emodes(2) - emodes(1), de)
@@ -1466,7 +2049,7 @@ contains
             nset = 0; nset_out = 0
             call fallback_log_bins(nstate, umin, umax, u, ua, ub)
             deallocate(emodes_new)
-            goto 500   ! jump to the T(U) computation
+            goto 500   ! jump to the T(U) and degeneracy computation
          end if
 
          ! Bin 2: centered on first distinct mode energy
@@ -1577,6 +2160,38 @@ contains
          t_bins(i) = T_from_U_bisect(u(i), grain_type, natom, a_cm)
       end do
 
+      ! ---- Step 5: Degeneracy ln(g) of each bin ----
+      ! The exact count is O(nmodes * jemax) in time and O(jemax) in memory,
+      ! so it is attempted only when both stay bounded:
+      !   (a) grid size: UMAX / (HC * DE) < 5e5  (memory)
+      !   (b) work: nmodes * jemax < 5e7          (time)
+      ! Otherwise the bins keep their mode-tracking structure but carry the
+      ! Debye-limit degeneracy, which the 'stati' kernel may not use.
+      if (de > 0.0_wp) then
+         jemax_est = nint(umax / (HC_CGS * de))
+      else
+         jemax_est = 0
+      end if
+
+      if (.not. skip_modes .and. jemax_est > 0 .and. jemax_est < 500000 .and. &
+          real(nmodes, wp) * real(jemax_est, wp) < 5.0d7) then
+         call beyer_swinehart(nmodes, emodes, de, umax, jemax_bs, &
+                              energy_bs, lngsum_bs, ebs)
+
+         lngu(1) = 0.0_wp
+         do i = 2, nstate
+            call lngu_from_counted_states(ua(i), ub(i), ebs, de, &
+                                          jemax_bs, energy_bs, lngsum_bs, &
+                                          lngu(i))
+         end do
+         if (allocated(energy_bs)) deallocate(energy_bs)
+         if (allocated(lngsum_bs)) deallocate(lngsum_bs)
+         lngu_counted = .true.
+      else
+         call compute_debye_lngu(nstate, ua, ub, natom, lngu)
+         lngu_counted = .false.
+      end if
+
       if (allocated(emodes)) deallocate(emodes)
 
    contains
@@ -1643,6 +2258,47 @@ contains
       end subroutine fallback_log_bins
 
 
+      ! Number of states in one bin [ua_erg, ub_erg] from the cumulative
+      ! count: ln g = ln[gsum(UB) - gsum(UA)].  Below the exactly counted
+      ! energy EBS the grid is uniform in DE and the lookup is an index;
+      ! above it the grid widens, so interpolate.
+      subroutine lngu_from_counted_states(ua_erg, ub_erg, ebs_val, de_val, &
+                                          jemax_val, energy_val, lngsum_val, &
+                                          lngu_val)
+         real(wp), intent(in)  :: ua_erg, ub_erg, ebs_val, de_val
+         integer,  intent(in)  :: jemax_val
+         real(wp), intent(in)  :: energy_val(0:jemax_val), lngsum_val(0:jemax_val)
+         real(wp), intent(out) :: lngu_val
+
+         integer  :: nua_idx, nub_idx
+         real(wp) :: lngsumua, lngsumub
+
+         if (ua_erg <= ebs_val) then
+            nua_idx = nint(ua_erg / (HC_CGS * de_val))
+            nua_idx = max(0, min(nua_idx, jemax_val))
+            lngsumua = lngsum_val(nua_idx)
+         else
+            call parab_interp(energy_val(1:jemax_val+1), &
+                              lngsum_val(1:jemax_val+1), &
+                              jemax_val + 1, ua_erg / HC_CGS, lngsumua)
+         end if
+
+         if (ub_erg <= ebs_val) then
+            nub_idx = nint(ub_erg / (HC_CGS * de_val))
+            nub_idx = max(0, min(nub_idx, jemax_val))
+            lngsumub = lngsum_val(nub_idx)
+         else
+            call parab_interp(energy_val(1:jemax_val+1), &
+                              lngsum_val(1:jemax_val+1), &
+                              jemax_val + 1, ub_erg / HC_CGS, lngsumub)
+         end if
+
+         if ((lngsumub - lngsumua) >= 1.0d-10) then
+            lngu_val = lngsumub + log(1.0_wp - exp(lngsumua - lngsumub))
+         else
+            lngu_val = -100.0_wp   ! sentinel: bin holds essentially no state
+         end if
+      end subroutine lngu_from_counted_states
 
    end subroutine build_enthalpy_bins_qm
 
@@ -1675,8 +2331,9 @@ contains
 
 
    !====================================================================
-   ! 17. QM emission from P(state) using the thermal-discrete formula.
+   ! 17. QM emission from P(state).
    !
+   !     Thermal ('dbdis' / 'dbcon') kernel:
    !       EMISSION(I) = sum_J P(J) * (8*pi*hcc/lambda^4) * Cabs
    !                     / (exp(hc/(kT_J * lambda)) - 1)
    !     for bins J where h*nu <= UB(J) (photon energy < bin energy).
@@ -1686,23 +2343,30 @@ contains
    !     the temperature corresponding to the bin's representative energy
    !     via the T(E) relation of DL01 eq. (32).
    !
-   !     NOTE: The (1+J/B0) stimulated-emission factor is omitted
-   !     (HD23 publishes net emission only).
+   !     Exact-statistical ('stati') kernel: no bin temperature and no
+   !     Planck factor.  Each downward transition J -> K carries the
+   !     degeneracy ratio g_K/g_J and the bin-overlap weight G_lu, plus the
+   !     intrabin term for photons softer than the bin width.  This must be
+   !     paired with the matching cooling rates in the transition matrix.
+   !
+   !     NOTE: The (1+J/B0) stimulated-emission factor is omitted from both
+   !     kernels (HD23 publishes net emission only).
    !====================================================================
    subroutine qm_emission(nstate, nisrf, isrf_wl_cm, cabs_cm2, &
-                           u, ua, ub, pstate, t_bins, &
+                           u, ua, ub, lngu, pstate, t_bins, &
                            method, emission)
       implicit none
       integer,  intent(in)  :: nstate, nisrf
       real(wp), intent(in)  :: isrf_wl_cm(nisrf), cabs_cm2(nisrf)
       real(wp), intent(in)  :: u(nstate), ua(nstate), ub(nstate)
-      real(wp), intent(in)  :: pstate(nstate)
+      real(wp), intent(in)  :: lngu(nstate), pstate(nstate)
       real(wp), intent(in)  :: t_bins(nstate)
-      character(len=*), intent(in) :: method   ! 'dbdis' or 'dbcon' (thread-private)
+      character(len=*), intent(in) :: method   ! 'dbdis', 'dbcon' or 'stati'
+                                               ! (thread-private)
       real(wp), intent(out) :: emission(nisrf)
 
-      integer  :: i, j
-      real(wp) :: hnu, term, hcc_val, dj
+      integer  :: i, j, k
+      real(wp) :: hnu, term, hcc_val, dj, pref, gkj
 
       hcc_val = H_CGS * C_CGS * C_CGS   ! h * c^2
 
@@ -1711,20 +2375,49 @@ contains
       do i = 1, nisrf
          hnu = HC_CGS / isrf_wl_cm(i)
 
-         ! Thermal-discrete (dbdis) kernel: blackbody at bin temperature T_j.
-         do j = 2, nstate
-            if (pstate(j) <= 0.0_wp) cycle
-            if (t_bins(j) <= 0.0_wp) cycle
-            ! Photon energy must not exceed the upper bound of this bin
-            if (hnu > ub(j)) cycle
+         if (method == 'stati') then
+            ! Exact-statistical kernel: degeneracy-weighted, no Planck factor.
+            do j = 2, nstate
+               if (pstate(j) <= 0.0_wp) cycle
+               pref = (8.0_wp * PI_CGS * hcc_val / isrf_wl_cm(i)**4) &
+                      * cabs_cm2(i) * pstate(j)
+               ! Intrabin emission (photon leaves the grain within bin j)
+               if ((ub(j) - ua(j)) > 0.0_wp .and. hnu <= ub(j) - ua(j)) then
+                  emission(i) = emission(i) + pref &
+                                * (1.0_wp - hnu / (ub(j) - ua(j)))
+               end if
+               ! Interbin emission to all lower bins k < j.  Skip the
+               ! sentinel degeneracy (lngu = -100 marks a bin with no state)
+               ! and guard the exponential against overflow.
+               if (lngu(j) <= -99.0_wp) cycle
+               do k = j - 1, 1, -1
+                  if (lngu(k) <= -99.0_wp) cycle
+                  if (lngu(k) - lngu(j) > 100.0_wp) cycle
+                  if (hnu > ub(j) - ua(k)) cycle
+                  if (hnu < ua(j) - ub(k)) cycle
+                  call calc_glu(isrf_wl_cm(i), ua(j), ub(j), ua(k), ub(k), gkj)
+                  if (gkj <= 0.0_wp) cycle
+                  emission(i) = emission(i) + pref &
+                                * exp(lngu(k) - lngu(j)) * gkj
+               end do
+            end do
 
-            term = HC_CGS / (isrf_wl_cm(i) * KB_CGS * t_bins(j))
-            if (term < 500.0_wp) then
-               dj = (8.0_wp * PI_CGS * hcc_val / isrf_wl_cm(i)**4) * &
-                    cabs_cm2(i) * pstate(j) / (exp(term) - 1.0_wp)
-               emission(i) = emission(i) + dj
-            end if
-         end do
+         else
+            ! Thermal-discrete (dbdis) kernel: blackbody at bin temperature T_j.
+            do j = 2, nstate
+               if (pstate(j) <= 0.0_wp) cycle
+               if (t_bins(j) <= 0.0_wp) cycle
+               ! Photon energy must not exceed the upper bound of this bin
+               if (hnu > ub(j)) cycle
+
+               term = HC_CGS / (isrf_wl_cm(i) * KB_CGS * t_bins(j))
+               if (term < 500.0_wp) then
+                  dj = (8.0_wp * PI_CGS * hcc_val / isrf_wl_cm(i)**4) * &
+                       cabs_cm2(i) * pstate(j) / (exp(term) - 1.0_wp)
+                  emission(i) = emission(i) + dj
+               end if
+            end do
+         end if
       end do
    end subroutine qm_emission
 
@@ -1777,16 +2470,25 @@ contains
       real(wp) :: umin, umax, umaxmin, umaxhi, umaxlo, uminhi, uminlo
       real(wp) :: u_photon_max
       real(wp) :: pmax, term, sum_p, err_bcg, tol_bcg
-      logical  :: refine, bicg_ok, sparse_ok
+      logical  :: refine, lngu_counted, bicg_ok, sparse_ok
       integer  :: itmax_bcg, n_retry
       integer, parameter :: MAX_BCG_RETRY = 30
+      character(len=5) :: eff_method   ! size-gated requested method
+      character(len=5) :: cur_method   ! method actually used this iteration
+
+      ! Grains for which the exact state count is feasible.  Draine limits
+      ! 'stati' to a <= 25 Angstrom; above that the count overflows before
+      ! it reaches the top of the enthalpy range and the degeneracies stop
+      ! being usable, so the thermal kernel takes over.
+      real(wp), parameter :: A_STATI_MAX_CM = 25.0d-8   ! 25 Angstrom
+
       ! Full-resolution CGS arrays for emission computation
       real(wp), allocatable :: isrf_wl_full(:), isrf_full(:), cabs_full(:)
       ! Downsampled CGS arrays for transition matrix (much faster)
       integer :: nisrf_ds
       real(wp), allocatable :: isrf_wl_ds(:), isrf_ds(:), cabs_ds(:)
 
-      real(wp), allocatable :: u(:), ua(:), ub(:), t_bins(:)
+      real(wp), allocatable :: u(:), ua(:), ub(:), t_bins(:), lngu(:)
       real(wp), allocatable :: amatrix(:,:), pstate_gd(:), pstate(:)
       real(wp), allocatable :: amatrix1(:,:), pstate1(:), rhs(:)
       real(wp), allocatable :: sa(:)
@@ -1807,6 +2509,30 @@ contains
       solved = .false.
       emission_out = 0.0_wp
 
+      select case (qm_method)
+      case ('dbdis', 'dbcon', 'stati')
+         ! recognized
+      case default
+         write(*,'(a,a,a)') ' stoch_qm: unknown qm_method "', trim(qm_method), &
+                            '" -- expected dbdis, dbcon or stati'
+         stop 1
+      end select
+
+      ! Which cooling treatment this grain can actually carry.  The
+      ! exact-statistical kernel needs the counted degeneracies, which are
+      ! reachable only for small carbonaceous grains: for silicate the count
+      ! that survives the feasibility guards still leaves a residual
+      ! non-monotonicity in ln g (~14 in the log) that exp(lngu(k)-lngu(j))
+      ! amplifies into a spurious MIR spike, so silicate uses the thermal
+      ! kernel -- as Draine's production does, his silicate 'stati' branch
+      ! being flagged untested.  PAH 'stati' agrees with 'dbdis' to within
+      ! a few percent in every band.
+      eff_method = qm_method
+      if (qm_method == 'stati') then
+         if (trim(grain_type) /= 'pah' .or. a_cm > A_STATI_MAX_CM) &
+            eff_method = 'dbdis'
+      end if
+
       ! Determine number of enthalpy bins
       nstate = qm_nstate_default
 
@@ -1820,10 +2546,12 @@ contains
       end if
 
       ! Feasibility cap: explicit-mode construction (~3*natom modes) is only
-      ! needed when UMIN = 0 (mode-aligned first bins; eeq < 0.1*eeqss).  With
-      ! UMIN = eeq/5 > 0 the bins are log-spaced and modes are skipped, so
-      ! large grains are feasible.
-      if (max(natom, nc_pah) > NATOM_QM_MAX .and. eeq < 0.1_wp * eeqss) then
+      ! needed when UMIN = 0 (mode-aligned first bins; eeq < 0.1*eeqss) or
+      ! for the exact-statistical kernel, which counts states over the mode
+      ! spectrum.  With UMIN = eeq/5 > 0 the thermal path has log-spaced bins
+      ! and skips the modes, so large grains stay feasible there.
+      if (max(natom, nc_pah) > NATOM_QM_MAX .and. &
+          (eeq < 0.1_wp * eeqss .or. eff_method == 'stati')) then
          solved = .false.
          return
       end if
@@ -1888,7 +2616,7 @@ contains
       uminlo = 0.0_wp
 
       ! Allocate state arrays
-      allocate(u(nstate), ua(nstate), ub(nstate), t_bins(nstate))
+      allocate(u(nstate), ua(nstate), ub(nstate), t_bins(nstate), lngu(nstate))
       allocate(amatrix(nstate, nstate), pstate_gd(nstate), pstate(nstate))
 
       nstate1 = nstate - 1
@@ -1902,12 +2630,18 @@ contains
          ! Build enthalpy bins with mode-aware QM construction
          call build_enthalpy_bins_qm(grain_type, a_cm, natom, nc_pah, nh_pah, &
                                      umin, umax, nstate, &
-                                     u, ua, ub, t_bins, nset_qm)
+                                     u, ua, ub, t_bins, lngu, nset_qm, &
+                                     lngu_counted)
+
+         ! The exact-statistical kernel needs counted degeneracies; when the
+         ! bins carry the Debye limit instead, this grain uses the thermal one.
+         cur_method = eff_method
+         if (eff_method == 'stati' .and. .not. lngu_counted) cur_method = 'dbdis'
 
          ! Build transition matrix (using downsampled ISRF for speed)
-         call build_transition_matrix(nstate, u, ua, ub, t_bins, &
+         call build_transition_matrix(nstate, u, ua, ub, lngu, t_bins, &
                                       nisrf_ds, isrf_wl_ds, isrf_ds, cabs_ds, &
-                                      qm_method, amatrix, pstate_gd)
+                                      cur_method, amatrix, pstate_gd)
 
          ! Check for low-U limit: direct solve without BiCG
          fbin = 1
@@ -2129,7 +2863,8 @@ contains
       ! Compute emission spectrum using QM formula (full-resolution ISRF)
       if (solved) then
          call qm_emission(nstate, nlam, isrf_wl_full, cabs_full, &
-                          u, ua, ub, pstate, t_bins, qm_method, emission_out)
+                          u, ua, ub, lngu, pstate, t_bins, cur_method, &
+                          emission_out)
          ! Replace any NaN in emission with zero
          do i = 1, nlam
             if (emission_out(i) /= emission_out(i)) emission_out(i) = 0.0_wp
@@ -2207,7 +2942,7 @@ contains
 
       deallocate(isrf_wl_full, isrf_full, cabs_full)
       deallocate(isrf_wl_ds, isrf_ds, cabs_ds)
-      deallocate(u, ua, ub, t_bins)
+      deallocate(u, ua, ub, t_bins, lngu)
       deallocate(amatrix, pstate_gd, pstate)
       deallocate(amatrix1, pstate1, rhs, sa, ija)
    end subroutine qm_solve_grain

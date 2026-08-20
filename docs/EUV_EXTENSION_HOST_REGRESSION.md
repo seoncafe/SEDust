@@ -259,35 +259,40 @@ Reproducing the section 5 comparison, now with the fix in place:
 
 The first row is exact rather than the 8e-13 of section 5: for a field that
 stops at the Lyman limit the `max()` selects `U_UV1_ERG` itself, so the code
-path is the same one the hard-coded constant took. `./main_zubko.x` prints this
+path is the same one the hard-coded constant took. `./calc_sed.x zubko` prints this
 directly,
 
 ```
+$ ./calc_sed.x zubko euv
  optics grid short end :  1.0000E-03 um  ->   1.23984E+03 eV
  hardest photon in the field:    1.35946E+01 eV
  single-photon bound in use :    1.36000E+01 eV
 ```
 
-and `./main_zubko.x euv`, which adds a hard component below the Lyman limit,
-gives `3.70141E+02 eV` for each of the last two lines.
+and `./calc_sed.x zubko euv hardfield`, which puts a hard component in the band
+below the Lyman limit, gives `3.70141E+02 eV` for each of the last two lines.
 
 ## 9. Keeping the path covered
 
-The defect escaped `main_astrodust.x` and `main_dl07.x` because for those two
+The defect escaped `calc_sed.x astrodust` and `calc_sed.x dl07` because for those two
 models the grid floor and the field's short end are the same number. No driver
 in the tree ran the emission solvers on a model whose optics grid reaches past
 the illuminated band, which is the reason a grid-based bound survived review.
-`sed/src/main_zubko.f90` closes that gap and is built by the default `make`:
+`sed/src/calc_sed.f90` closes that gap and is built by the default `make`:
 
 ```
-./main_zubko.x [heuristic | draine | qm | equil] [euv]
+./calc_sed.x zubko [settings ...]
 ```
 
-It is the emission counterpart of `./calc_kext.x zubko`, which exercises only
-the extinction size integral. Without `euv` the Mathis field stops at the Lyman
-limit and the bound must stay at 13.6 eV however far the optics grid extends;
-with `euv` a diluted 1e5 K blackbody occupies the band below the Lyman limit and
-the bound must follow the field up. Running both is the regression.
+It takes the run settings the three model drivers share (solver, grid, field,
+emission term, transition-matrix sizes); `euv` and `hardfield` are the two that
+matter here. It is the emission counterpart of `./calc_kext.x zubko`, which
+exercises only the extinction size integral. `euv` builds the model on the whole
+ZDA optics range instead of cutting it at the Lyman limit; the Mathis field
+still stops there, so the bound must stay at 13.6 eV however far the optics grid
+extends. `hardfield` then fills the band below the Lyman limit with a diluted
+1e5 K blackbody, and the bound must follow the field up. Running `euv` and
+`euv hardfield` is the regression.
 
 ## 10. The fourth site
 

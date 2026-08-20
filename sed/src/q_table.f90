@@ -288,7 +288,7 @@ contains
 
 
    subroutine load_q_table_h5(path, include_euv, ok)
-      ! The same table out of data/astrodust/sedust_astrodust.h5, where make_qtable.x
+      ! The same table out of data/astrodust/sedust_astrodust.h5, where calc_qtable.x
       ! wrote it: /grid/lambda cut at i_lyman as include_euv asks, and
       ! /qtable/astrodust for the cross sections and the regime flag.
       !

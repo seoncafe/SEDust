@@ -1,13 +1,13 @@
 module q_component_mod
    ! Reads a stored (lambda, a_eff) cross-section table of ONE grain
    ! population -- the DL07 and Zubko counterpart of the astrodust Q table
-   ! that q_table.f90 reads.  sed/make_qtable.x writes them into
+   ! that q_table.f90 reads.  sed/calc_qtable.x writes them into
    ! data/qtable/, both wavelength sets of every model:
    !
    !   q_dl07_{sil,gra,pah_neu,pah_ion}[_euv].dat.gz
    !   q_zubko_{sil,gra,pah}[_euv].dat.gz
    !
-   ! Layout, as make_qtable.x writes it: '#'-commented header, two lines of
+   ! Layout, as calc_qtable.x writes it: '#'-commented header, two lines of
    ! which carry the grid sizes,
    !
    !   # a_eff stride: every 1 of <NA>

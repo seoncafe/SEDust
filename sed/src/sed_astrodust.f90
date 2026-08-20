@@ -13,7 +13,7 @@ module sed_astrodust_mod
    !      ... use lamI_lam(:) ...
    !   end do
    !
-   ! The driver `main_astrodust.f90` calls this for the single
+   ! The driver `calc_sed.f90` calls this for the single
    ! Mathis-ISRF cell at U_mathis = 1.585 to compare with HD23.
    !
    ! Restructured into init/solve and
@@ -36,8 +36,9 @@ module sed_astrodust_mod
                                     sd_dn_pah=>dn_pah, sd_fion=>f_ion
    use enthalpy_astrodust_mod, only: enthalpy_S1, enthalpy_S2, RHO_AD, RHO_PAH
    use enthalpy,              only: enthalpy_DL01
-   use qpah,                  only: qpah_dl07, qpah_ld01, &
-                                    nc_coeff, nc_integer, qpah_use_d03_graphite
+   use qpah,                  only: qpah_dl07, qpah_ld01, qpah_abs, &
+                                    qpah_xsec_vintage, &
+                                    nc_coeff, nc_integer, qpah_graphite_source
    use pah_ld01_mod,          only: q_pah_ld01, use_ld01_pah_xsec
    use stoch_qm_mod,          only: qm_solve_grain, qm_verbose
    ! DL07 (silicate + carbonaceous) model support
@@ -927,7 +928,7 @@ contains
       ! the numbers, and no caller can pair the axis of one source with the
       ! optics of another.  Passed BLANK, NOTHING stored is read from anywhere
       ! and every optic is solved from the dielectric functions: that is what
-      ! make_qtable.x asks for, being the program that writes these tables, and
+      ! calc_qtable.x asks for, being the program that writes these tables, and
       ! what a test comparing two builds of one model asks for, so that both
       ! take the same route whatever grid they are on.
       character(len=*), optional, intent(in) :: stored_q_dir
@@ -1147,12 +1148,12 @@ contains
             if (got_neu) then
                Q_neu = tQa(jw, ja)
             else
-               call qpah_dl07(0, a_um, lam(jw), Q_neu)
+               call qpah_abs(0, a_um, lam(jw), Q_neu)
             end if
             if (got_ion) then
                Q_ion = uQa(jw, ja)
             else
-               call qpah_dl07(1, a_um, lam(jw), Q_ion)
+               call qpah_abs(1, a_um, lam(jw), Q_ion)
             end if
             Cabs_cneu(jw, ja) = Q_neu * geo
             Cabs_cion(jw, ja) = Q_ion * geo
@@ -2063,7 +2064,7 @@ contains
       !        numbers to their seven written digits.
       !
       ! Both blank means "no stored optics": the caller solves from the
-      ! dielectric functions.  That is what make_qtable.x asks for, being the
+      ! dielectric functions.  That is what calc_qtable.x asks for, being the
       ! program that writes these tables.
       !
       ! Every node must agree to a relative 1e-6.  That is set by the TEXT
@@ -2555,7 +2556,7 @@ contains
       if (present(status)) status = 0
 
       ! Astrodust/HD23 optics: Nc=417 (rho=2.0), D16 turbostratic graphite.
-      nc_coeff = 417.0d0;  nc_integer = .false.;  qpah_use_d03_graphite = .false.
+      nc_coeff = 417.0d0;  nc_integer = .false.;  qpah_graphite_source = 'd16_sphere'
       call sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status=status, &
                     lam_min=lam_min, astrodust_index_path=astrodust_index_path, &
                     euv_tmatrix=euv_tmatrix, include_euv=include_euv)  ! sets globals
@@ -2605,7 +2606,7 @@ contains
    ! neutral + cation summed). Reuses sed_init_dl07 to set the globals.
    subroutine build_dl07(m, qtable_path, sizedist_path, sd_index, u_isrf, &
                          NT_in, T_lo, T_hi, status, lam_min, kext_path, lam_axis, &
-                         include_euv, stored_q_dir)
+                         include_euv, stored_q_dir, pah_xsec)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: qtable_path, sizedist_path
       integer,            intent(in)  :: sd_index, NT_in
@@ -2618,6 +2619,7 @@ contains
       !   status = 4  lam_min below the D03 dielectric functions' shortest
       !               wavelength (EUV band only); see sed_init_dl07
       !   status = 5  the requested extinction table failed to load
+      !   status = 8  pah_xsec is not one of 'dl07' | 'ld01'
       integer, optional,  intent(out) :: status
       ! Optional shortest wavelength [um] the model must cover; see
       ! build_astrodust. This model's optics are dielectric-function Mie
@@ -2636,18 +2638,48 @@ contains
       ! Where this model's stored cross sections come from, blank for none at
       ! all; see sed_init_dl07.
       character(len=*), optional, intent(in) :: stored_q_dir
+      ! Which published PAH absorption cross section the carbonaceous blend
+      ! takes: 'dl07' (default, the model's own -- Draine & Li 2007) or 'ld01'
+      ! (Li & Draine 2001, the earlier vintage Draine's 2003 kext_albedo table
+      ! was computed with).  The two differ only in the carbonaceous ABSORPTION;
+      ! the silicate optics, the graphite scattering and the charge mixing are
+      ! the same, so a pair of builds isolates that one cross section.
+      character(len=*), optional, intent(in) :: pah_xsec
       logical :: kok
       character(len=512) :: kpath
+      character(len=8)   :: vintage
 
       if (present(status)) status = 0
 
+      vintage = 'dl07';  if (present(pah_xsec)) vintage = pah_xsec
+      if (trim(vintage) /= 'dl07' .and. trim(vintage) /= 'ld01') then
+         if (present(status)) then
+            status = 8;  return
+         else
+            write(*,'(a,a,a)') ' build_dl07: pah_xsec = ''', trim(vintage), &
+               ''' is not one of dl07 | ld01'
+            stop 1
+         end if
+      end if
+
       ! DL07 carbonaceous optics (matching Draine): Nc=470 (rho~2.2, NINT),
       ! D03 graphite, and the Draine-2003a 0.93 abundance reduction.
-      nc_coeff = 470.0d0;  nc_integer = .true.;  qpah_use_d03_graphite = .true.
+      nc_coeff = 470.0d0;  nc_integer = .true.;  qpah_graphite_source = 'd03_sphere'
       gd_apply_d03_reduction = .true.
-      call sed_init_dl07(qtable_path, sizedist_path, sd_index, u_isrf, NT_in, T_lo, T_hi, &
-                         status=status, lam_min=lam_min, lam_axis=lam_axis, &
-                         include_euv=include_euv, stored_q_dir=stored_q_dir)
+      qpah_xsec_vintage = trim(vintage)
+      ! The stored cross sections are the DL07 vintage -- that is what
+      ! calc_qtable.x computed -- so reading them back would leave an 'ld01'
+      ! request with no effect at all.  That vintage is solved from the
+      ! dielectric functions instead.
+      if (trim(vintage) == 'dl07') then
+         call sed_init_dl07(qtable_path, sizedist_path, sd_index, u_isrf, NT_in, T_lo, T_hi, &
+                            status=status, lam_min=lam_min, lam_axis=lam_axis, &
+                            include_euv=include_euv, stored_q_dir=stored_q_dir)
+      else
+         call sed_init_dl07(qtable_path, sizedist_path, sd_index, u_isrf, NT_in, T_lo, T_hi, &
+                            status=status, lam_min=lam_min, lam_axis=lam_axis, &
+                            include_euv=include_euv, stored_q_dir='')
+      end if
       if (present(status)) then
          if (status /= 0) return
       end if
@@ -2700,8 +2732,14 @@ contains
                    log_H_pah_first, log_kappB_cion, kappCMB_cion, &
                    Csca_in=Csca_car, gsca_in=gsca_car, rho_bulk=RHO_GRAPHITE)
 
-      call load_model_extinction_table(m, sed_data_path(KEXT_DL07), kext_path, kok, kpath, &
-                                       default_h5=sed_data_path(KEXT_H5_DL07))
+      ! Each vintage's own curve: what dust_extinction serves is the size
+      ! integral of the very cross sections the model was built on, not of the
+      ! other vintage's.  The DL07 one is unmarked, so the shipped names and
+      ! the /kext group do not move.
+      call load_model_extinction_table(m, sed_data_path(dl07_kext_default(vintage)), &
+                                       kext_path, kok, kpath, &
+                                       default_h5=sed_data_path(KEXT_H5_DL07), &
+                                       h5_group='kext'//trim(dl07_kext_tag(vintage)))
       if (.not. kok) then
          if (present(status)) then
             status = 5;  return
@@ -2879,7 +2917,7 @@ contains
          ! below 0.06% everywhere else, so this is a small approximation -- but
          ! it is one, and it is not what the benchmark's tables do.
          !
-         ! This tree's OWN table first: make_qtable.x recomputed each component
+         ! This tree's OWN table first: calc_qtable.x recomputed each component
          ! on the ZDA grids by the routines above.  The wide table is the one to
          ! load -- include_euv below cuts it, exactly as it cuts the shipped
          ! grid.  Falling back to the distributed file keeps a tree without
@@ -4113,6 +4151,32 @@ contains
    ! An empty path names no file, so default_path = '' means the model has no
    ! default at all, and kext_path = '' asks for no table rather than for a file
    ! that cannot be opened.
+   pure function dl07_kext_tag(vintage) result(t)
+      ! The suffix the DL07-model products carry when the carbonaceous
+      ! absorption is NOT this model's own DL07 vintage.  The model's own is
+      ! unmarked, so the shipped file names and the /kext group stay put.
+      character(len=*), intent(in) :: vintage
+      character(len=16) :: t
+      t = ''
+      if (trim(vintage) /= 'dl07') t = '_'//trim(vintage)
+   end function dl07_kext_tag
+
+
+   pure function dl07_kext_default(vintage) result(p)
+      ! The size-integrated extinction curve of that vintage, as calc_kext.x
+      ! writes it.  The widest grid, for the reason load_model_extinction_table
+      ! gives: the curve is interpolated onto whatever grid the model is built
+      ! on, so the widest one covers every such grid.
+      character(len=*), intent(in) :: vintage
+      character(len=96) :: p
+      if (trim(vintage) == 'dl07') then
+         p = KEXT_DL07
+      else
+         p = 'dl07/kext_'//trim(vintage)//'_MW_euv.dat'
+      end if
+   end function dl07_kext_default
+
+
    pure function zubko_kext_tag(qset) result(t)
       ! The suffix a zubko extinction curve carries when it is the size
       ! integral of the non-default optics.  The default set is unmarked, so

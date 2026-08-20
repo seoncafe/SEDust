@@ -609,7 +609,7 @@ the cost of the dynamic schedule with variable work per grain.
 \section{Comparison with the Guhathakurta--Draine matrix solver}\label{sec:compare}
 
 We compare \verb|main_mc_sed.x| against the production astrodust
-pipeline \verb|main_astrodust.x|.  Both implementations read the
+pipeline \verb|calc_sed.x astrodust|.  Both implementations read the
 same Q table (\verb|q_astrodust_P0.20_Fe0.00_1.400.dat|), the same
 size distribution (HD23 \verb|size_distribution.dat|), the same
 Mathis ISRF at $\log U=0.20$, and the same Stage 2 astrodust
@@ -734,7 +734,7 @@ longer the operating regime.
   intended workflow: the MC engine handles the stochastically heated
   small grains (where it is genuinely needed) and the cheap analytic
   $\Teq$ solver handles the equilibrium grains (where it is exact).
-  Total wall time on 12 cores is comparable to \texttt{main\_astrodust.x}
+  Total wall time on 12 cores is comparable to \texttt{calc\_sed.x astrodust}
   (single-threaded) and the result reproduces the production SED.
 \item[All-MC (\texttt{T}).]  Now a valid cross-check rather than a
   diagnostic-only mode: with the corrections of
@@ -752,7 +752,7 @@ longer the operating regime.
 On the 12-core M-series Mac with $N_{\rm evt}=5\times 10^4$ per grain,
 the default mode takes $\sim 17$~s wall (78 MC grains $+$ 89 analytic).
 The all-MC mode takes $\sim 19$~s (all 167 grains MC).  By
-comparison, \verb|main_astrodust.x| (single-threaded) takes $\sim 10$~s.
+comparison, \verb|calc_sed.x astrodust| (single-threaded) takes $\sim 10$~s.
 At $N_{\rm evt}=10^4$ (still 1--2\% statistical precision at most
 $\lambda$) the MC wall times drop to $\sim 4$--$5$~s.  These figures
 predate the fractional step cap (Eq.~\ref{eq:stepcap}); bounding the

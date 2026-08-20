@@ -1,10 +1,14 @@
 module q_graphite_d16_mod
    ! D16 turbostratic graphite (Draine 2016, MG EMT) on oblate spheroids
-   ! with b/a = 1.4. Random-orientation-averaged Q_abs(a, lambda), read
-   ! from Draine's precomputed qlib_gra_D16MGemt_1.400 (T-matrix output).
+   ! with b/a = 1.4. Random-orientation-averaged Q_abs(a, lambda), built
+   ! from the orientation-resolved blocks of Draine's precomputed
+   ! qlib_gra_D16MGemt_1.400 (T-matrix output).
    !
-   ! Drop-in replacement for q_graphite_mod::q_graphite_abs in qpah.f90's
-   ! HD23 eq. 15-16 / DL07 eq. 5-7 PAH-to-graphite transition.
+   ! One of the three graphite optics qpah.f90 selects between for the
+   ! HD23 eq. 15-16 / DL07 eq. 5-7 PAH-to-graphite transition
+   ! (qpah_graphite_source = 'd16_spheroid'); a sensitivity test against
+   ! the production sphere table of q_graphite_d16_sphere_mod, at the same
+   ! material, which isolates the effect of grain shape.
    !
    ! File layout (qlib_gra_D16MGemt_1.400, decompressed):
    !   line 1            : title 'D16 graphite: turbostratic, MG_1 EMT'
@@ -20,10 +24,17 @@ module q_graphite_d16_mod
    !                       the final line which holds the remainder.
    !   then              : Qext block, Qsca block (we ignore them).
    !
-   ! jori convention (Mishchenko):
-   !   1 = random-orientation average  <- what ksi-blend wants
-   !   2 = k perp a, E parallel to a   (E along symmetry axis)
-   !   3 = k perp a, E perp a
+   ! jori convention (Mishchenko), the same one the HD23 release Q table
+   ! states in its own header:
+   !   1 = k parallel to a             (E is then perpendicular to a, so in
+   !                                    the Rayleigh limit jori=1 = jori=3)
+   !   2 = k perp a, E parallel to a   (E along symmetry axis) = Q_par
+   !   3 = k perp a, E perp a                                  = Q_perp
+   ! None of the three IS the random-orientation average; that average, which
+   ! is what the xi blend of an unaligned population needs, is
+   !   <Q>_random = (1/3) Q_par + (2/3) Q_perp = (1/3) jori2 + (2/3) jori3
+   ! and is built here on load.  Taking jori=1 for it instead overstates
+   ! Q_abs by ~22% in the Rayleigh limit, since jori=1 carries no Q_par at all.
 
    use constants, only: wp
    use sed_paths, only: sed_data_path
@@ -38,7 +49,7 @@ module q_graphite_d16_mod
    logical  :: loaded = .false.
    real(wp) :: a_grid(NA_D),      log_a_grid(NA_D)
    real(wp) :: w_grid(NW_D),      log_w_grid(NW_D)
-   real(wp) :: Q_rand(NA_D, NW_D)            ! Q_abs(jori=1)
+   real(wp) :: Q_rand(NA_D, NW_D)            ! (1/3) Q_abs(jori=2) + (2/3) Q_abs(jori=3)
 
 contains
 
@@ -83,7 +94,7 @@ contains
       ! Fortran column-major layout has jori innermost -> matches file order.
       allocate(Q_all(3, NA_D, NW_D))
       read(u, *) Q_all
-      Q_rand = Q_all(1, :, :)
+      Q_rand = (Q_all(2, :, :) + 2.0_wp*Q_all(3, :, :)) / 3.0_wp
       deallocate(Q_all)
       close(u)
 
@@ -94,7 +105,8 @@ contains
 
 
    subroutine q_graphite_d16_abs(agrain, lambda, Qabs)
-      ! Bilinear interpolation in (log a, log lambda) of jori=1 Q_abs.
+      ! Bilinear interpolation in (log a, log lambda) of the
+      ! random-orientation-averaged Q_abs.
       ! Out-of-grid inputs are clamped to the nearest grid edge.
       real(wp), intent(in)  :: agrain      ! [um]
       real(wp), intent(in)  :: lambda      ! [um]

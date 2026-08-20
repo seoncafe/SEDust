@@ -127,10 +127,10 @@ call use_tmatrix_euv_band_optics()
 for an RT tree that carries its own copy of \code{sed/src/}; it writes
 \code{sed/lib/} and takes \code{WITH\_TMATRIX=1} the same way.
 
-Of the CLI drivers, \code{main\_astrodust.x} and \code{calc\_kext.x} are built
+Of the CLI drivers, \code{calc\_sed.x astrodust} and \code{calc\_kext.x} are built
 against \code{libtmatrix.a} and make that call themselves --- they are the two
-that would compute an astrodust EUV band if one ever formed. \code{main\_dl07.x} and
-\code{main\_zubko.x} need no T-matrix: those models' optics reach past the Lyman
+that would compute an astrodust EUV band if one ever formed. \code{calc\_sed.x dl07} and
+\code{calc\_sed.x zubko} need no T-matrix: those models' optics reach past the Lyman
 limit on their own.
 
 The compiler is \code{gfortran}. The default flags are
@@ -274,9 +274,9 @@ data/astrodust/q_astrodust_P0.20_Fe0.00_1.400.dat
 \toprule
 builder & default \code{kext\_path} \\
 \midrule
-\code{build\_astrodust}   & \code{../data/kext\_astrodust\_MW\_euv.dat} \\
-\code{build\_dl07}        & \code{../data/kext\_dl07\_MW\_euv.dat} \\
-\code{build\_zubko}       & \code{../data/kext\_zubko\_BARE\_GR\_S\_euv.dat} \\
+\code{build\_astrodust}   & \code{../data/astrodust/kext\_astrodust\_MW\_euv.dat} \\
+\code{build\_dl07}        & \code{../data/dl07/kext\_dl07\_MW\_euv.dat} \\
+\code{build\_zubko}       & \code{../data/zubko/kext\_zubko\_BARE\_GR\_S\_euv.dat} \\
 \code{build\_from\_files} & none \\
 \bottomrule
 \end{tabular}
@@ -289,8 +289,10 @@ ionizing radiation and one that does not; it is the \emph{narrower} non-EUV
 table that has to be named explicitly. The astrodust pair differs by the $633$
 wavelengths the \code{\_euv} $Q$ table carries below the Lyman limit; the DL07
 pair by those and by the further $61$ points its D03 optical constants reach
-past the table; the Zubko pair by the $336$ its own ZDA tables carry below that
-limit --- there the wide product is the tables' own range and the narrow one is
+past the table; the Zubko pair by $335$ --- its own ZDA tables carry $336$ nodes
+below that limit and the narrow product keeps the last of them,
+\SI{0.08998}{\micro\meter}, so that it still covers the band a host transports
+--- and there the wide product is the tables' own range and the narrow one is
 that range cut, the reverse of the other two: the Zubko model needs no EUV
 \emph{extension} and could not have one, its own optics table already reaching
 \SI{1.24}{\kilo\electronvolt}.}
@@ -1003,7 +1005,7 @@ its own regime bounds put a radius in the Rayleigh or geometric-optics limit,
 and the default reproduces that exactly, whereas the sphere route steps from
 $0.90$ to $0$ across the seam for $a\gtrsim1$\um.
 
-\paragraph{The shipped extinction table.} \code{data/kext\_astrodust\_MW\_euv.dat}
+\paragraph{The shipped extinction table.} \code{data/astrodust/kext\_astrodust\_MW\_euv.dat}
 now takes every wavelength from the $Q$ table, the band included, so the
 extinction it serves and the emission the model computes are one calculation of
 one particle throughout --- the property the paragraph below was written to
@@ -1160,23 +1162,23 @@ the correction in either direction. Overestimating is therefore the dangerous
 direction, which is why the threshold is set high enough to reject junk rather
 than as low as floating point allows.
 
-\paragraph{\code{main\_zubko.x} exists to keep this path covered.} The defect
-escaped \code{main\_astrodust.x} and \code{main\_dl07.x} because for those two
+\paragraph{\code{calc\_sed.x zubko} exists to keep this path covered.} The defect
+escaped \code{calc\_sed.x astrodust} and \code{calc\_sed.x dl07} because for those two
 models the grid floor and the field's short end are the same number: no driver
 in the tree ran the emission solvers on a model whose optics grid reaches past
-the illuminated band. \code{main\_zubko.x} (\S\ref{sec:standalone:zubko}) closes
+the illuminated band. \code{calc\_sed.x zubko} (\S\ref{sec:standalone:zubko}) closes
 that gap and is built by the default \code{make}. It prints the two candidates
 side by side, so the difference shows in the first lines of output:
 \begin{lstlisting}[style=sh]
-$ ./main_zubko.x                 # grid cut at the Lyman limit, Mathis field
- optics grid short end :  9.1201E-02 um  ->   1.35946E+01 eV
+$ ./calc_sed.x zubko                 # grid cut at the Lyman limit, Mathis field
+ optics grid short end :  8.9984E-02 um  ->   1.37784E+01 eV
  hardest photon in the field:    1.35946E+01 eV
  single-photon bound in use :    1.36000E+01 eV
-$ ./main_zubko.x euv             # whole ZDA grid, still the Mathis field
+$ ./calc_sed.x zubko euv             # whole ZDA grid, still the Mathis field
  optics grid short end :  1.0000E-03 um  ->   1.23984E+03 eV
  hardest photon in the field:    1.35946E+01 eV
  single-photon bound in use :    1.36000E+01 eV
-$ ./main_zubko.x euv hardfield   # ... and a hard component added to the FIELD
+$ ./calc_sed.x zubko euv hardfield   # ... and a hard component added to the FIELD
  optics grid short end :  1.0000E-03 um  ->   1.23984E+03 eV
  hardest photon in the field:    3.70141E+02 eV
  single-photon bound in use :    3.70141E+02 eV
@@ -1257,7 +1259,7 @@ is, from the same dielectric function and for the same particle
 consistency argument, not a validation.
 
 The DL07 model \emph{can} be checked, because Draine published the same model
-over the whole range. Comparing \code{data/kext\_dl07\_MW\_euv.dat} with
+over the whole range. Comparing \code{data/dl07/kext\_dl07\_MW\_euv.dat} with
 \code{kext\_albedo\_WD\_MW\_3.1\_60\_D03.all\_2003} on the reference's own
 wavelengths (and counting only points where the reference grid is no finer than
 ours --- elsewhere the comparison measures our grid, not our optics) gives, per
@@ -1275,9 +1277,18 @@ the PAH cross sections.
 %====================================================================
 \section{Standalone programs}\label{sec:standalone}
 
-\code{make} in \code{SEDust/sed/} builds five executables. All of them are run
+Every program here is named for the quantity it computes --- \code{calc\_sed.x}
+for the emission SED, \code{calc\_kext.x} for the size-integrated transport
+optics, \code{calc\_qtable.x} for the stored cross-section tables,
+\code{calc\_enthalpy.x} for the enthalpy tables --- so that none of them can be
+mistaken for the build tool. \code{make} in \code{SEDust/sed/} builds the
+default set; the rest have make targets of their own. All of them are run
 \emph{from} \code{SEDust/sed/}, because every data path is relative to
 \code{../}.
+
+They also share ONE command-line system (\S\ref{sec:standalone:options}): one
+vocabulary, one parser, one refusal and one filename-tag rule, with each program
+declaring which axes it has a referent for.
 
 \subsection{\code{calc\_kext.x} --- size-integrated transport optics}
 
@@ -1288,8 +1299,8 @@ the files written here \emph{are} the optics that host gets in memory.
 
 \begin{lstlisting}[style=sh]
 ./calc_kext.x astrodust [euv | <lam_min in um>]
-./calc_kext.x dl07      [euv | <lam_min in um>]
-./calc_kext.x zubko     [formula | table]
+./calc_kext.x dl07 [ld01] [euv | <lam_min in um>]
+./calc_kext.x zubko     [formula | table] [zda | mie_d03] [euv]
 ./calc_kext.x from_files <descriptor> [data_dir]
 \end{lstlisting}
 
@@ -1297,7 +1308,15 @@ the files written here \emph{are} the optics that host gets in memory.
 grid down to whatever the model's own dielectric function covers; an explicit
 number requests a specific floor in \um. \code{zubko} defaults to
 \code{formula}. \code{from\_files} takes the descriptor path, and the data
-directory defaults to the descriptor's own directory. For astrodust the
+directory defaults to the descriptor's own directory. \code{ld01} asks for the
+DL07 model with the Li \& Draine (2001) carbonaceous absorption in place of the
+Draine \& Li (2007) one --- everything else the same, so a ratio of the two
+curves isolates that one cross section --- and lands beside it as
+\code{../data/dl07/kext\_ld01\_MW[\_euv].dat}, with the matching
+\code{/kext\_ld01} group inside the model's own product. The 2003 reference
+table \code{kext\_albedo\_WD\_MW\_3.1\_60\_D03.all\_2003} was computed
+with those cross sections, which is why the point-by-point comparison this
+program prints at the end is the sharper test for that run. For astrodust the
 \code{euv} floor now falls inside the $Q$ table, so
 \code{./calc\_kext.x astrodust} and \code{./calc\_kext.x astrodust euv} cover
 the same grid and write the same curve; only the field widths and the header
@@ -1333,57 +1352,174 @@ curve back in, \code{dust\_extinction} serves it on the model wavelength grid
 and \code{dust\_emission} supplies the re-emitted spectrum, which is what keeps
 the absorbed power and the emission referring to one and the same grain.
 
-\subsection{\code{main\_astrodust.x} --- the astrodust production SED}
+\subsection{The command-line system}\label{sec:standalone:options}
 
-Solves the astrodust+PAH SED for a single Mathis-ISRF cell at $U = 1.585$
+Every program in \code{sed/} takes ONE vocabulary of run settings
+(\code{sed/src/sed\_run\_options.f90}), so that a word names the same physics
+whichever program reads it. The settings fall into independent \emph{axes}
+(Table~\ref{tab:runoptions}), and each program DECLARES which axes it has a
+referent for before it reads a single argument. Three things follow from that
+declaration:
+
+\begin{itemize}
+\item a word of a declared axis is read;
+\item a word of an axis the program did \emph{not} declare is refused, naming
+      the axis --- \code{./calc\_kext.x dl07 qm} answers \code{'qm' selects the
+      stochastic-solver axis, which calc\_kext has no referent for} --- rather
+      than being silently dropped, which is the failure this system exists to
+      prevent. When the axis exists in the program but not in the model it was
+      asked about, the model is named instead: \code{./calc\_sed.x zubko c2}
+      answers \code{\ldots which calc\_sed's zubko has no referent for};
+\item anything else is the program's own positional argument (a DL07 submodel
+      name, a wavelength floor, a descriptor path).
+\end{itemize}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}L{0.20\textwidth}L{0.34\textwidth}L{0.38\textwidth}@{}}
+\toprule
+axis & words & programs that declare it \\
+\midrule
+subject (first argument) &
+the model, or the product, the program works on &
+all but \code{calc\_polext.x} \\
+solver &
+\code{heuristic} (default), \code{draine}, \code{equil}, \code{qm},
+\code{qm\_dbcon}, \code{qm\_stati} &
+\code{calc\_sed.x} \\
+grid &
+\code{euv} &
+\code{calc\_sed.x}, \code{calc\_kext.x} \\
+field &
+\code{mathis\_orig}, \code{logU=X}, \code{hardfield} &
+\code{calc\_sed.x} \\
+emission &
+\code{induced}, \code{photcut} &
+\code{calc\_sed.x} \\
+matrix size &
+\code{nstate=N}, \code{nisrf=N} &
+\code{calc\_sed.x} \\
+graphite of the $\xi$ blend &
+\code{gra\_d03\_sphere}, \code{gra\_d16\_sphere}, \code{gra\_d16\_spheroid} &
+\code{calc\_sed.x} (astrodust, dl07) \\
+carbonaceous vintage &
+\code{dl07} (default), \code{ld01} &
+\code{calc\_sed.x} and \code{calc\_kext.x} (dl07) \\
+Stage-1 enthalpy &
+\code{c2} &
+\code{calc\_sed.x} (astrodust), \code{calc\_enthalpy.x} \\
+Zubko size distribution &
+\code{formula} (default), \code{table} &
+\code{calc\_kext.x} (zubko) \\
+Zubko optics set &
+\code{zda} (default), \code{mie\_d03} &
+\code{calc\_kext.x} (zubko) \\
+\bottomrule
+\end{tabular}
+\caption{The run-setting axes, and which program has a referent for each. Any
+combination across axes is a valid run.}
+\label{tab:runoptions}
+\end{table}
+
+Two kinds of combination are refused rather than resolved silently. Naming two
+values of one axis --- two solvers, or two graphite sources --- would leave the
+run doing one thing and its filename claiming another. So would naming a setting
+the chosen solver does not read: \code{nstate=} and \code{nisrf=} size the
+energy-space transition matrix, which only \code{qm}, \code{qm\_dbcon} and
+\code{qm\_stati} build, and \code{photcut} acts inside the bin sum of the
+heuristic narrowing solver, the only solver that reads it.
+
+Every setting tags the output filename, so a variant run cannot overwrite the
+production one. Parsing and tagging are separate steps: reading an argument only
+records what was asked for, and the tag is assembled afterwards in one fixed
+order --- grid, field extent, solver, graphite, optics set, enthalpy, field
+normalization, emission term, numerical sizes --- so \code{induced qm} and
+\code{qm induced} write the same file. A default run carries no tag at all,
+which is what leaves the production filenames as they were. Each program prints
+the file it will write before it starts, so a mistyped setting is caught then
+rather than after the work.
+
+Where a setting lands is a separate module (\code{sed\_apply\_options.f90}),
+because the answer is not the same for every program: one that computes an
+enthalpy table or a cross-section table links no solver and no radiation field,
+and would otherwise have to drag both in to get the shared command line.
+
+\subsection{\code{calc\_sed.x} --- emission SEDs}\label{sec:standalone:sed}
+
+One program for the three shipped models: \code{./calc\_sed.x <model>
+[settings \ldots]}, the model name required and everything after it from the
+system of \S\ref{sec:standalone:options}. It writes
+\code{output/sed\_<model>[\_<submodel>][\_<tag>][\_<stage>].dat}.
+
+\paragraph{\code{astrodust} --- the production SED.} Solves the astrodust+PAH SED for a single Mathis-ISRF cell at $U = 1.585$
 ($\log U = 0.20$, the HD23 best fit), on a 200-point log $T$ grid from 2.7 to
 \SI{5000}{\kelvin}. Reads the T-matrix $Q$ table
 \code{../tmatrix/output/q\_astrodust\_P0.20\_Fe0.00\_1.400.dat} and
 \code{../data/release/size\_distribution.dat}; writes
 \code{output/astrodust\_irem\_ours\_<tag>S1.dat}, \code{\ldots S2.dat} and
 \code{\ldots PAH.dat}, each with $\lambda$ [\um] and \lamIlam/\Nh.
-Optional arguments, in any order, each of which tags the output filename so a
-non-default run cannot clobber the production one:
-\code{qm}, \code{qm\_dbcon}, \code{draine} (solver);
-\code{logU=X}; \code{nstate=N}, \code{nisrf=N} (QM solver sizes);
-\code{induced} (turn the stimulated-emission factor on); \code{photcut};
-\code{c2} (Stage-1 density-corrected prefactor); \code{mathis\_orig}.
+Optional arguments, in any order: the shared settings of
+\S\ref{sec:standalone:options}, plus the two axes only this model has a referent
+for --- the graphite of the PAH $\xi$ blend and the Stage-1 enthalpy prefactor
+\code{c2}.
 
-The tag is assembled after all the arguments have been read, in one fixed
-order --- solver, enthalpy stage, radiation field, emission term, numerical
-settings --- so the order they are typed in does not matter:
-\code{induced qm} and \code{qm induced} both write
-\code{\ldots\_qm\_induced\_S1.dat}. The three solver options select the same
-thing, so naming two of them is refused rather than resolved by taking the
-last. The driver prints the filename it will write before it starts solving.
+\code{gra\_d03\_sphere}, \code{gra\_d16\_sphere} and \code{gra\_d16\_spheroid}
+name the graphite optics the carbonaceous PAH-to-graphite $\xi$ blend takes.
+\code{'d16\_sphere'} is the production choice and the HD23 one --- Draine 2016
+turbostratic graphite, Maxwell-Garnett effective medium, on a sphere --- and
+naming it outright changes nothing. \code{gra\_d03\_sphere} takes the Draine
+2003 dielectric functions with Mie on a sphere, weighting $E \parallel c$ by
+$\tfrac{1}{3}$ and $E \perp c$ by $\tfrac{2}{3}$, which is the original DL07
+choice; \code{gra\_d16\_spheroid} takes the same D16 material on Draine's
+$b/a = 1.4$ oblate spheroid table, random-orientation averaged. They tag their
+output \code{d03gra\_}, \code{d16gra\_} and \code{sphdgra\_}
+(\code{output/astrodust\_irem\_ours\_d03gra\_S1.dat} and so on). All three
+reach the PAH population only, so the S1 and S2 files they write are
+byte-identical to the production ones; what they move is the PAH sub-mm.
 
-\subsection{\code{main\_dl07.x} --- the DL07 reference SED}
-
-Solves the Draine \& Li (2007) silicate + carbonaceous SED at $U = 1$ with the
-WD01 size distribution. \code{./main\_dl07.x [model] [qm|draine]}, where
-\code{model} is one of \code{mw31\_00 \ldots mw31\_60} (default
-\code{mw31\_60}), \code{lmc2\_00}, \code{lmc2\_05}, \code{lmc2\_10},
-\code{smc}; an unknown name is rejected with the valid list. Writes
-\code{output/dl07\_sed\_ours\_<model>[\_qm|\_draine].dat} with columns
+\paragraph{\code{dl07} --- the DL07 reference SED.} Solves the Draine \& Li (2007) silicate + carbonaceous SED with the WD01 size
+distribution, at $U = 1$ unless \code{logU=X} asks for another intensity.
+\code{./calc\_sed.x dl07 [model] [settings \ldots]}, where \code{model} is one of
+\code{mw31\_00 \ldots mw31\_60} (default \code{mw31\_60}), \code{lmc2\_00},
+\code{lmc2\_05}, \code{lmc2\_10}, \code{smc}; an unknown name is rejected with
+the valid list and the settings this driver takes. Those are the shared settings
+of \S\ref{sec:standalone:options} plus the graphite of the $\xi$ blend, which
+this model computes as well --- its own choice being \code{'d03\_sphere'}.
+Writes \code{output/dl07\_sed\_ours\_<model>[\_<tag>].dat} with columns
 $\lambda$, total, silicate and carbonaceous \lamIlam/\Nh.
 
-\subsection{\code{main\_zubko.x} --- the Zubko/ZDA SED, and the wide-grid
-regression}\label{sec:standalone:zubko}
+Naming a graphite source has one further effect here. The stored cross sections
+under \code{../data/dl07/} were computed once, with this model's own
+\code{'d03\_sphere'} graphite, so reading them back would leave the request with
+no effect at all; a named graphite therefore solves every optic from the
+dielectric functions instead. That is what a comparison of two graphite choices
+needs anyway --- both variants then take the same route --- it costs about a
+second on the shipped grid, and \code{gra\_d03\_sphere} reproduces the
+stored-table default to every printed digit.
 
-Solves the Zubko, Dwek \& Arendt (2004) BARE-GR-S SED --- PAH + graphite +
+\paragraph{\code{zubko} --- the Zubko/ZDA SED, and the wide-grid
+regression.}\label{sec:standalone:zubko} Solves the Zubko, Dwek \& Arendt (2004) BARE-GR-S SED --- PAH + graphite +
 silicate, the ZDA size-distribution formula, the ZDA optics and calorimetry
 tables --- for a Mathis ISRF at $U = 1$, and writes
-\code{output/zubko\_sed\_ours[\_<solver>][\_euv].dat} with columns $\lambda$,
+\code{output/zubko\_sed\_ours[\_<tag>].dat} with columns $\lambda$,
 total, PAH, graphite and silicate \lamIlam/\Nh.
 \begin{lstlisting}[style=sh]
-./main_zubko.x [heuristic | draine | qm | equil] [euv]
+./calc_sed.x zubko [settings ...]
 \end{lstlisting}
-\noindent The solver defaults to \code{heuristic}, the model default.
-\code{euv} replaces the Mathis field below the Lyman limit by a diluted
+\noindent The settings are the shared vocabulary of
+\S\ref{sec:standalone:options}; there is no graphite axis here, because this
+model is its distributed optics tables and computes no $\xi$ blend of its own.
+The solver defaults to \code{heuristic}, the model default. \code{euv} builds
+the model on the whole ZDA optics range, $10^{-3}$\um\ (\SI{1.24}{\kilo
+\electronvolt}) upward, instead of cutting it at the Lyman limit where the
+Mathis field stops. \code{hardfield} then replaces the field below the Lyman
+limit --- where the Mathis field is identically zero --- by a diluted
 $10^5\,$K blackbody, so that the field really does carry photons above
 $13.6\,$eV; the dilution is chosen so that band deposits roughly as much power
 as the whole Mathis field --- enough for the hard photons to matter, little
-enough that the small grains still heat stochastically.
+enough that the small grains still heat stochastically. It implies \code{euv},
+a cut grid having no wavelength to put those photons on.
 
 \medskip
 \noindent This is the emission counterpart of \code{./calc\_kext.x zubko}, which exercises
@@ -1394,13 +1530,15 @@ stochastic-heating path that reads the grid where it should read the field shows
 up here and nowhere else. Running it with and without \code{euv} is the
 regression of \S\ref{sec:euv-ceiling}.
 
-\subsection{\code{make\_enthalpy.x} --- enthalpy tables (diagnostic)}
+\subsection{\code{calc\_enthalpy.x} --- enthalpy tables (diagnostic)}
 
 Tabulates $U(T, a_{\rm eff})$ for the two astrodust enthalpy stages and writes
 \code{output/enthalpy\_S1.dat} and \code{output/enthalpy\_S2.dat} (201
 log-spaced temperatures from 2.7 to \SI{5000}{\kelvin} $\times$ the 169 radii of
-\code{../data/astrodust/DH21\_aeff}, $T$ outer and $a$ inner). It takes no
-arguments. \textbf{It is not required to compute an SED}: the solver calls the
+\code{../data/astrodust/DH21\_aeff}, $T$ outer and $a$ inner). Its one axis is
+\code{c2}, the Stage-1 density-corrected prefactor, which tags its table
+(\code{output/enthalpy\_S1\_c2.dat}) and writes no Stage-2 file, Stage 2 not
+reading that setting. \textbf{It is not required to compute an SED}: the solver calls the
 closed-form Debye sums directly in its inner loop. Use it to compare the two
 stages, to plot $U(T)$, or to spot-check against published DL01 values.
 
@@ -1756,16 +1894,16 @@ than at the build.
 
 \begin{lstlisting}
 cd sed
-./make_qtable.x            # /grid and /qtable, all three models
+./calc_qtable.x            # /grid and /qtable, all three models
 ./calc_kext.x <model> euv  # /kext, for each of the three
 \end{lstlisting}
 
-\noindent \textbf{The order matters.} \code{make\_qtable.x} lays down the
+\noindent \textbf{The order matters.} \code{calc\_qtable.x} lays down the
 wavelength axis, so it creates the file with \code{H5F\_ACC\_TRUNC} and
 \code{/kext} goes with it; the \code{euv} run of \code{calc\_kext.x} puts it
 back. That is the only order in which the two can be consistent, since a curve
 integrated on the previous axis would be filed against wavelengths it was not
-computed at. \code{make\_qtable.x} says so on stdout, and \code{calc\_kext.x}
+computed at. \code{calc\_qtable.x} says so on stdout, and \code{calc\_kext.x}
 writes \code{/kext} only if the grid it integrated on equals \code{/grid/lambda}
 to $10^{-12}$.
 
@@ -1777,7 +1915,7 @@ same cut, same numbers.
 \begin{lstlisting}
 from pyutil.sedust_h5 import read_grid, read_kext, read_qtable, describe
 
-k = read_kext('data/zubko/sedust_zubko.h5')                 # non-ionizing, 865 points
+k = read_kext('data/zubko/sedust_zubko.h5')                 # non-ionizing, 866 points
 q = read_qtable('data/dl07/sedust_dl07.h5', 'sil', include_euv=True)
 describe('data/astrodust/sedust_astrodust.h5')   # or: python -m pyutil.sedust_h5 <file>
 \end{lstlisting}
@@ -1858,7 +1996,7 @@ the non-EUV $Q$-table grid \\
 \code{kext\_dl07\_MW\_euv.dat}$^\dagger$ & 1823 & $6.205\times10^{-5}$--$39810$ &
 the D03 dielectric functions; the shorter-reaching of astrosilicate and
 graphite stops at $6.1992\times10^{-5}$, past the table's own end \\
-\code{kext\_zubko\_BARE\_GR\_S.dat}          & 865 & $0.0912$--$10^{4}$ &
+\code{kext\_zubko\_BARE\_GR\_S.dat}          & 866 & $0.08998$--$10^{4}$ &
 the ZDA optics table cut at the Lyman limit \\
 \code{kext\_zubko\_BARE\_GR\_S\_euv.dat}$^\dagger$ & 1201 & $10^{-3}$--$10^{4}$ &
 the ZDA optics table itself; this model needs no extension and could not have
@@ -1870,9 +2008,11 @@ carry the columns of \S\ref{sec:standalone}. $^\dagger$~marks the file its
 builder loads by default (Table~\ref{tab:models:kext}); the others are there for
 a host that asks for them through \code{kext\_path}. A non-EUV product is a row
 subset of its EUV counterpart --- same grid, same numbers, over the overlap.
-\code{kext\_astrodust\_MW.dat} is a tracked regression reference, written through
+\code{kext\_astrodust\_MW.dat} is a regression reference, written through
 its own narrower field widths; it is reproduced byte for byte by
-\code{./calc\_kext.x astrodust}. Every product's wavelength column carries 8
+\code{./calc\_kext.x astrodust}. Like every other text product it is
+regenerable and therefore not under version control (\code{.gitignore}); the
+tracked form of these optics is the model's \code{.h5}. Every product's wavelength column carries 8
 significant digits rather than the 6 it began with, which the EUV grids need:
 they resolve each X-ray absorption edge with a pair of points as close as
 $1.2\times10^{-6}$ in relative wavelength, 6 digits round both to the same
