@@ -96,10 +96,11 @@ module sed_astrodust_mod
    public :: euv_band_optics_i
    public :: sed_register_euv_band_optics, sed_forget_euv_band_optics
    ! Model-agnostic library API (path B: wraps the untouched solver core).
-   ! One entry point for every coded model; the four builders below stay as
+   ! One entry point for every coded model; the builders below stay as
    ! they are, so a caller that names its own files keeps working.
    public :: build_dust
    public :: dust_model_t, build_astrodust, build_dl07, build_zubko, dust_emission
+   public :: build_mrn
    public :: build_from_files, dust_emission_single_teq, dust_extinction
    ! First-principles size integral over the model's own optics -- what the
    ! standalone calculators use, and what writes the tables dust_extinction
@@ -115,7 +116,7 @@ module sed_astrodust_mod
    ! -- its Q tables, its extinction curve -- takes the floor from here, so
    ! that they land on ONE wavelength grid instead of on two that agree only to
    ! a few parts in 10^7 and cannot then share an axis on disk.
-   public :: dl07_euv_lambda_floor, astrodust_euv_lambda_floor, LAM_LO_MARGIN
+   public :: d03_euv_lambda_floor, astrodust_euv_lambda_floor, LAM_LO_MARGIN
    ! .true. iff the active model was built with polarized optics loaded; lets a
    ! host tell an intentionally scalar model from a polarized one.
    public :: dust_has_polarized_optics
@@ -469,6 +470,37 @@ module sed_astrodust_mod
    character(len=*), parameter :: KEXT_H5_ASTRODUST = 'astrodust/sedust_astrodust.h5'
    character(len=*), parameter :: KEXT_H5_DL07      = 'dl07/sedust_dl07.h5'
    character(len=*), parameter :: KEXT_H5_ZUBKO     = 'zubko/sedust_zubko.h5'
+   character(len=*), parameter :: KEXT_H5_MRN       = 'mrn/sedust_mrn.h5'
+
+   ! ---- the MRN (1977) power law -----------------------------------------
+   ! dn_i/da = A_i n_H a^-3.5 over a sharp [a_min, a_max], one power law per
+   ! material (Draine & Lee 1984, eq. 5.1).  Index 1 is graphite, 2 silicate,
+   ! which is the order Draine's own parameter file for this model lists them
+   ! in and the order the channels below carry.
+   !
+   ! Two published normalizations, both offered because they differ by 7% in
+   ! the graphite abundance.  DL84 sec. Va states both in one sentence: "we
+   ! adopted A_sil = 10^-25.11 cm^2.5/H, and A_C = 10^-25.16 cm^2.5/H [after
+   ! adjustment to the Bohlin et al. value for N_H/E(B-V), the MRN values are
+   ! A_sil = 10^-25.10, A_C = 10^-25.13]".  The first pair is the DEFAULT: it
+   ! is what Draine's own MRN model is built on -- his parameter file states
+   ! the grain volumes per H, 2.49e-27 and 2.79e-27 cm^3/H, and those ARE
+   ! these two A_i -- so the reference curve shipped beside this tree
+   ! validates that normalization and not the other.
+   !
+   ! log10 A_i, in cm^2.5 per H, as each paper prints it.  The A_i themselves
+   ! are formed where they are used: a real exponent is not a constant
+   ! expression, and rounding the powers by hand here would put a number in
+   ! the code that neither paper contains.
+   real(wp), parameter :: MRN_ALPHA = -3.5_wp
+   real(wp), parameter :: MRN_AMIN  = 5.0e-3_wp     ! [um]
+   real(wp), parameter :: MRN_AMAX  = 0.25_wp       ! [um]
+   real(wp), parameter :: LOG_A_DL84(2)  = [-25.16_wp, -25.11_wp]
+   real(wp), parameter :: LOG_A_MRN77(2) = [-25.13_wp, -25.10_wp]
+   ! Radii, log-spaced over that range: 70 points is 0.025 dex, twice the
+   ! resolution of the DL07 size grid, which a power law cut sharply at both
+   ! ends needs and the stochastic solve can afford over this size range.
+   integer,  parameter :: MRN_NA    = 70
 
 contains
 
@@ -2429,18 +2461,19 @@ contains
    end function euv_asked
 
 
-   real(wp) function dl07_euv_lambda_floor() result(lam_min)
-      ! Shortest wavelength the DL07 optics can be solved at.  Both materials
-      ! are required at every wavelength, so the floor is the LONGER of the two
-      ! D03 dielectric functions' short-wavelength ends -- the same
-      ! max(silicate, graphite) sed_init_dl07 refuses below -- stood off it so
+   real(wp) function d03_euv_lambda_floor() result(lam_min)
+      ! Shortest wavelength Mie on the D03 dielectric functions can be solved
+      ! at, which is the floor of every model whose optics come from them --
+      ! DL07 and MRN both.  Both materials are required at every wavelength, so
+      ! it is the LONGER of the two functions' short-wavelength ends -- the same
+      ! max(silicate, graphite) those builders refuse below -- stood off it so
       ! that asking for this value is not on the rounding boundary of that
       ! refusal.
       real(wp) :: sil_lo, sil_hi, gra_lo, gra_hi
       call silicate_index_lambda_range(sil_lo, sil_hi)
       call graphite_index_lambda_range(gra_lo, gra_hi)
       lam_min = LAM_LO_MARGIN * max(sil_lo, gra_lo)
-   end function dl07_euv_lambda_floor
+   end function d03_euv_lambda_floor
 
 
    real(wp) function astrodust_euv_lambda_floor() result(lam_min)
@@ -3361,6 +3394,340 @@ contains
       end if
    end subroutine build_dl07
 
+   ! Build the Mathis, Rumpl & Nordsieck (1977) graphite + silicate model into
+   ! m.  Channels: GRA, SIL.
+   !
+   ! WHAT THE MODEL IS.  Two materials, each with the power law
+   !
+   !     dn_i/da = A_i n_H a^-3.5 ,     0.005 um <= a <= 0.25 um
+   !
+   ! cut sharply at both ends (Draine & Lee 1984, eq. 5.1; the cutoffs are
+   ! MRN's own estimates, which DL84 held fixed).  There are NO PAHs in it:
+   ! the smallest grain is a 50 A graphite sphere and the 2175 A feature is
+   ! graphite's, so the emergent SED carries no aromatic features at all.
+   ! That is the model, not a gap in the solve.
+   !
+   ! OPTICS.  Mie on the Draine (2003) dielectric functions -- the very
+   ! q_silicate_full and q_graphite_full the DL07 model's silicate and
+   ! graphite come from, graphite as 1/3 E||c + 2/3 E-perp-c.  MRN worked with
+   ! Wickramasinghe's optical constants; DL84 recomputed the same size
+   ! distribution on theirs, and D03 is the current revision of those.  So the
+   ! grid is free: like DL07, this model takes only a wavelength AXIS from
+   ! qtable_path and solves every optic on it.
+   !
+   ! ENTHALPY AND DENSITY.  The Draine & Li (2001) heat capacities, 'Sil' and
+   ! 'Car0', and RHO_ASTROSIL / RHO_GRAPHITE -- the densities those capacities
+   ! and the D03 optics are both defined with.  They are not the 1984-vintage
+   ! 3.3 and 2.24 behind Draine's own MRN table, so the dust mass per H here
+   ! is larger than his by 3.1% and K_abs = C_abs/M_dust with it.  C_ext/H,
+   ! which is what the size distribution fixes, is unaffected and is what the
+   ! reference comparison tests.
+   subroutine build_mrn(m, qtable_path, NT_in, T_lo, T_hi, status, lam_min, &
+                        kext_path, lam_axis, include_euv, stored_q_dir, normalization)
+      type(dust_model_t), intent(out) :: m
+      character(len=*),   intent(in)  :: qtable_path
+      integer,            intent(in)  :: NT_in
+      real(wp),           intent(in)  :: T_lo, T_hi
+      ! Optional status (0 = success, non-zero = model build failed). When
+      ! present, a failed input read is reported through it instead of stopping
+      ! the process; when absent the build stops on error (CLI behavior).
+      !   status = 1  wavelength axis could not be read
+      !   status = 2  lam_min below the D03 dielectric functions' own shortest
+      !               wavelength (EUV band only)
+      !   status = 3  an explicitly named extinction table (kext_path) could
+      !               not be read
+      !   status = 4  normalization is not one of 'dl84' | 'mrn77'
+      integer, optional,  intent(out) :: status
+      ! Optional shortest wavelength [um] the model must cover; see
+      ! build_astrodust.  This model's optics are dielectric-function Mie
+      ! throughout, so the extension is a grid extension only.
+      real(wp), optional, intent(in)  :: lam_min
+      ! Size-integrated extinction table dust_extinction serves this model's
+      ! scalar optics from; see build_astrodust.  Omitting it takes this
+      ! model's own product, then the text curve of the normalization asked
+      ! for.
+      character(len=*), optional, intent(in) :: kext_path
+      ! The model's wavelength axis, given outright instead of taken from
+      ! qtable_path.  This is how the HDF5 product supplies this model's own
+      ! grid; qtable_path is then not read at all.
+      real(wp), optional, intent(in) :: lam_axis(:)
+      ! Which axis to take when qtable_path names an HDF5 product.
+      logical, optional, intent(in) :: include_euv
+      ! Where this model's stored cross sections come from, blank for none at
+      ! all -- which is what calc_qtable.x asks for, being the program that
+      ! writes them.  Omitted, the model's own directory under the data root,
+      ! with the /qtable of an HDF5 qtable_path tried ahead of it.
+      character(len=*), optional, intent(in) :: stored_q_dir
+      ! Which published normalization of the power law: 'dl84' (default,
+      ! Draine & Lee 1984) or 'mrn77' (MRN's own).  See LOG_A_DL84.
+      character(len=*), optional, intent(in) :: normalization
+
+      integer  :: ja, jw, jt, k
+      real(wp) :: a_um, geo, t, dlga, qext1, qsca1, qabs1, gsca1
+      real(wp) :: sil_lam_lo, sil_lam_hi, gra_lam_lo, gra_lam_hi, d03_lam_lo
+      real(wp) :: A_norm(2), acm
+      real(wp), allocatable :: lam_grid(:), lam_base(:), lna(:)
+      real(wp), allocatable :: Cabs_gra(:,:), Csca_gra(:,:), gsca_gra(:,:)
+      real(wp), allocatable :: Cabs_sil(:,:), Csca_sil(:,:), gsca_sil(:,:)
+      real(wp), allocatable :: kappB_gra(:,:), kappB_sil(:,:)
+      real(wp), allocatable :: kappCMB_gra(:), kappCMB_sil(:)
+      real(wp), allocatable :: H_gra(:,:), H_sil(:,:), dn_gra(:), dn_sil(:)
+      real(wp), allocatable :: tQa(:,:), tQs(:,:), tGg(:,:)
+      real(wp), allocatable :: uQa(:,:), uQs(:,:), uGg(:,:)
+      logical  :: got_gra, got_sil, rok, kext_ok
+      character(len=16)  :: norm
+      character(len=512) :: q_h5, q_dir
+
+      if (present(status)) status = 0
+
+      norm = 'dl84';  if (present(normalization)) norm = normalization
+      select case (trim(norm))
+      case ('dl84');   A_norm = 10.0_wp ** LOG_A_DL84
+      case ('mrn77');  A_norm = 10.0_wp ** LOG_A_MRN77
+      case default
+         if (present(status)) then
+            status = 4;  return
+         else
+            write(*,'(a,a,a)') ' build_mrn: normalization = ''', trim(norm), &
+               ''' is not one of dl84 | mrn77'
+            stop 1
+         end if
+      end select
+
+      ! ---- wavelength axis -------------------------------------------------
+      ! The two places stored optics can come from, resolved once.  When
+      ! qtable_path names an HDF5 product, that product is also where the
+      ! optics come from: one file, one set of numbers.
+      q_h5 = ''
+      if (is_hdf5_path(qtable_path)) q_h5 = qtable_path
+      q_dir = sedust_dir(trim(sed_get_data_root()), 'mrn')
+      if (present(stored_q_dir)) then
+         q_dir = stored_q_dir
+         if (len_trim(stored_q_dir) == 0) q_h5 = ''
+      end if
+
+      if (present(lam_axis) .or. is_hdf5_path(qtable_path)) then
+         if (present(lam_axis)) then
+            allocate(lam_grid(size(lam_axis)))
+            lam_grid = lam_axis
+         else
+            call read_sedust_grid(qtable_path, euv_asked(include_euv), lam_grid, k, rok)
+            if (.not. rok) then
+               if (present(status)) then
+                  status = 1;  return
+               else
+                  write(*,'(a,a)') ' build_mrn: cannot read /grid/lambda from ', &
+                                   trim(qtable_path)
+                  stop 1
+               end if
+            end if
+         end if
+         ! lam_min still applies: the product's axis is where this model's grid
+         ! STARTS, not a ceiling on what the caller may ask for.
+         call move_alloc(lam_grid, lam_base)
+         call euv_extended_lambda_grid(lam_grid, lam_min, base=lam_base)
+         deallocate(lam_base)
+         n_lam_euv = count(lam_grid < LAM_LYMAN_UM)
+      else
+         if (present(status)) then
+            call load_q_table(qtable_path, ok=rok)
+            if (.not. rok) then;  status = 1;  return;  end if
+         else
+            call load_q_table(qtable_path)
+         end if
+         call euv_extended_lambda_grid(lam_grid, lam_min, n_extra=n_lam_euv)
+      end if
+
+      ! Both materials are Mie on the D03 dielectric functions, so an EUV
+      ! extension is a grid extension only -- as long as the grid stays inside
+      ! those functions' own coverage.  Past it `interp` freezes (n, k) at the
+      ! boundary value, which would pass a constant index off as physics.
+      if (n_lam_euv > 0) then
+         call silicate_index_lambda_range(sil_lam_lo, sil_lam_hi)
+         call graphite_index_lambda_range(gra_lam_lo, gra_lam_hi)
+         d03_lam_lo = max(sil_lam_lo, gra_lam_lo)
+         if (lam_grid(1) < d03_lam_lo) then
+            write(*,'(a,es10.3,a)') ' build_mrn: lam_min =', lam_grid(1), &
+               ' um is shorter than the D03 dielectric functions,'
+            write(*,'(a,es10.3,a)') '            which stop at', d03_lam_lo, &
+               ' um; (n, k) below it would be frozen at the boundary value.'
+            if (present(status)) then
+               status = 2;  deallocate(lam_grid);  return
+            else
+               stop 1
+            end if
+         end if
+      end if
+
+      ! ---- shared grids ----------------------------------------------------
+      NLAM = size(lam_grid)
+      NA   = MRN_NA
+      NT   = NT_in
+
+      call free_shared_model_arrays()
+      ! This model has no polarized optics; drop anything a previous astrodust
+      ! build left behind rather than leave stale arrays on the wrong grid.
+      polarized_optics_loaded = .false.
+      if (allocated(Cpol)) deallocate(Cpol, Cpol_ext, Cbir_ext, falign_ad)
+      if (allocated(gsca_ad))  deallocate(gsca_ad)
+      if (allocated(Csca_car)) deallocate(Csca_car, gsca_car)
+      allocate(lam(NLAM), aeff(NA), T_first(NT), log_T_first(NT))
+      allocate(Cabs(NLAM, NA), Csca(NLAM, NA), gsca_ad(NLAM, NA))
+      allocate(kappB_first(NT, NA), kappCMB(NA))
+      lam = lam_grid
+      deallocate(lam_grid)
+
+      ! Log-spaced radii with the two cutoffs ON the grid, so the sharp ends of
+      ! the power law are grid points and not interpolated across.
+      dlga = log(MRN_AMAX / MRN_AMIN) / real(NA - 1, wp)
+      do ja = 1, NA
+         aeff(ja) = MRN_AMIN * exp(dlga * real(ja - 1, wp))
+      end do
+      allocate(lna(NA))
+      lna = log(aeff)
+
+      do jt = 1, NT
+         t = log(T_lo) + (log(T_hi) - log(T_lo)) * real(jt-1, wp) / real(NT-1, wp)
+         T_first(jt) = exp(t)
+      end do
+      log_T_first = log(T_first)
+      call p_sub_setup(lam)
+
+      ! ---- optics ----------------------------------------------------------
+      call stored_q_on_model_grid(trim(q_h5), trim(q_dir), 'q_mrn_gra', 'gra', &
+                                  tQa, tQs, tGg, got_gra)
+      call stored_q_on_model_grid(trim(q_h5), trim(q_dir), 'q_mrn_sil', 'sil', &
+                                  uQa, uQs, uGg, got_sil)
+      if (sed_verbose) then
+         if (got_gra .and. got_sil) then
+            if (len_trim(q_h5) > 0) then
+               write(*,'(a,a)') ' build_mrn: optics read from ', trim(q_h5)
+            else
+               write(*,'(a,a)') ' build_mrn: optics read from the stored'// &
+                                ' tables under ', trim(q_dir)
+            end if
+         else
+            write(*,'(a)') ' build_mrn: optics solved from the dielectric'// &
+                           ' functions (no stored table on this grid)'
+         end if
+      end if
+
+      allocate(Cabs_gra(NLAM, NA), Csca_gra(NLAM, NA), gsca_gra(NLAM, NA))
+      allocate(Cabs_sil(NLAM, NA), Csca_sil(NLAM, NA), gsca_sil(NLAM, NA))
+      allocate(dn_gra(NA), dn_sil(NA))
+      do ja = 1, NA
+         a_um = aeff(ja)
+         geo  = PI * (a_um * UM2CM)**2
+         do jw = 1, NLAM
+            if (got_gra) then
+               qabs1 = tQa(jw, ja);  qsca1 = tQs(jw, ja);  gsca1 = tGg(jw, ja)
+            else
+               call q_graphite_full(a_um, lam(jw), qext1, qsca1, qabs1, gsca1)
+            end if
+            Cabs_gra(jw, ja) = qabs1 * geo
+            Csca_gra(jw, ja) = qsca1 * geo
+            gsca_gra(jw, ja) = gsca1
+            if (got_sil) then
+               qabs1 = uQa(jw, ja);  qsca1 = uQs(jw, ja);  gsca1 = uGg(jw, ja)
+            else
+               call q_silicate_full(a_um, lam(jw), qext1, qsca1, qabs1, gsca1)
+            end if
+            Cabs_sil(jw, ja) = qabs1 * geo
+            Csca_sil(jw, ja) = qsca1 * geo
+            gsca_sil(jw, ja) = gsca1
+         end do
+         ! dn per bin [1/H] = A_i a^-3.5 da, with da the trapezoidal-in-log
+         ! width in CM (the power law is per cm of radius); the two endpoints
+         ! carry half a bin, which is what makes the sum the integral over the
+         ! closed interval [a_min, a_max].
+         acm = a_um * UM2CM
+         dn_gra(ja) = A_norm(1) * acm**MRN_ALPHA * bin_da(ja)
+         dn_sil(ja) = A_norm(2) * acm**MRN_ALPHA * bin_da(ja)
+      end do
+      if (allocated(tQa)) deallocate(tQa, tQs, tGg)
+      if (allocated(uQa)) deallocate(uQa, uQs, uGg)
+
+      ! ---- Planck-averaged opacities and enthalpies, material by material ---
+      ! build_kappB / build_kappCMB read the module Cabs on the module grids,
+      ! so each material passes through them in turn.
+      allocate(kappB_gra(NT, NA), kappB_sil(NT, NA))
+      allocate(kappCMB_gra(NA), kappCMB_sil(NA))
+      Cabs = Cabs_gra
+      call build_kappB();    kappB_gra   = kappB_first
+      call build_kappCMB();  kappCMB_gra = kappCMB
+      Cabs = Cabs_sil
+      call build_kappB();    kappB_sil   = kappB_first
+      call build_kappCMB();  kappCMB_sil = kappCMB
+
+      allocate(H_gra(NT, NA), H_sil(NT, NA))
+      do ja = 1, NA
+         do jt = 1, NT
+            H_gra(jt, ja) = enthalpy_DL01(T_first(jt), aeff(ja), 'Car0')
+            H_sil(jt, ja) = enthalpy_DL01(T_first(jt), aeff(ja), 'Sil ')
+         end do
+      end do
+
+      ! ---- assemble --------------------------------------------------------
+      m%name = 'mrn'
+      active_build_id = active_build_id + 1;  m%build_id = active_build_id
+      m%NA = NA;  m%NLAM = NLAM;  m%NT = NT
+      m%lam = lam;  m%aeff = aeff;  m%T_first = T_first;  m%log_T_first = log_T_first
+      m%use_induced_emission = use_induced_emission
+      m%stoch_method = stoch_method
+      m%n_channel = 2
+      allocate(m%channel_name(2))
+      m%channel_name = [character(len=16):: 'GRA', 'SIL']
+
+      allocate(m%pops(2))
+      ! Both materials scatter, so both carry their scattering optics into
+      ! dust_extinction.
+      call set_pop(m%pops(1), 'gra', 1, dn_gra, Cabs_gra, kappB_gra, H_gra, &
+                   log(max(H_gra, tiny(0.0_wp))), &
+                   log(max(kappB_gra, tiny(0.0_wp))), kappCMB_gra, &
+                   Csca_in=Csca_gra, gsca_in=gsca_gra, rho_bulk=RHO_GRAPHITE)
+      call set_pop(m%pops(2), 'sil', 2, dn_sil, Cabs_sil, kappB_sil, H_sil, &
+                   log(max(H_sil, tiny(0.0_wp))), &
+                   log(max(kappB_sil, tiny(0.0_wp))), kappCMB_sil, &
+                   Csca_in=Csca_sil, gsca_in=gsca_sil, rho_bulk=RHO_ASTROSIL)
+
+      ! Each normalization's own curve: what dust_extinction serves is the size
+      ! integral of the very distribution the model was built on.  The DL84 one
+      ! is unmarked, so the shipped name and the /kext group do not move.
+      call load_model_extinction_table(m, sed_data_path(mrn_kext_default(norm)), &
+                                       kext_path, kext_ok, &
+                                       default_h5=sed_data_path(KEXT_H5_MRN), &
+                                       h5_group='kext'//trim(mrn_kext_tag(norm)))
+      if (.not. kext_ok) then
+         if (present(status)) then
+            status = 3;  return
+         else if (present(kext_path)) then
+            write(*,'(a)') ' build_mrn: cannot read the extinction table '//trim(kext_path)
+            stop 1
+         end if
+      end if
+
+      deallocate(lna, Cabs_gra, Csca_gra, gsca_gra, Cabs_sil, Csca_sil, gsca_sil)
+      deallocate(kappB_gra, kappB_sil, kappCMB_gra, kappCMB_sil)
+      deallocate(H_gra, H_sil, dn_gra, dn_sil)
+
+   contains
+      ! Size-bin width da_i in CM on the log radius grid: the full central
+      ! difference inside, half of it at each end.
+      pure function bin_da(j) result(da_out)
+         integer, intent(in) :: j
+         real(wp) :: da_out
+         if (j == 1) then
+            da_out = aeff(j) * 0.5_wp * (lna(2) - lna(1))
+         else if (j == NA) then
+            da_out = aeff(j) * 0.5_wp * (lna(NA) - lna(NA-1))
+         else
+            da_out = aeff(j) * 0.5_wp * (lna(j+1) - lna(j-1))
+         end if
+         da_out = da_out * UM2CM
+      end function bin_da
+   end subroutine build_mrn
+
+
 
    ! Build the Zubko (ZDA 2004) BARE-GR-S model into m. Three components
    ! (PAH, Graphite, Silicate), each with its OWN size grid (the component's
@@ -3405,7 +3772,7 @@ contains
       ! Whether to keep the ionizing part of the model's own optics grid.
       ! Default .true., the whole table.  .false. cuts at lyman_index, the same
       ! index cut the HDF5 products carry for astrodust and DL07, so one
-      ! argument means one thing across the three models.  Pure row selection
+      ! argument means one thing across the models.  Pure row selection
       ! on the tables: no value is recomputed.  The ZDA tables start at
       ! 1.0e-3 um (1.24 keV), 91 times harder than a field illuminated to the
       ! Lyman limit, and every wavelength kept costs solver time in every cell.
@@ -4094,7 +4461,8 @@ contains
    subroutine build_dust(m, model, data_dir, NT_in, T_lo, T_hi, include_euv, status, &
                          lam_min, kext_path, sd_index, u_isrf, sizedist_path, &
                          config_path, astrodust_index_path, euv_tmatrix, &
-                         load_polarized_optics, scatmat_path, message, zubko_optics)
+                         load_polarized_optics, scatmat_path, message, zubko_optics, &
+                         mrn_norm)
       ! One entry point for every model this library codes, built from ONE
       ! directory and ONE flag:
       !
@@ -4145,7 +4513,7 @@ contains
       ! stdout which source it used.  Nothing here requires the library to have
       ! been compiled against HDF5.
       type(dust_model_t), intent(out) :: m
-      ! 'astrodust' | 'dl07' | 'zubko' | 'from_files'
+      ! 'astrodust' | 'dl07' | 'mrn' | 'zubko' | 'from_files'
       character(len=*),   intent(in)  :: model
       character(len=*),   intent(in)  :: data_dir
       ! The internal temperature grid: NT points, log-spaced over [T_lo, T_hi].
@@ -4160,9 +4528,10 @@ contains
       real(wp), optional, intent(in)  :: T_lo, T_hi
       ! Carry the ionizing band.  Default .false.
       logical,  optional, intent(in)  :: include_euv
-      ! 0 = success.  ONE vocabulary, whatever the model: the four builders
+      ! 0 = success.  ONE vocabulary, whatever the model: the builders
       ! number their own stages differently (an unreadable extinction table is
-      ! 10 for astrodust, 5 for DL07, 6 for zubko and 9 for from_files), and a
+      ! 10 for astrodust, 5 for DL07, 3 for MRN, 6 for zubko and 9 for
+      ! from_files), and a
       ! host using the single entry point should not have to branch on the
       ! model name to read a code.  Each builder's code is mapped onto this
       ! list:
@@ -4179,6 +4548,7 @@ contains
       !   status = 10  polarized optics (the aligned or oriented tables)
       !   status = 90  model name not one of the four
       !   status = 92  zubko_optics not one of 'zda' | 'mie_d03'
+      !   status = 93  the MRN normalization is not one of 'dl84' | 'mrn77'
       !   status = 91  'from_files' without config_path (the descriptor)
       integer,  optional, intent(out) :: status
       ! What went wrong, in words, for a host that has to print one line before
@@ -4210,8 +4580,12 @@ contains
       ! (default, the benchmark's own tables) or 'mie_d03' (this tree's
       ! recomputation).  See build_zubko.
       character(len=*), optional, intent(in) :: zubko_optics
+      ! mrn only: which published normalization of the a^-3.5 power law,
+      ! 'dl84' (default) or 'mrn77'.  See build_mrn.
+      character(len=*), optional, intent(in) :: mrn_norm
 
       character(len=512) :: h5, sd, cfg, ddir, adir
+      character(len=16)  :: norm
       character(len=SED_PATHLEN) :: saved_root
       integer  :: nt, st
       real(wp) :: tlo, thi
@@ -4253,6 +4627,7 @@ contains
 
       sdi   = 7;        if (present(sd_index)) sdi   = sd_index
       uisrf = 1.0_wp;   if (present(u_isrf))   uisrf = u_isrf
+      norm  = 'dl84';   if (present(mrn_norm)) norm  = mrn_norm
 
       select case (trim(model))
 
@@ -4292,6 +4667,26 @@ contains
          end if
          call report(st, [1, 2, 0, 0, 5, 0, 4])
 
+      case ('mrn')
+         ! Like DL07, this model takes only a wavelength axis from a product --
+         ! its optics are Mie on the D03 dielectric functions -- so hand it its
+         ! own axis and nothing else has to be read for a grid.
+         call read_sedust_grid(trim(h5), wide, lam_h5, i_lyman, got)
+         if (got) then
+            call build_mrn(m, trim(h5), nt, tlo, thi, status=st, lam_min=lam_min, &
+                           kext_path=kext_path, lam_axis=lam_h5, &
+                           normalization=trim(norm))
+            deallocate(lam_h5)
+         else
+            ! No product to read: the text route, on the astrodust Q table the
+            ! DL07 grid has always come from, so the two models that share a
+            ! calculation share an axis.
+            call build_mrn(m, trim(ddir)//dl07_text_qtable(wide), nt, tlo, thi, &
+                           status=st, lam_min=lam_min, kext_path=kext_path, &
+                           normalization=trim(norm))
+         end if
+         call report(st, [1, 4, 5, 93])
+
       case ('zubko')
          cfg = trim(sedust_dir(trim(ddir), 'zubko'))//'ZDA_BARE_GR_S_Config.dat'
          if (present(config_path)) cfg = config_path
@@ -4317,7 +4712,7 @@ contains
 
       case default
          call finish(90, 'build_dust: unknown model '''//trim(model)// &
-                         ''' (astrodust | dl07 | zubko | from_files)')
+                         ''' (astrodust | dl07 | mrn | zubko | from_files)')
          return
       end select
 
@@ -4382,6 +4777,7 @@ contains
          case (90);  nm = 'the model name'
          case (91);  nm = 'the missing descriptor'
          case (92);  nm = 'the zubko_optics name'
+         case (93);  nm = 'the MRN normalization name'
          case default;  write(nm,'(a,i0)') 'stage ', code
          end select
       end function stage_name
@@ -4920,6 +5316,25 @@ contains
       character(len=96) :: p
       p = 'zubko/kext_zubko_BARE_GR_S'//trim(zubko_kext_tag(qset))//'_euv.dat'
    end function zubko_kext_default
+
+
+   pure function mrn_kext_tag(norm) result(t)
+      ! The suffix the curve of a NON-default normalization carries, so that
+      ! the two power-law normalizations file beside each other and the DL84
+      ! one keeps the plain name.
+      character(len=*), intent(in) :: norm
+      character(len=16) :: t
+      t = ''
+      if (trim(norm) /= 'dl84') t = '_'//trim(norm)
+   end function mrn_kext_tag
+
+
+   pure function mrn_kext_default(norm) result(p)
+      ! The text curve behind the product, named the same way.
+      character(len=*), intent(in) :: norm
+      character(len=96) :: p
+      p = 'mrn/kext_mrn'//trim(mrn_kext_tag(norm))//'_euv.dat'
+   end function mrn_kext_default
 
 
    subroutine load_model_extinction_table(m, default_path, kext_path, ok, default_h5, &

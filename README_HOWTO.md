@@ -24,6 +24,7 @@ cd ../sed
 make                        # calc_enthalpy.x calc_sed.x calc_kext.x
 ./calc_sed.x astrodust      # astrodust+PAH SED at log U = 0.20 -> output/
 ./calc_sed.x dl07           # Draine & Li (2007) SED at U = 1   -> output/
+./calc_sed.x mrn            # MRN (1977) SED at U = 1           -> output/
 ./calc_sed.x zubko          # Zubko/ZDA SED at U = 1            -> output/
 ./calc_enthalpy.x           # astrodust enthalpy tables (add c2 for the
                             #   Stage-1 density-corrected prefactor)
@@ -52,12 +53,16 @@ make                        # calc_enthalpy.x calc_sed.x calc_kext.x
 #             which compute it; zubko reads the ZDA tables)
 #   PAH xsec  dl07 (default) | ld01   which published carbonaceous absorption
 #             the blend takes (dl07 model; calc_kext.x takes it too)
+#   normaliz. dl84 (default) | mrn77  which published normalization of the
+#             a^-3.5 power law (mrn model; calc_kext.x takes it too)
 #   enthalpy  c2           astrodust Stage-1 density-corrected prefactor
 #
 ./calc_sed.x astrodust qm_stati nstate=500  # -> sed_astrodust_qm_stati_ns500_*.dat
 ./calc_sed.x astrodust gra_d16_spheroid     # PAH xi blend on the D16 b/a=1.4 spheroid
 ./calc_sed.x astrodust mathis_orig          # -> sed_astrodust_morig_*.dat
 ./calc_sed.x dl07 lmc2_10 draine euv        # -> sed_dl07_lmc2_10_euv_draine.dat
+./calc_sed.x mrn draine euv                 # -> sed_mrn_euv_draine.dat
+./calc_sed.x mrn mrn77                      # -> sed_mrn_mrn77.dat
 ./calc_sed.x zubko euv hardfield            # -> sed_zubko_euv_hardfield.dat
 
 # the library, for embedding in an RT code.  No T-matrix in it: link with
@@ -73,6 +78,8 @@ make use_dustlib_scatmat.x  # reference consumer of the aligned-scattering API
 ./calc_kext.x astrodust     # -> ../data/astrodust/kext_astrodust_MW.dat (+ dichroic column)
 ./calc_kext.x astrodust euv # the same model carried into the ionizing band
 ./calc_kext.x dl07 euv      # -> ../data/dl07/kext_dl07_MW_euv.dat
+./calc_kext.x mrn           # -> ../data/mrn/kext_mrn.dat
+./calc_kext.x mrn mrn77 euv # the MRN 1977 abundances -> ../data/mrn/kext_mrn_mrn77_euv.dat
 ./calc_kext.x zubko         # -> ../data/zubko/kext_zubko_BARE_GR_S.dat (cut at the Lyman limit)
 ./calc_kext.x zubko euv     # -> ../data/zubko/kext_zubko_BARE_GR_S_euv.dat (the whole ZDA range)
 ./calc_kext.x from_files ../data/zubko/zubko_descriptor.txt
@@ -80,9 +87,9 @@ make use_dustlib_scatmat.x  # reference consumer of the aligned-scattering API
 # the optics products.  ORDER MATTERS: calc_qtable.x lays down the wavelength
 # axis and replaces data/<model>/sedust_<model>.h5, so it runs first and calc_kext.x
 # puts /kext back.  Both also write the text products beside them.
-./calc_qtable.x             # all three models -> ../data/<model>/q_*.dat
-                            #                 -> ../data/<model>/sedust_<model>.h5
-./calc_kext.x astrodust euv # ... then /kext into each of the three files
+./calc_qtable.x             # every model -> ../data/<model>/q_*.dat
+                            #             -> ../data/<model>/sedust_<model>.h5
+./calc_kext.x astrodust euv # ... then /kext into each of those files
 ./calc_polarized_optics.x          # -> /polarized in ../data/astrodust/sedust_astrodust.h5
 
 # polarized extinction alone, checked against the HD23 release
@@ -143,8 +150,8 @@ The HDF5 product holds ONE wavelength axis and the index `i_lyman` at which it
 crosses the Lyman limit, so `include_euv` picks the view rather than the file:
 `.false.` (the default) returns `lambda(i_lyman:)` and the same rows of every
 wavelength-indexed array.  For astrodust that is 1129 wavelengths
-(0.0912--39810 um) out of 1762 (1.0e-4--39810 um), for DL07 1129 out of 1823,
-for Zubko 866 out of 1201.
+(0.0912--39810 um) out of 1762 (1.0e-4--39810 um), for DL07 and MRN 1129 out of
+1823, for Zubko 866 out of 1201.
 
 The scalar T-matrix text pair behind it, `q_astrodust_P0.20_Fe0.00_1.400.dat`
 and `..._euv.dat`, is the same split as two files: the EUV one is the whole
@@ -163,7 +170,7 @@ closer than 1e-4. The largest jumps are +211% at Fe K (7124 eV), +131% at O K
 dielectric node: 0.0912*(1-1e-4), placed to resolve the Lyman-limit step of the
 *radiation field* (see below).
 
-`build_astrodust` and `build_dl07` take an optional `lam_min` [um] for a host
+`build_astrodust`, `build_dl07` and `build_mrn` take an optional `lam_min` [um] for a host
 needing to reach below the table it was given. It prepends log-spaced points
 below the table, and is refused when it asks for a wavelength the model's own
 dielectric data does not cover. What that does for astrodust depends on the
@@ -178,9 +185,9 @@ table:
   function stops at 1.000032e-4 um, longward of that table's first wavelength,
   so every legal `lam_min` falls inside the table and prepends nothing.
 
-DL07 can be extended below either table, to 6.205e-5 um, because the D03 optical
-constants reach further than both; its band is Mie on those functions and needs
-no T-matrix.
+DL07 and MRN can be extended below either table, to 6.205e-5 um, because the D03
+optical constants reach further than both; their band is Mie on those functions
+and needs no T-matrix.
 
 | product | rows | lambda [um] | what sets the floor |
 |---|---:|---|---|
@@ -188,6 +195,8 @@ no T-matrix.
 | `data/astrodust/kext_astrodust_MW_euv.dat` | 1762 | 1e-4 - 39810 | EUV Q-table grid |
 | `data/dl07/kext_dl07_MW.dat` | 1129 | 0.0912 - 39810 | non-EUV Q-table grid |
 | `data/dl07/kext_dl07_MW_euv.dat` | 1823 | 6.205e-5 - 39810 | the D03 dielectric functions |
+| `data/mrn/kext_mrn.dat` | 1129 | 0.0912 - 39810 | non-EUV Q-table grid |
+| `data/mrn/kext_mrn_euv.dat` | 1823 | 6.205e-5 - 39810 | the D03 dielectric functions |
 | `data/zubko/kext_zubko_BARE_GR_S.dat` | 866 | 0.08998 - 1e4 | the ZDA optics table, cut at the Lyman limit |
 | `data/zubko/kext_zubko_BARE_GR_S_euv.dat` | 1201 | 1e-3 - 1e4 | the ZDA optics table itself |
 
@@ -202,6 +211,7 @@ they are not tracked:
 |---|---|---|---|
 | astrodust | `data/astrodust/q_astrodust_P0.20_Fe0.00_1.400.dat` (1129) | `..._euv.dat` (1762) | 169, from `data/astrodust/DH21_aeff` |
 | DL07 | `data/dl07/q_dl07_{sil,gra,pah_neu,pah_ion}.dat` (1129) | `..._euv.dat` (1823) | 84, Draine's analytic grid, 3.548e-4 - 5.012 um |
+| MRN | `data/mrn/q_mrn_{sil,gra}.dat` (1129) | `..._euv.dat` (1823) | 70, log-spaced 0.005 - 0.25 um, the power law's own cutoffs on its ends |
 | Zubko | `data/zubko/q_zubko_{sil,gra,pah}.dat` (866) | `..._euv.dat` (1201) | 121 (sil, gra) / 28 (PAH), the ZDA tables' own |
 
 `sed/calc_qtable.x` writes all of these, and the HDF5 product of each model
@@ -212,8 +222,9 @@ that starts at the Lyman limit — verified, not asserted. In the HDF5 product t
 pair is one array and its `i_lyman`, so there is no second file to keep in
 step (§ *The HDF5 optics products* in the manual).
 
-**These are our own tables.** For DL07 they are what the model already computes
-at build time, written down rather than recomputed. For Zubko they are a genuine
+**These are our own tables.** For DL07 and MRN they are what those models
+already compute at build time, written down rather than recomputed -- the two
+share the calculation and differ in the radius grid it runs on. For Zubko they are a genuine
 recomputation: the model is still built on the ZDA optics tables under
 `data/zubko/` by default, while these are what this tree's Mie gives on the
 Draine (2003) optical constants (`data/dielectric/index_silD03`,
@@ -315,7 +326,7 @@ the enthalpy ceiling uses — and the band is skipped outright when the gap is
 harder than the hardest photon. The sample count follows the band's width
 instead of being a flat 51 points.
 
-**This changed all three shipped models**, and for Zubko it has nothing to do
+**This changed all three models shipped at the time**, and for Zubko it has nothing to do
 with the astrodust table: that model's grid has always started at 1e-3 um, so it
 carried the same defect independently. Measured against the previous products:
 astrodust up to 12.1% locally and −1.1% to +0.9% in integrated power, DL07 9.7%

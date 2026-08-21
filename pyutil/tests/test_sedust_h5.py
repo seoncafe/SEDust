@@ -43,6 +43,7 @@ QTEXT = {
                   'pah_ion': 'q_astrodust_pah_ion'},
     'dl07':      {'sil': 'q_dl07_sil', 'gra': 'q_dl07_gra',
                   'pah_neu': 'q_dl07_pah_neu', 'pah_ion': 'q_dl07_pah_ion'},
+    'mrn':       {'sil': 'q_mrn_sil', 'gra': 'q_mrn_gra'},
     'zubko':     {'sil_mie_d03': 'q_zubko_sil', 'gra_mie_d03': 'q_zubko_gra',
                   'pah_mie_d03': 'q_zubko_pah'},
 }
@@ -51,12 +52,14 @@ QTEXT = {
 COMPONENTS = {
     'astrodust': ['astrodust', 'pah_ion', 'pah_neu'],
     'dl07':      ['gra', 'pah_ion', 'pah_neu', 'sil'],
+    'mrn':       ['gra', 'sil'],
     'zubko':     ['gra', 'gra_mie_d03', 'pah', 'pah_mie_d03',
                   'sil', 'sil_mie_d03'],
 }
 KTEXT = {
     'astrodust': ('kext_astrodust_MW_euv.dat', 'kext_astrodust_MW.dat'),
     'dl07':      ('kext_dl07_MW_euv.dat',      'kext_dl07_MW.dat'),
+    'mrn':       ('kext_mrn_euv.dat',          'kext_mrn.dat'),
     'zubko':     ('kext_zubko_BARE_GR_S_euv.dat', 'kext_zubko_BARE_GR_S.dat'),
 }
 # Every product a model owns is in data/<model>/, so both the Q tables and the
@@ -64,7 +67,7 @@ KTEXT = {
 # with.  There is no shared qtable/ directory any more.
 # The astrodust Q table is written on one wavelength set only; its narrow
 # counterpart is the HDF5 cut and has no text file of its own.
-QTEXT_HAS_NARROW = {'astrodust': False, 'dl07': True, 'zubko': True}
+QTEXT_HAS_NARROW = {'astrodust': False, 'dl07': True, 'mrn': True, 'zubko': True}
 
 TOL_Q = 5.0e-7      # seven written digits
 TOL_K = 5.0e-12     # thirteen written digits
@@ -98,7 +101,7 @@ def maxrel(a, b):
 
 
 def main(data_dir: str) -> int:
-    for model in ('astrodust', 'dl07', 'zubko'):
+    for model in ('astrodust', 'dl07', 'mrn', 'zubko'):
         path = model_file(data_dir, model)
         print(f'\n=== {path}')
         if not os.path.exists(path):

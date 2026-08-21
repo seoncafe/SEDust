@@ -17,7 +17,7 @@ program check_data_root
    ! relative paths resolve by accident.
    !
    !   PASS  every model builds with status 0 from the absolute directory, and
-   !         a directory that does not exist returns non-zero from all four
+   !         a directory that does not exist returns non-zero from every one
    !   FAIL  any model returns non-zero on the good directory
    !   (an abort here is a failure too, and a louder one)
    use constants, only: wp
@@ -25,8 +25,8 @@ program check_data_root
    implicit none
 
    character(len=512) :: ddir
-   character(len=*), parameter :: MODELS(3) = &
-        [character(len=9) :: 'astrodust', 'dl07', 'zubko']
+   character(len=*), parameter :: MODELS(4) = &
+        [character(len=9) :: 'astrodust', 'dl07', 'mrn', 'zubko']
    type(dust_model_t) :: m
    character(len=160) :: msg
    real(wp), allocatable :: Cext(:), Cabs(:), Csca(:)

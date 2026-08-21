@@ -2317,11 +2317,14 @@ contains
 
       real(wp) :: nc_real
 
+      ! 'gra' and 'pah' are ONE material here: the carbon count of the grain,
+      ! which is what Draine & Li's carbonaceous heat capacity and mode
+      ! spectrum are both written in.  'gra' used to fall to the default and
+      ! take the SILICATE atom count -- a graphite population solved with
+      ! 'qm' (the Zubko model has one, and so does MRN) was then given the
+      ! wrong number of vibrational degrees of freedom.
       select case (trim(grain_type))
-      case ('sil')
-         natom = nint((4.0_wp * PI_CGS / 3.0_wp) * a_cm**3 * &
-                      3.5_wp * 7.0_wp / (172.0_wp * 1.66d-24))
-      case ('pah')
+      case ('pah', 'gra')
          nc_real = 472.0d21 * a_cm**3
          natom = max(nint(nc_real), 3)
       case default
@@ -2541,9 +2544,11 @@ contains
       ! Number of atoms in the grain
       natom = compute_natom(a_cm, grain_type)
 
-      ! Compute NC, NH for PAH grains (needed by mode spectrum builder)
+      ! NC, NH of the carbonaceous grain, which the mode spectrum builder
+      ! needs; pah_vibrational_modes is the carbonaceous spectrum, graphite
+      ! included, so 'gra' asks for it on the same terms as 'pah'.
       nc_pah = 0; nh_pah = 0
-      if (trim(grain_type) == 'pah') then
+      if (trim(grain_type) == 'pah' .or. trim(grain_type) == 'gra') then
          call pah_size_atoms(a_cm, nc_pah, nh_pah)
       end if
 

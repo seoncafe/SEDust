@@ -62,10 +62,10 @@ program calc_kext
    ! the polarized table are the same 1129 wavelengths.
    !====================================================================
    use constants,         only: wp
-   use sed_astrodust_mod, only: build_astrodust, build_dl07, build_zubko, &
+   use sed_astrodust_mod, only: build_astrodust, build_dl07, build_mrn, build_zubko, &
                                 build_from_files, size_integrated_extinction, &
                                 dust_mass_per_H, dust_model_t, &
-                                dl07_euv_lambda_floor, astrodust_euv_lambda_floor
+                                d03_euv_lambda_floor, astrodust_euv_lambda_floor
    use q_astrodust_mod,   only: astrodust_index_lambda_range, get_astrodust_index_path
    use q_silicate_mod,    only: silicate_index_lambda_range
    use q_graphite_mod,    only: graphite_index_lambda_range
@@ -111,6 +111,12 @@ program calc_kext
    character(len=*), parameter :: F_SCA = '../data/release/scattering.dat'
    character(len=*), parameter :: F_REF_DL07 = &
       '../data/release/kext_albedo_WD_MW_3.1_60_D03.all_2003'
+   ! Draine's published curve for the MRN model, the size integral of the very
+   ! power law build_mrn's 'dl84' normalization is: his parameter file for it
+   ! states the grain volumes per H, 2.49e-27 and 2.79e-27 cm^3/H, which are
+   ! log10 A = -25.16 and -25.11 over 0.005 - 0.25 um.
+   character(len=*), parameter :: F_REF_MRN = '../data/release/kext_albedo_MRN'
+   character(len=*), parameter :: F_QT_MRN   = '../data/mrn/sedust_mrn.h5'
    character(len=*), parameter :: F_QT_ZU    = '../data/zubko/sedust_zubko.h5'
    character(len=*), parameter :: F_ZDA_CFG  = '../data/zubko/ZDA_BARE_GR_S_Config.dat'
    character(len=*), parameter :: F_ZDA_DESC = '../data/zubko/zubko_descriptor.txt'
@@ -152,6 +158,10 @@ program calc_kext
    logical            :: taken
    integer            :: n_free
    character(len=16)  :: zubko_optics
+   ! Which published normalization of the MRN power law this curve is the size
+   ! integral of.  Both are curves of ONE model, so both land in ../data/mrn/
+   ! and in that model's own product, distinguished by name and group.
+   character(len=16)  :: mrn_norm
    character(len=256) :: opt, fout, desc, ddir, arg
 
    call use_tmatrix_euv_band_optics()
@@ -160,7 +170,7 @@ program calc_kext
    ! The axes this program has a referent for, declared before any argument is
    ! read; the DL07 model and zubko add their own once the subject is known.
    call declare_run_options(o, program='calc_kext', &
-        subjects=[character(len=16):: 'astrodust', 'dl07', 'zubko', &
+        subjects=[character(len=16):: 'astrodust', 'dl07', 'mrn', 'zubko', &
                                       'from_files'], &
         grid=.true.)
 
@@ -181,6 +191,9 @@ program calc_kext
    ! can be built with the earlier LD01 (2001) one instead; both are curves of
    ! the same model, filed beside each other.
    if (trim(model) == 'dl07') call widen_run_options(o, pah_xsec=.true.)
+   ! The MRN power law has two published normalizations; both are curves of the
+   ! same model and file beside each other.
+   if (trim(model) == 'mrn') call widen_run_options(o, mrn_norm=.true.)
 
    euv = .false.;  lam_min = 0.0_wp
    pah_xsec = 'dl07';  product = trim(model)
@@ -212,6 +225,7 @@ program calc_kext
    zubko_formula = o%zubko_formula
    zubko_optics  = o%zubko_optics
    pah_xsec      = o%pah_xsec
+   mrn_norm      = o%mrn_norm
 
    nnote = 0
    Mdust_H = 0.0_wp
@@ -268,7 +282,7 @@ program calc_kext
          write(*,'(a,es12.5,a)') ' D03 silicate dielectric function starts at ', lam_lo,  ' um'
          write(*,'(a,es12.5,a)') ' D03 graphite dielectric function starts at ', lam_lo2, ' um'
          lam_lo = max(lam_lo, lam_lo2)
-         if (lam_min <= 0.0_wp) lam_min = dl07_euv_lambda_floor()
+         if (lam_min <= 0.0_wp) lam_min = d03_euv_lambda_floor()
          write(*,'(a,es12.5,a)') ' requested lam_min = ', lam_min, ' um'
          call build_dl07(m, F_QT_DL, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI, &
                          lam_min=lam_min, include_euv=.true., pah_xsec=pah_xsec)
@@ -277,6 +291,35 @@ program calc_kext
          call build_dl07(m, F_QT_DL, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI, &
                          pah_xsec=pah_xsec)
          fout = '../data/dl07/kext_'//trim(pah_xsec)//'_MW.dat'
+      end if
+
+   ! ===================================================================
+   case ('mrn')
+      ! Graphite + silicate spheres on one a^-3.5 power law each.  Its optics
+      ! are Mie on the D03 dielectric functions at every wavelength, exactly as
+      ! the DL07 model's are, so `euv` extends the grid down to the longer of
+      ! the two functions' short-wavelength ends and nothing is extrapolated.
+      product = 'mrn'
+      if (len_trim(opt) > 0) then
+         euv = .true.
+         read(opt, *, iostat=ios) lam_min
+         if (ios /= 0 .or. lam_min <= 0.0_wp) then;  call print_usage();  stop 1;  end if
+      end if
+      if (euv) then
+         call silicate_index_lambda_range(lam_lo, lam_hi)
+         call graphite_index_lambda_range(lam_lo2, lam_hi)
+         write(*,'(a,es12.5,a)') ' D03 silicate dielectric function starts at ', lam_lo,  ' um'
+         write(*,'(a,es12.5,a)') ' D03 graphite dielectric function starts at ', lam_lo2, ' um'
+         lam_lo = max(lam_lo, lam_lo2)
+         if (lam_min <= 0.0_wp) lam_min = d03_euv_lambda_floor()
+         write(*,'(a,es12.5,a)') ' requested lam_min = ', lam_min, ' um'
+         call build_mrn(m, F_QT_MRN, NT_IN, T_LO, T_HI, lam_min=lam_min, &
+                        include_euv=.true., normalization=trim(mrn_norm))
+         fout = '../data/mrn/kext_mrn'//trim(kext_tag())//'_euv.dat'
+      else
+         call build_mrn(m, F_QT_MRN, NT_IN, T_LO, T_HI, include_euv=.false., &
+                        normalization=trim(mrn_norm))
+         fout = '../data/mrn/kext_mrn'//trim(kext_tag())//'.dat'
       end if
 
    ! ===================================================================
@@ -355,6 +398,7 @@ program calc_kext
          call header_astrodust_qtable_grid()
       end if
    case ('dl07');       call header_dl07()
+   case ('mrn');        call header_mrn()
    case ('zubko');      call header_zubko()
    case ('from_files'); call header_from_files()
    end select
@@ -391,7 +435,10 @@ program calc_kext
    call check_internal_consistency()
    select case (trim(model))
    case ('astrodust');  call compare_hd23_release()
-   case ('dl07');       call compare_draine_kext_albedo()
+   case ('dl07');       call compare_draine_kext(F_REF_DL07, &
+                             'Draine kext_albedo_WD_MW_3.1_60_D03.all (2003)')
+   case ('mrn');        call compare_draine_kext(F_REF_MRN, &
+                             'Draine kext_albedo_MRN')
    end select
 
 contains
@@ -407,6 +454,8 @@ contains
          t = '_'//trim(zubko_optics)
       if (trim(product) == 'dl07' .and. trim(pah_xsec) /= 'dl07') &
          t = '_'//trim(pah_xsec)
+      if (trim(model) == 'mrn' .and. trim(mrn_norm) /= 'dl84') &
+         t = '_'//trim(mrn_norm)
    end function kext_tag
 
 
@@ -423,6 +472,7 @@ contains
       write(*,'(a)') ' usage:'
       write(*,'(a)') '   ./calc_kext.x astrodust [euv | <lam_min in um>]'
       write(*,'(a)') '   ./calc_kext.x dl07 [ld01] [euv | <lam_min in um>]'
+      write(*,'(a)') '   ./calc_kext.x mrn       [dl84 | mrn77] [euv | <lam_min in um>]'
       write(*,'(a)') '   ./calc_kext.x zubko     [formula | table] [euv]'
       write(*,'(a)') '   ./calc_kext.x from_files <descriptor> [data_dir]'
       write(*,'(a)') ''
@@ -586,6 +636,17 @@ contains
       select case (model)
       case ('astrodust', 'dl07')
          sdfile = F_SD
+      case ('mrn')
+         ! This model's size distribution is a formula with two published
+         ! normalizations and no file behind it, so the provenance attribute
+         ! records which power law rather than a path.
+         if (trim(mrn_norm) == 'dl84') then
+            sdfile = 'dn/da = A a^-3.5, 0.005-0.25 um, log10 A = -25.16 (gra),'// &
+                     ' -25.11 (sil) [Draine & Lee 1984]'
+         else
+            sdfile = 'dn/da = A a^-3.5, 0.005-0.25 um, log10 A = -25.13 (gra),'// &
+                     ' -25.10 (sil) [MRN 1977]'
+         end if
       case ('zubko')
          ! Two routes to the same model: the ZDA size-distribution formula from
          ! the config, or the tabulated dn/da the descriptor names.
@@ -945,6 +1006,62 @@ contains
    end subroutine header_dl07
 
 
+   subroutine header_mrn()
+      character(len=200) :: s
+      if (euv) then
+         call add_note('# model = mrn'//trim(kext_tag())//'_euv')
+      else
+         call add_note('# model = mrn'//trim(kext_tag()))
+      end if
+      call add_note('# Size-integrated extinction, albedo and scattering asymmetry per H')
+      call add_note('# for the Mathis, Rumpl & Nordsieck (1977) graphite + silicate model.')
+      call add_note('#')
+      call add_note('# Model definition: one power law per material,')
+      call add_note('#   dn_i/da = A_i n_H a^-3.5 over 0.005 um <= a <= 0.25 um, cut sharply')
+      call add_note('#   at both ends (Draine & Lee 1984 eq. 5.1; the cutoffs are MRN''s own')
+      call add_note('#   estimates, which DL84 held fixed).  There are no PAHs in it.')
+      if (trim(mrn_norm) == 'dl84') then
+         call add_note('#   Normalization: log10 A = -25.16 (graphite), -25.11 (silicate)')
+         call add_note('#   in cm^2.5/H -- the abundances Draine & Lee (1984) sec. Va adopted')
+         call add_note('#   after fitting the Savage & Mathis average extinction curve, and')
+         call add_note('#   the pair Draine''s own kext_albedo_MRN is the size integral of.')
+      else
+         call add_note('#   Normalization: log10 A = -25.13 (graphite), -25.10 (silicate)')
+         call add_note('#   in cm^2.5/H -- MRN''s own values, quoted in the same sentence of')
+         call add_note('#   DL84 sec. Va after adjustment to the Bohlin, Savage & Drake')
+         call add_note('#   (1978) N_H/E(B-V).')
+      end if
+      call add_note('# Size grid: 70-point log grid, the two cutoffs on its ends.')
+      call add_note('# Optics:')
+      call add_note('#   silicate : Mie on the D03 astrosilicate dielectric function')
+      call add_note('#     ' // '../data/dielectric/index_silD03')
+      call add_note('#   graphite : Mie on the D03 graphite dielectric functions,')
+      call add_note('#     random orientation (1/3 parallel + 2/3 perpendicular)')
+      call add_note('#     ' // '../data/dielectric/index_CpaD03, index_CpeD03')
+      call add_note('#   MRN themselves used Wickramasinghe''s optical constants; DL84')
+      call add_note('#   recomputed this size distribution on theirs, and D03 is the')
+      call add_note('#   current revision of those.')
+      if (euv) then
+         call header_wavelength_range('The floor is set by the D03 dielectric ' // &
+              'functions: the shorter-reaching')
+         write(s,'(a,es13.6,a)') '#   of silicate and graphite stops at ', lam_lo, &
+              ' um, and a shorter floor is'
+         call add_note(trim(s))
+         call add_note('#   refused because (n, k) would freeze at the boundary value there.')
+      else
+         call header_wavelength_range('The grid is the T-matrix Q table''s own: ' // &
+              'no EUV extension was requested,')
+         call add_note('#   but that grid by itself already covers the ionizing band.')
+      end if
+      call header_common_format_and_scope('Densities: 3.5 g/cm^3 astrosilicate, ' // &
+           '2.2 g/cm^3 graphite, the values the D03 optics and the DL01 heat ' // &
+           'capacities are defined with.  Draine''s own MRN table normalizes ' // &
+           'K_abs by 3.3 and 2.24 instead, so his K_abs is 3.1% larger than ' // &
+           'this one while C_ext/H, which the size distribution fixes, agrees.')
+      call add_note('#')
+   end subroutine header_mrn
+
+
    subroutine header_zubko()
       if (euv) then
          call add_note('# model = zubko_BARE_GR_S_euv')
@@ -1109,13 +1226,14 @@ contains
 
 
    ! ===================================================================
-   subroutine compare_draine_kext_albedo()
-      ! Point-by-point against Draine's published table for the same model,
-      ! kext_albedo_WD_MW_3.1_60_D03.all (Dec 2003 vintage: the one his IDL
-      ! dust_cross() reads).  A later 2009 recomputation revised the FIR
-      ! opacity up ~12% and the 2175 A bump down ~16%; our D03 optics match
-      ! the 2003 table.  Reported decade by decade in lambda, on the
-      ! reference's own wavelengths (interpolating OUR curve to them).
+   subroutine compare_draine_kext(path, label)
+      ! Point-by-point against Draine's published table for the SAME model,
+      ! whichever model that is: kext_albedo_WD_MW_3.1_60_D03.all (Dec 2003
+      ! vintage, the one his IDL dust_cross() reads) for DL07, kext_albedo_MRN
+      ! for MRN.  For DL07 a later 2009 recomputation revised the FIR opacity
+      ! up ~12% and the 2175 A bump down ~16%; our D03 optics match the 2003
+      ! table.  Reported decade by decade in lambda, on the reference's own
+      ! wavelengths (interpolating OUR curve to them).
       !
       ! In the X-ray the reference brackets every absorption edge (Fe K, Si K,
       ! Mg K, Fe L, O K, C K) with wavelength pairs a few 1e-3 apart, far
@@ -1123,6 +1241,7 @@ contains
       ! the comparison measures our GRID, not our optics, so the table reports
       ! two counts: all overlapping reference points, and only those where the
       ! reference is locally no denser than our grid ("resolvable").
+      character(len=*), intent(in) :: path, label
       integer,  parameter :: MAXREF = 4000
       real(wp) :: lr(MAXREF), ar(MAXREF), gr(MAXREF), cr(MAXREF), kr(MAXREF), dum
       real(wp) :: ce, alb_i, g_i, dc, da, dg, dref, dmod
@@ -1132,17 +1251,22 @@ contains
       integer,  parameter :: NDEC = 8
       real(wp) :: dec_lo(NDEC)
       character(len=512) :: line
-      write(*,'(a)') ' validation vs Draine kext_albedo_WD_MW_3.1_60_D03.all (2003):'
-      open(newunit=u, file=F_REF_DL07, status='old', action='read', iostat=ios2)
+      write(*,'(a,a,a)') ' validation vs ', trim(label), ':'
+      open(newunit=u, file=path, status='old', action='read', iostat=ios2)
       if (ios2 /= 0) then; write(*,'(a)') '   (reference not found; skipping)'; return; end if
-      ! Rows are  lambda albedo <cos> C_ext/H K_abs <cos^2> [+ a trailing "NNNN eV"
-      ! comment]; the prose header fails the numeric read and is skipped by it.
+      ! Rows are  lambda albedo <cos> C_ext/H K_abs [<cos^2>] [+ a trailing
+      ! "NNNN eV" comment].  The sixth column is Draine's later vintage and is
+      ! read when it is there and not required when it is not -- the MRN table
+      ! carries five -- so ONE reader serves both.  The prose header fails the
+      ! numeric read either way and is skipped by it.
       nref = 0
       do
          read(u,'(a)',iostat=ios2) line
          if (ios2 /= 0) exit
          if (len_trim(line) == 0) cycle
          read(line,*,iostat=ios2) lam1, ar(nref+1), gr(nref+1), cr(nref+1), kr(nref+1), dum
+         if (ios2 /= 0) &
+            read(line,*,iostat=ios2) lam1, ar(nref+1), gr(nref+1), cr(nref+1), kr(nref+1)
          if (ios2 /= 0) cycle
          nref = nref + 1;  lr(nref) = lam1
          if (nref >= MAXREF) exit
@@ -1198,7 +1322,7 @@ contains
       write(*,'(a)') '   (N_res = reference points where the reference grid is no finer'
       write(*,'(a)') '    than ours; the rest straddle X-ray absorption edges our log grid'
       write(*,'(a)') '    cannot resolve, so there they measure the grid, not the optics.)'
-   end subroutine compare_draine_kext_albedo
+   end subroutine compare_draine_kext
 
 
    ! ===================================================================

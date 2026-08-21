@@ -109,6 +109,7 @@ module dust_lib
    ! HDF5 product:
    !   astrodust  ../data/astrodust/sedust_astrodust.h5
    !   dl07       ../data/dl07/sedust_dl07.h5
+   !   mrn        ../data/mrn/sedust_mrn.h5
    !   zubko      ../data/zubko/sedust_zubko.h5
    !   from_files (none -- a file-defined model's product is named after the
    !               model, so a host wanting extinction must name the file)
@@ -118,15 +119,15 @@ module dust_lib
    ! pass the product path unconditionally, which made the soft default hard --
    ! a tree without the curve could then not build a model for emission alone --
    ! and it applied a text fallback to two models out of three.  One route now,
-   ! for all four.
+   ! for every model.
    !
    ! include_euv AND lam_min MEAN ONE THING EACH, FOR EVERY MODEL.
    ! include_euv selects the view: .false. cuts the model's own axis at
    ! i_lyman, the LAST node at or below 0.0912 um, so the grid a host gets
    ! COVERS the Lyman limit whatever model it named.  lam_min states the
-   ! shortest wavelength the model must COVER, and never truncates: astrodust
-   ! and DL07 meet it by extending on the dielectric function their optics come
-   ! from, zubko and from_files meet it when their own tables already reach and
+   ! shortest wavelength the model must COVER, and never truncates: astrodust,
+   ! DL07 and MRN meet it by extending on the dielectric function their optics
+   ! come from, zubko and from_files meet it when their own tables already reach and
    ! refuse it (status 4 out of build_dust) when they do not.
    !
    ! Both were previously model-dependent, and a host with one call and one
@@ -187,9 +188,9 @@ module dust_lib
    ! m%lam runs outside the table; when it is omitted such a call stops the run.
    ! size_integrated_extinction reads no table, so it uses 1 alone.
    !
-   ! All four builders carry scattering optics, so albedo and gbar are physical
+   ! Every builder carries scattering optics, so albedo and gbar are physical
    ! for every model: astrodust from the T-matrix Q table at every wavelength
-   ! the model has, the ionizing band included, DL07 from Mie on the D03
+   ! the model has, the ionizing band included, DL07 and MRN from Mie on the D03
    ! silicate and graphite functions, Zubko and file-defined models from the
    ! Q_sca and g columns of their own tables. Only astrodust carries polarized
    ! optics.
@@ -274,12 +275,13 @@ module dust_lib
    !   3   dielectric function        9   model definition (config/descriptor)
    !   4   lam_min not coverable      10  polarized optics
    !   5   extinction table
-   !   90  model name not one of the four
+   !   90  model name not one of those it codes
    !   91  from_files without config_path
    !   92  zubko_optics not one of 'zda' | 'mie_d03'
-   ! The four builders below keep their OWN numbering, which is not the same
-   ! one -- an unreadable extinction table is 10 for astrodust, 5 for DL07, 6
-   ! for zubko and 9 for from_files. A host calling them directly reads the
+   !   93  the MRN normalization not one of 'dl84' | 'mrn77'
+   ! The builders below keep their OWN numbering, which is not the same
+   ! one -- an unreadable extinction table is 10 for astrodust, 5 for DL07, 3
+   ! for MRN, 6 for zubko and 9 for from_files. A host calling them directly reads the
    ! list below; a host on build_dust reads the list above and does not branch
    ! on the model name. Codes for each builder:
    !   build_astrodust / build_dl07:  1 Q-table load failed
@@ -313,6 +315,11 @@ module dust_lib
    !                                    load. It is 10 here and 5 everywhere
    !                                    else because this builder's polarized
    !                                    codes already occupy 3, 4, 5, 8 and 9.
+   !   build_mrn:     1 wavelength axis read failed
+   !                  2 lam_min below the D03 dielectric functions' own
+   !                    shortest wavelength (EUV band only)
+   !                  3 an explicitly named kext_path failed to load
+   !                  4 normalization is not 'dl84' | 'mrn77'
    !   build_zubko:   1 config read failed        2 fewer than 3 components
    !                  3 a component's optics read  4 grid inconsistent
    !                  5 a component's calorimetry read failed
@@ -426,7 +433,8 @@ module dust_lib
    use sed_paths,         only: sed_set_data_root, sed_get_data_root
    use sed_mathlib,           only: locate
    use sed_astrodust_mod, only: dust_model_t, build_dust, &
-                                build_astrodust, build_dl07, build_zubko, build_from_files, &
+                                build_astrodust, build_dl07, build_mrn, &
+                                build_zubko, build_from_files, &
                                 dust_emission, dust_emission_single_teq, &
                                 dust_extinction, size_integrated_extinction, &
                                 dust_mass_per_H, &
@@ -457,16 +465,16 @@ module dust_lib
    ! Re-exported model API
    ! One entry point for every coded model: it takes the model by name and a
    ! data directory, and include_euv decides whether the grid carries the
-   ! ionizing band.  The four builders below it stay exported so that a host
+   ! ionizing band.  The builders below it stay exported so that a host
    ! naming its own files keeps working unchanged.
    public :: dust_model_t, build_dust
    ! Where the library looks for the data it was not handed a path to.
    ! build_dust sets this from its own data_dir and restores it, so a host on
-   ! that entry point never calls these.  A host that calls the four builders
+   ! that entry point never calls these.  A host that calls the builders
    ! directly, and keeps its data somewhere other than <workdir>/../data, sets
    ! the root once before the first build.
    public :: sed_set_data_root, sed_get_data_root
-   public :: build_astrodust, build_dl07, build_zubko, build_from_files
+   public :: build_astrodust, build_dl07, build_mrn, build_zubko, build_from_files
    public :: dust_emission, dust_emission_single_teq, dust_extinction
    public :: size_integrated_extinction
    public :: dust_mass_per_H

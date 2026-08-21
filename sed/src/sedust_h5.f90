@@ -4,7 +4,8 @@ module sedust_h5
    ! polarized branch -- the orientation-resolved and scattering-matrix
    ! products.  One file per dust model,
    !
-   !   data/astrodust/sedust_astrodust.h5   data/dl07/sedust_dl07.h5   data/zubko/sedust_zubko.h5
+   !   data/astrodust/sedust_astrodust.h5   data/dl07/sedust_dl07.h5
+   !   data/mrn/sedust_mrn.h5               data/zubko/sedust_zubko.h5
    !
    ! because the models do not share a wavelength grid, a radius grid or a
    ! component list, and because a host ships only the models it runs.

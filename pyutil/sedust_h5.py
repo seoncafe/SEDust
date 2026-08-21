@@ -1,6 +1,6 @@
 """Reader for the SEDust optics products, data/<model>/sedust_<model>.h5.
 
-One file per dust model -- astrodust, dl07, zubko -- holding the wavelength
+One file per dust model -- astrodust, dl07, mrn, zubko -- holding the wavelength
 axis, the (lambda, a_eff) cross-section tables of each grain population, the
 size-integrated extinction curve, and (in the polarized branch) the
 orientation-resolved and scattering-matrix products.  `sed/calc_qtable.x` and
@@ -65,7 +65,7 @@ __all__ = [
 # cut always comes from the file's own i_lyman.
 LAM_LYMAN_UM = 0.0912
 
-MODELS = ('astrodust', 'dl07', 'zubko')
+MODELS = ('astrodust', 'dl07', 'mrn', 'zubko')
 
 
 def model_dir(data_dir: str, model: str) -> str:
