@@ -36,6 +36,16 @@ and scattering by aligned spheroidal grains. It adds the direction-dependent
 extinction matrix and the aligned-grain scattering matrix on top of everything
 here.
 
+The two versions are branches of one repository, and `v1.00` is the default
+branch, so a plain clone lands here:
+
+```
+git clone git@github.com:seoncafe/SEDust.git          # this version, 1.00
+git clone -b v1.20 git@github.com:seoncafe/SEDust.git # the polarized version
+```
+
+An existing clone switches with `git checkout v1.20`.
+
 ## Layout
 
 ```
@@ -421,4 +431,4 @@ Kwang-il Seon (KASI/UST)
 
 ---
 
-Last updated: 2026-08-21 10:04 KST
+Last updated: 2026-08-21 14:11 KST
