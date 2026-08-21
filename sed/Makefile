@@ -29,8 +29,6 @@
 #     qm sizes  nstate=N, nisrf=N
 #     graphite  gra_d03_sphere | gra_d16_sphere | gra_d16_spheroid
 #               (astrodust, dl07: the PAH xi blend)
-#     normaliz. dl84 (default) | mrn77   (mrn: which published a^-3.5
-#               normalization)
 #     enthalpy  c2                   (astrodust: Stage-1 prefactor)
 #   ./calc_sed.x astrodust qm_stati nstate=500
 #   ./calc_sed.x dl07 lmc2_10 draine euv
@@ -40,7 +38,7 @@
 #   ./calc_kext.x astrodust euv        # carried into the ionizing band
 #   ./calc_kext.x dl07 euv
 #   ./calc_kext.x mrn
-#   ./calc_kext.x mrn mrn77 euv
+#   ./calc_kext.x mrn euv
 #   ./calc_kext.x zubko
 #   ./calc_kext.x from_files <descriptor> [data_dir]
 #   ./check_build_dust.x               # build_dust on HDF5 vs the text builders

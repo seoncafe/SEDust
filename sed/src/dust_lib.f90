@@ -309,7 +309,6 @@ module dust_lib
    !   90  model name not one of those it codes
    !   91  from_files without config_path
    !   92  zubko_optics not one of 'zda' | 'mie_d03'
-   !   93  the MRN normalization not one of 'dl84' | 'mrn77'
    ! The builders below it keep their OWN numbering, which is not the same
    ! one -- an unreadable extinction table is 5 for astrodust and DL07, 3 for
    ! MRN, 6 for zubko and 9 for from_files, and 6 means something else again for
@@ -343,7 +342,6 @@ module dust_lib
    !                  2 lam_min below the D03 dielectric functions' own
    !                    shortest wavelength (EUV band only)
    !                  3 an explicitly named kext_path failed to load
-   !                  4 normalization is not 'dl84' | 'mrn77'
    !   build_zubko:   1 config read failed        2 fewer than 3 components
    !                  3 a component's optics read  4 grid inconsistent
    !                  5 a component's calorimetry read failed
