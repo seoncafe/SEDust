@@ -50,6 +50,16 @@ polarized quantities and one consequence of adding them — the `status` codes o
 taken by the polarized inputs, so what is `3` and `4` in v1.00 is `6` and `7`
 here. Code that only checks `status /= 0` is unaffected.
 
+The two versions are branches of one repository. `v1.00` is the default branch,
+so this version has to be asked for by name:
+
+```
+git clone -b v1.20 git@github.com:seoncafe/SEDust.git # this version, 1.20
+git clone git@github.com:seoncafe/SEDust.git          # the scalar version
+```
+
+An existing clone switches with `git checkout v1.20`.
+
 ## Layout
 
 ```
@@ -678,4 +688,4 @@ Kwang-il Seon (KASI/UST)
 
 ---
 
-Last updated: 2026-08-21 10:04 KST
+Last updated: 2026-08-21 14:11 KST
