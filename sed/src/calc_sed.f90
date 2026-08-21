@@ -108,7 +108,6 @@ program calc_sed
       call widen_run_options(opt, graphite=.true., pah_xsec=.true.)
       U_field = 1.0_wp                  ! the DL07 reference intensity
    case ('mrn')
-      call widen_run_options(opt, mrn_norm=.true.)
       U_field = 1.0_wp                  ! the Mathis ISRF at its nominal strength
    case ('zubko')
       U_field = 1.0_wp                  ! the reference intensity of its published SED
@@ -441,7 +440,6 @@ contains
 
       call report_header('Mathis, Rumpl & Nordsieck (1977) graphite + silicate emission')
       write(*,'(a,f8.3)') ' U (Mathis)    : ', U_field
-      write(*,'(a,a)')    ' normalization : ', trim(opt%mrn_norm)
       ! Before the build: the field convention fixes the CMB temperature that
       ! goes into the cooling term, and the solver choice is stamped on the
       ! model.
@@ -451,7 +449,7 @@ contains
 
       ! One product, two views: include_euv picks which part of its axis.
       call build_mrn(m, F_QT_MRN, NT_IN, T_LO, T_HI, status=status, &
-                     include_euv=opt%euv, normalization=trim(opt%mrn_norm))
+                     include_euv=opt%euv)
       if (status /= 0) then
          write(*,'(a,i0)') ' calc_sed: build_mrn failed, status = ', status
          stop 1
@@ -483,13 +481,8 @@ contains
       end if
       write(u,'(a)') '# graphite + silicate spheres, dn/da = A_i a^-3.5,'// &
            ' 0.005 - 0.25 um, Mie on the D03 dielectric functions'
-      if (trim(opt%mrn_norm) == 'dl84') then
-         write(u,'(a)') '# normalization: Draine & Lee (1984), log10 A ='// &
-              ' -25.16 (graphite), -25.11 (silicate) [cm^2.5/H]'
-      else
-         write(u,'(a)') '# normalization: MRN (1977), log10 A ='// &
-              ' -25.13 (graphite), -25.10 (silicate) [cm^2.5/H]'
-      end if
+      write(u,'(a)') '# normalization: Draine & Lee (1984), log10 A ='// &
+           ' -25.16 (graphite), -25.11 (silicate) [cm^2.5/H]'
       write(u,'(a,a)') '# solver = ', trim(m%stoch_method)
       if (opt%hard_euv_field) write(u,'(a,es10.3,a,es10.3)') &
            '# artificial hard component below the Lyman limit: W*B_lambda(T), T = ', &

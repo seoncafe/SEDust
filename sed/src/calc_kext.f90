@@ -112,8 +112,8 @@ program calc_kext
    character(len=*), parameter :: F_REF_DL07 = &
       '../data/release/kext_albedo_WD_MW_3.1_60_D03.all_2003'
    ! Draine's published curve for the MRN model, the size integral of the very
-   ! power law build_mrn's 'dl84' normalization is: his parameter file for it
-   ! states the grain volumes per H, 2.49e-27 and 2.79e-27 cm^3/H, which are
+   ! power law build_mrn evaluates: his parameter file for it states the grain
+   ! volumes per H, 2.49e-27 and 2.79e-27 cm^3/H, which are
    ! log10 A = -25.16 and -25.11 over 0.005 - 0.25 um.
    character(len=*), parameter :: F_REF_MRN = '../data/release/kext_albedo_MRN'
    character(len=*), parameter :: F_QT_MRN   = '../data/mrn/sedust_mrn.h5'
@@ -158,10 +158,6 @@ program calc_kext
    logical            :: taken
    integer            :: n_free
    character(len=16)  :: zubko_optics
-   ! Which published normalization of the MRN power law this curve is the size
-   ! integral of.  Both are curves of ONE model, so both land in ../data/mrn/
-   ! and in that model's own product, distinguished by name and group.
-   character(len=16)  :: mrn_norm
    character(len=256) :: opt, fout, desc, ddir, arg
 
    call use_tmatrix_euv_band_optics()
@@ -191,9 +187,6 @@ program calc_kext
    ! can be built with the earlier LD01 (2001) one instead; both are curves of
    ! the same model, filed beside each other.
    if (trim(model) == 'dl07') call widen_run_options(o, pah_xsec=.true.)
-   ! The MRN power law has two published normalizations; both are curves of the
-   ! same model and file beside each other.
-   if (trim(model) == 'mrn') call widen_run_options(o, mrn_norm=.true.)
 
    euv = .false.;  lam_min = 0.0_wp
    pah_xsec = 'dl07';  product = trim(model)
@@ -225,7 +218,6 @@ program calc_kext
    zubko_formula = o%zubko_formula
    zubko_optics  = o%zubko_optics
    pah_xsec      = o%pah_xsec
-   mrn_norm      = o%mrn_norm
 
    nnote = 0
    Mdust_H = 0.0_wp
@@ -314,12 +306,11 @@ program calc_kext
          if (lam_min <= 0.0_wp) lam_min = d03_euv_lambda_floor()
          write(*,'(a,es12.5,a)') ' requested lam_min = ', lam_min, ' um'
          call build_mrn(m, F_QT_MRN, NT_IN, T_LO, T_HI, lam_min=lam_min, &
-                        include_euv=.true., normalization=trim(mrn_norm))
-         fout = '../data/mrn/kext_mrn'//trim(kext_tag())//'_euv.dat'
+                        include_euv=.true.)
+         fout = '../data/mrn/kext_mrn_euv.dat'
       else
-         call build_mrn(m, F_QT_MRN, NT_IN, T_LO, T_HI, include_euv=.false., &
-                        normalization=trim(mrn_norm))
-         fout = '../data/mrn/kext_mrn'//trim(kext_tag())//'.dat'
+         call build_mrn(m, F_QT_MRN, NT_IN, T_LO, T_HI, include_euv=.false.)
+         fout = '../data/mrn/kext_mrn.dat'
       end if
 
    ! ===================================================================
@@ -454,8 +445,6 @@ contains
          t = '_'//trim(zubko_optics)
       if (trim(product) == 'dl07' .and. trim(pah_xsec) /= 'dl07') &
          t = '_'//trim(pah_xsec)
-      if (trim(model) == 'mrn' .and. trim(mrn_norm) /= 'dl84') &
-         t = '_'//trim(mrn_norm)
    end function kext_tag
 
 
@@ -472,7 +461,7 @@ contains
       write(*,'(a)') ' usage:'
       write(*,'(a)') '   ./calc_kext.x astrodust [euv | <lam_min in um>]'
       write(*,'(a)') '   ./calc_kext.x dl07 [ld01] [euv | <lam_min in um>]'
-      write(*,'(a)') '   ./calc_kext.x mrn       [dl84 | mrn77] [euv | <lam_min in um>]'
+      write(*,'(a)') '   ./calc_kext.x mrn       [euv | <lam_min in um>]'
       write(*,'(a)') '   ./calc_kext.x zubko     [formula | table] [euv]'
       write(*,'(a)') '   ./calc_kext.x from_files <descriptor> [data_dir]'
       write(*,'(a)') ''
@@ -637,16 +626,10 @@ contains
       case ('astrodust', 'dl07')
          sdfile = F_SD
       case ('mrn')
-         ! This model's size distribution is a formula with two published
-         ! normalizations and no file behind it, so the provenance attribute
-         ! records which power law rather than a path.
-         if (trim(mrn_norm) == 'dl84') then
-            sdfile = 'dn/da = A a^-3.5, 0.005-0.25 um, log10 A = -25.16 (gra),'// &
-                     ' -25.11 (sil) [Draine & Lee 1984]'
-         else
-            sdfile = 'dn/da = A a^-3.5, 0.005-0.25 um, log10 A = -25.13 (gra),'// &
-                     ' -25.10 (sil) [MRN 1977]'
-         end if
+         ! This model's size distribution is a formula with no file behind it,
+         ! so the provenance attribute records the power law rather than a path.
+         sdfile = 'dn/da = A a^-3.5, 0.005-0.25 um, log10 A = -25.16 (gra),'// &
+                  ' -25.11 (sil) [Draine & Lee 1984]'
       case ('zubko')
          ! Two routes to the same model: the ZDA size-distribution formula from
          ! the config, or the tabulated dn/da the descriptor names.
@@ -1009,9 +992,9 @@ contains
    subroutine header_mrn()
       character(len=200) :: s
       if (euv) then
-         call add_note('# model = mrn'//trim(kext_tag())//'_euv')
+         call add_note('# model = mrn_euv')
       else
-         call add_note('# model = mrn'//trim(kext_tag()))
+         call add_note('# model = mrn')
       end if
       call add_note('# Size-integrated extinction, albedo and scattering asymmetry per H')
       call add_note('# for the Mathis, Rumpl & Nordsieck (1977) graphite + silicate model.')
@@ -1020,17 +1003,10 @@ contains
       call add_note('#   dn_i/da = A_i n_H a^-3.5 over 0.005 um <= a <= 0.25 um, cut sharply')
       call add_note('#   at both ends (Draine & Lee 1984 eq. 5.1; the cutoffs are MRN''s own')
       call add_note('#   estimates, which DL84 held fixed).  There are no PAHs in it.')
-      if (trim(mrn_norm) == 'dl84') then
-         call add_note('#   Normalization: log10 A = -25.16 (graphite), -25.11 (silicate)')
-         call add_note('#   in cm^2.5/H -- the abundances Draine & Lee (1984) sec. Va adopted')
-         call add_note('#   after fitting the Savage & Mathis average extinction curve, and')
-         call add_note('#   the pair Draine''s own kext_albedo_MRN is the size integral of.')
-      else
-         call add_note('#   Normalization: log10 A = -25.13 (graphite), -25.10 (silicate)')
-         call add_note('#   in cm^2.5/H -- MRN''s own values, quoted in the same sentence of')
-         call add_note('#   DL84 sec. Va after adjustment to the Bohlin, Savage & Drake')
-         call add_note('#   (1978) N_H/E(B-V).')
-      end if
+      call add_note('#   Normalization: log10 A = -25.16 (graphite), -25.11 (silicate)')
+      call add_note('#   in cm^2.5/H -- the abundances Draine & Lee (1984) sec. Va adopted')
+      call add_note('#   after fitting the Savage & Mathis average extinction curve, and')
+      call add_note('#   the pair Draine''s own kext_albedo_MRN is the size integral of.')
       call add_note('# Size grid: 70-point log grid, the two cutoffs on its ends.')
       call add_note('# Optics:')
       call add_note('#   silicate : Mie on the D03 astrosilicate dielectric function')

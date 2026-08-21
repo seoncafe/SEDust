@@ -471,6 +471,7 @@ module sed_astrodust_mod
    character(len=*), parameter :: KEXT_H5_DL07      = 'dl07/sedust_dl07.h5'
    character(len=*), parameter :: KEXT_H5_ZUBKO     = 'zubko/sedust_zubko.h5'
    character(len=*), parameter :: KEXT_H5_MRN       = 'mrn/sedust_mrn.h5'
+   character(len=*), parameter :: KEXT_MRN          = 'mrn/kext_mrn_euv.dat'
 
    ! ---- the MRN (1977) power law -----------------------------------------
    ! dn_i/da = A_i n_H a^-3.5 over a sharp [a_min, a_max], one power law per
@@ -478,25 +479,22 @@ module sed_astrodust_mod
    ! which is the order Draine's own parameter file for this model lists them
    ! in and the order the channels below carry.
    !
-   ! Two published normalizations, both offered because they differ by 7% in
-   ! the graphite abundance.  DL84 sec. Va states both in one sentence: "we
-   ! adopted A_sil = 10^-25.11 cm^2.5/H, and A_C = 10^-25.16 cm^2.5/H [after
-   ! adjustment to the Bohlin et al. value for N_H/E(B-V), the MRN values are
-   ! A_sil = 10^-25.10, A_C = 10^-25.13]".  The first pair is the DEFAULT: it
-   ! is what Draine's own MRN model is built on -- his parameter file states
-   ! the grain volumes per H, 2.49e-27 and 2.79e-27 cm^3/H, and those ARE
-   ! these two A_i -- so the reference curve shipped beside this tree
-   ! validates that normalization and not the other.
+   ! The abundances are the ones DL84 sec. Va adopted after fitting the Savage
+   ! & Mathis average extinction curve: "we adopted A_sil = 10^-25.11
+   ! cm^2.5/H, and A_C = 10^-25.16 cm^2.5/H".  They are what Draine's own MRN
+   ! model is built on -- his parameter file states the grain volumes per H,
+   ! 2.49e-27 and 2.79e-27 cm^3/H, and those ARE these two A_i -- so the
+   ! reference curve shipped beside this tree is the size integral of this
+   ! model and nothing here has to be selected to match it.
    !
-   ! log10 A_i, in cm^2.5 per H, as each paper prints it.  The A_i themselves
+   ! log10 A_i, in cm^2.5 per H, as the paper prints it.  The A_i themselves
    ! are formed where they are used: a real exponent is not a constant
    ! expression, and rounding the powers by hand here would put a number in
-   ! the code that neither paper contains.
+   ! the code that the paper does not contain.
    real(wp), parameter :: MRN_ALPHA = -3.5_wp
    real(wp), parameter :: MRN_AMIN  = 5.0e-3_wp     ! [um]
    real(wp), parameter :: MRN_AMAX  = 0.25_wp       ! [um]
-   real(wp), parameter :: LOG_A_DL84(2)  = [-25.16_wp, -25.11_wp]
-   real(wp), parameter :: LOG_A_MRN77(2) = [-25.13_wp, -25.10_wp]
+   real(wp), parameter :: LOG_A_DL84(2) = [-25.16_wp, -25.11_wp]
    ! Radii, log-spaced over that range: 70 points is 0.025 dex, twice the
    ! resolution of the DL07 size grid, which a power law cut sharply at both
    ! ends needs and the stochastic solve can afford over this size range.
@@ -3423,7 +3421,7 @@ contains
    ! which is what the size distribution fixes, is unaffected and is what the
    ! reference comparison tests.
    subroutine build_mrn(m, qtable_path, NT_in, T_lo, T_hi, status, lam_min, &
-                        kext_path, lam_axis, include_euv, stored_q_dir, normalization)
+                        kext_path, lam_axis, include_euv, stored_q_dir)
       type(dust_model_t), intent(out) :: m
       character(len=*),   intent(in)  :: qtable_path
       integer,            intent(in)  :: NT_in
@@ -3436,7 +3434,6 @@ contains
       !               wavelength (EUV band only)
       !   status = 3  an explicitly named extinction table (kext_path) could
       !               not be read
-      !   status = 4  normalization is not one of 'dl84' | 'mrn77'
       integer, optional,  intent(out) :: status
       ! Optional shortest wavelength [um] the model must cover; see
       ! build_astrodust.  This model's optics are dielectric-function Mie
@@ -3444,8 +3441,7 @@ contains
       real(wp), optional, intent(in)  :: lam_min
       ! Size-integrated extinction table dust_extinction serves this model's
       ! scalar optics from; see build_astrodust.  Omitting it takes this
-      ! model's own product, then the text curve of the normalization asked
-      ! for.
+      ! model's own product, then KEXT_MRN.
       character(len=*), optional, intent(in) :: kext_path
       ! The model's wavelength axis, given outright instead of taken from
       ! qtable_path.  This is how the HDF5 product supplies this model's own
@@ -3458,9 +3454,6 @@ contains
       ! writes them.  Omitted, the model's own directory under the data root,
       ! with the /qtable of an HDF5 qtable_path tried ahead of it.
       character(len=*), optional, intent(in) :: stored_q_dir
-      ! Which published normalization of the power law: 'dl84' (default,
-      ! Draine & Lee 1984) or 'mrn77' (MRN's own).  See LOG_A_DL84.
-      character(len=*), optional, intent(in) :: normalization
 
       integer  :: ja, jw, jt, k
       real(wp) :: a_um, geo, t, dlga, qext1, qsca1, qabs1, gsca1
@@ -3475,24 +3468,10 @@ contains
       real(wp), allocatable :: tQa(:,:), tQs(:,:), tGg(:,:)
       real(wp), allocatable :: uQa(:,:), uQs(:,:), uGg(:,:)
       logical  :: got_gra, got_sil, rok, kext_ok
-      character(len=16)  :: norm
       character(len=512) :: q_h5, q_dir
 
       if (present(status)) status = 0
-
-      norm = 'dl84';  if (present(normalization)) norm = normalization
-      select case (trim(norm))
-      case ('dl84');   A_norm = 10.0_wp ** LOG_A_DL84
-      case ('mrn77');  A_norm = 10.0_wp ** LOG_A_MRN77
-      case default
-         if (present(status)) then
-            status = 4;  return
-         else
-            write(*,'(a,a,a)') ' build_mrn: normalization = ''', trim(norm), &
-               ''' is not one of dl84 | mrn77'
-            stop 1
-         end if
-      end select
+      A_norm = 10.0_wp ** LOG_A_DL84
 
       ! ---- wavelength axis -------------------------------------------------
       ! The two places stored optics can come from, resolved once.  When
@@ -3690,13 +3669,9 @@ contains
                    log(max(kappB_sil, tiny(0.0_wp))), kappCMB_sil, &
                    Csca_in=Csca_sil, gsca_in=gsca_sil, rho_bulk=RHO_ASTROSIL)
 
-      ! Each normalization's own curve: what dust_extinction serves is the size
-      ! integral of the very distribution the model was built on.  The DL84 one
-      ! is unmarked, so the shipped name and the /kext group do not move.
-      call load_model_extinction_table(m, sed_data_path(mrn_kext_default(norm)), &
+      call load_model_extinction_table(m, sed_data_path(KEXT_MRN), &
                                        kext_path, kext_ok, &
-                                       default_h5=sed_data_path(KEXT_H5_MRN), &
-                                       h5_group='kext'//trim(mrn_kext_tag(norm)))
+                                       default_h5=sed_data_path(KEXT_H5_MRN))
       if (.not. kext_ok) then
          if (present(status)) then
             status = 3;  return
@@ -4461,8 +4436,7 @@ contains
    subroutine build_dust(m, model, data_dir, NT_in, T_lo, T_hi, include_euv, status, &
                          lam_min, kext_path, sd_index, u_isrf, sizedist_path, &
                          config_path, astrodust_index_path, euv_tmatrix, &
-                         load_polarized_optics, scatmat_path, message, zubko_optics, &
-                         mrn_norm)
+                         load_polarized_optics, scatmat_path, message, zubko_optics)
       ! One entry point for every model this library codes, built from ONE
       ! directory and ONE flag:
       !
@@ -4548,7 +4522,6 @@ contains
       !   status = 10  polarized optics (the aligned or oriented tables)
       !   status = 90  model name not one of the four
       !   status = 92  zubko_optics not one of 'zda' | 'mie_d03'
-      !   status = 93  the MRN normalization is not one of 'dl84' | 'mrn77'
       !   status = 91  'from_files' without config_path (the descriptor)
       integer,  optional, intent(out) :: status
       ! What went wrong, in words, for a host that has to print one line before
@@ -4580,12 +4553,8 @@ contains
       ! (default, the benchmark's own tables) or 'mie_d03' (this tree's
       ! recomputation).  See build_zubko.
       character(len=*), optional, intent(in) :: zubko_optics
-      ! mrn only: which published normalization of the a^-3.5 power law,
-      ! 'dl84' (default) or 'mrn77'.  See build_mrn.
-      character(len=*), optional, intent(in) :: mrn_norm
 
       character(len=512) :: h5, sd, cfg, ddir, adir
-      character(len=16)  :: norm
       character(len=SED_PATHLEN) :: saved_root
       integer  :: nt, st
       real(wp) :: tlo, thi
@@ -4627,7 +4596,6 @@ contains
 
       sdi   = 7;        if (present(sd_index)) sdi   = sd_index
       uisrf = 1.0_wp;   if (present(u_isrf))   uisrf = u_isrf
-      norm  = 'dl84';   if (present(mrn_norm)) norm  = mrn_norm
 
       select case (trim(model))
 
@@ -4674,18 +4642,16 @@ contains
          call read_sedust_grid(trim(h5), wide, lam_h5, i_lyman, got)
          if (got) then
             call build_mrn(m, trim(h5), nt, tlo, thi, status=st, lam_min=lam_min, &
-                           kext_path=kext_path, lam_axis=lam_h5, &
-                           normalization=trim(norm))
+                           kext_path=kext_path, lam_axis=lam_h5)
             deallocate(lam_h5)
          else
             ! No product to read: the text route, on the astrodust Q table the
             ! DL07 grid has always come from, so the two models that share a
             ! calculation share an axis.
             call build_mrn(m, trim(ddir)//dl07_text_qtable(wide), nt, tlo, thi, &
-                           status=st, lam_min=lam_min, kext_path=kext_path, &
-                           normalization=trim(norm))
+                           status=st, lam_min=lam_min, kext_path=kext_path)
          end if
-         call report(st, [1, 4, 5, 93])
+         call report(st, [1, 4, 5])
 
       case ('zubko')
          cfg = trim(sedust_dir(trim(ddir), 'zubko'))//'ZDA_BARE_GR_S_Config.dat'
@@ -4777,7 +4743,6 @@ contains
          case (90);  nm = 'the model name'
          case (91);  nm = 'the missing descriptor'
          case (92);  nm = 'the zubko_optics name'
-         case (93);  nm = 'the MRN normalization name'
          case default;  write(nm,'(a,i0)') 'stage ', code
          end select
       end function stage_name
@@ -5316,25 +5281,6 @@ contains
       character(len=96) :: p
       p = 'zubko/kext_zubko_BARE_GR_S'//trim(zubko_kext_tag(qset))//'_euv.dat'
    end function zubko_kext_default
-
-
-   pure function mrn_kext_tag(norm) result(t)
-      ! The suffix the curve of a NON-default normalization carries, so that
-      ! the two power-law normalizations file beside each other and the DL84
-      ! one keeps the plain name.
-      character(len=*), intent(in) :: norm
-      character(len=16) :: t
-      t = ''
-      if (trim(norm) /= 'dl84') t = '_'//trim(norm)
-   end function mrn_kext_tag
-
-
-   pure function mrn_kext_default(norm) result(p)
-      ! The text curve behind the product, named the same way.
-      character(len=*), intent(in) :: norm
-      character(len=96) :: p
-      p = 'mrn/kext_mrn'//trim(mrn_kext_tag(norm))//'_euv.dat'
-   end function mrn_kext_default
 
 
    subroutine load_model_extinction_table(m, default_path, kext_path, ok, default_h5, &

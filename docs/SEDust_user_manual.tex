@@ -201,7 +201,7 @@ call build_dl07     (m, qtable_path, sizedist_path, sd_index, U, NT, T_lo, T_hi 
                      [, include_euv] [, stored_q_dir] [, pah_xsec])
 call build_mrn      (m, qtable_path, NT, T_lo, T_hi [, status] [, lam_min] &
                      [, kext_path] [, lam_axis] [, include_euv] &
-                     [, stored_q_dir] [, normalization])
+                     [, stored_q_dir])
 call build_zubko    (m, config_path, data_dir, NT, T_lo, T_hi [, status] [, kext_path] &
                      [, lam_min] [, include_euv] [, qtable_path] [, optics])
 call build_from_files(m, descriptor_path, data_dir, NT, T_lo, T_hi [, status] &
@@ -236,11 +236,6 @@ common to both branches.
       and never composed with the root. A host that calls the builders
       directly sets the root once with \code{sed\_set\_data\_root}, re-exported
       from \code{dust\_lib}.
-\item \code{normalization} (optional, MRN): which published normalization of
-      the $a^{-3.5}$ power law, \code{'dl84'} (default, Draine \& Lee 1984) or
-      \code{'mrn77'} (MRN's own); it is what the \code{dl84} / \code{mrn77}
-      keywords of the CLI drivers set. Any other string is refused with
-      \code{status = 4} rather than defaulted. See \S\ref{sec:mrn}.
 \item \code{stored\_q\_dir} (optional, DL07 and MRN): where this model's stored cross
       sections come from. Omitted, the model's own directory under the data
       root, with the \code{/qtable} of an HDF5 \code{qtable\_path} ahead of it.
@@ -308,31 +303,22 @@ eq.~5.1); the cutoffs are MRN's own estimates, which DL84 held fixed. There are
 the $2175$\,\AA\ feature is graphite's --- so the emergent SED carries no
 aromatic emission features at all. That is the model, not a gap in the solve.
 
-\paragraph{Two published normalizations, and which one the reference is.}
-DL84 \S Va states both in one sentence: ``we adopted $A_{\rm sil} =
-10^{-25.11}$ cm$^{2.5}$/H, and $A_C = 10^{-25.16}$ cm$^{2.5}$/H [after
-adjustment to the Bohlin et al.\ value for $N_{\rm H}/E(B-V)$, the MRN values
-are $A_{\rm sil} = 10^{-25.10}$, $A_C = 10^{-25.13}$]''. Both are offered,
-because they differ by 7\% in the graphite abundance:
+\paragraph{The normalization.} $\log_{10} A_{\rm gra} = -25.16$ and
+$\log_{10} A_{\rm sil} = -25.11$, in cm$^{2.5}$/H: the abundances DL84 \S Va
+adopted after fitting the Savage \& Mathis average extinction curve with their
+own dielectric functions. They are what Draine's own published curve
+\code{kext\_albedo\_MRN} is the size integral of --- his parameter file for it
+states the grain volumes per H, $2.49\times10^{-27}$ and $2.79\times10^{-27}$
+cm$^3$/H, and integrating $(4\pi/3)a^3\,A_i a^{-3.5}$ over $[0.005, 0.25]\,\um$
+turns those into exactly these two $A_i$. That curve ships as
+\code{data/release/kext\_albedo\_MRN} and \code{calc\_kext.x mrn} prints the
+point-by-point comparison against it at the end of every run.
 
-\begin{center}
-\begin{tabular}{@{}lccl@{}}
-\toprule
-\code{normalization} & $\log_{10} A_{\rm gra}$ & $\log_{10} A_{\rm sil}$ & \\
-\midrule
-\code{'dl84'}  & $-25.16$ & $-25.11$ & Draine \& Lee (1984), \textbf{default} \\
-\code{'mrn77'} & $-25.13$ & $-25.10$ & MRN (1977) \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\noindent \code{'dl84'} is the default because it is the model Draine's own
-published curve \code{kext\_albedo\_MRN} is the size integral of: his
-parameter file for it states the grain volumes per H, $2.49\times10^{-27}$ and
-$2.79\times10^{-27}$ cm$^3$/H, and integrating $(4\pi/3)a^3\,A_i a^{-3.5}$ over
-$[0.005, 0.25]\,\um$ turns those into exactly these two $A_i$. That curve ships
-as \code{data/release/kext\_albedo\_MRN} and \code{calc\_kext.x mrn} prints
-the point-by-point comparison against it at the end of every run.
+\noindent The same sentence of DL84 quotes MRN's \emph{own} pair,
+$A_{\rm sil} = 10^{-25.10}$ and $A_C = 10^{-25.13}$ after adjustment to the
+Bohlin, Savage \& Drake (1978) $N_{\rm H}/E(B-V)$. They differ by 7\% in the
+graphite abundance and are \emph{not} offered here: this model is the one the
+reference curve tests.
 
 \paragraph{Optics, enthalpy and grid.} Mie on the Draine (2003) dielectric
 functions --- the same \code{q\_silicate\_full} and \code{q\_graphite\_full}
@@ -591,7 +577,6 @@ MPI host prints before a collective abort:
 \code{5} & extinction table     & \code{90} & model name not one it codes \\
          &                      & \code{91} & \code{from\_files} without \code{config\_path} \\
          &                      & \code{92} & \code{zubko\_optics} neither \code{'zda'} nor \code{'mie\_d03'} \\
-         &                      & \code{93} & the MRN \code{normalization} neither \code{'dl84'} nor \code{'mrn77'} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -660,11 +645,10 @@ that calls them directly.
       \code{2} \code{lam\_min} is shorter than the D03 dielectric functions
       ($6.1992\times10^{-5}$\um), refused for the same reason as in
       \code{build\_dl07};
-      \code{3} an explicitly named \code{kext\_path} failed to load;
-      \code{4} \code{normalization} is neither \code{'dl84'} nor
-      \code{'mrn77'}. This builder reads no size-distribution file --- its
-      distribution is eq.~\eqref{eq:mrn} --- and has no polarized optics, so it
-      needs only these four.
+      \code{3} an explicitly named \code{kext\_path} failed to load.
+      This builder reads no size-distribution file --- its distribution is
+      eq.~\eqref{eq:mrn} --- and has no polarized optics, so it needs only
+      these three.
 \item \code{build\_zubko}: \code{1} config read; \code{2} fewer than 3 components;
       \code{3} a component's optics read; \code{4} grid inconsistent;
       \code{5} a component's calorimetry read failed;
@@ -846,8 +830,7 @@ The same number normalizes the $K_{\rm abs}$ column of every
 the tables and a host that links the library get the identical conversion. The
 values are $1.184949\times10^{-26}$ g/H for astrodust,
 $1.750186\times10^{-26}$ g/H for DL07, $1.524580\times10^{-26}$ g/H for MRN
-($1.586492\times10^{-26}$ under \code{'mrn77'}) and
-$1.443932\times10^{-26}$ g/H for Zubko BARE-GR-S.
+and $1.443932\times10^{-26}$ g/H for Zubko BARE-GR-S.
 
 \paragraph{Which DL07 normalization is followed, and why it matters.} DL07's
 own Table~3 gives $M_{\rm dust}/M_{\rm H} = 0.0104$ for model $j_M = 7$
@@ -2076,7 +2059,7 @@ are the files \code{dust\_extinction} reads back (\S\ref{sec:ext}).
 \begin{lstlisting}[style=sh]
 ./calc_kext.x astrodust [euv | <lam_min in um>]
 ./calc_kext.x dl07 [ld01] [euv | <lam_min in um>]
-./calc_kext.x mrn       [dl84 | mrn77] [euv | <lam_min in um>]
+./calc_kext.x mrn       [euv | <lam_min in um>]
 ./calc_kext.x zubko     [formula | table] [zda | mie_d03] [euv]
 ./calc_kext.x from_files <descriptor> [data_dir]
 \end{lstlisting}
@@ -2220,9 +2203,6 @@ carbonaceous vintage &
 Stage-1 enthalpy &
 \code{c2} &
 \code{calc\_sed.x} (astrodust), \code{calc\_enthalpy.x} \\
-MRN normalization &
-\code{dl84} (default), \code{mrn77} &
-\code{calc\_sed.x} and \code{calc\_kext.x} (mrn) \\
 Zubko size distribution &
 \code{formula} (default), \code{table} &
 \code{calc\_kext.x} (zubko) \\

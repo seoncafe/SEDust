@@ -53,8 +53,6 @@ make                        # calc_enthalpy.x calc_sed.x calc_kext.x
 #             which compute it; zubko reads the ZDA tables)
 #   PAH xsec  dl07 (default) | ld01   which published carbonaceous absorption
 #             the blend takes (dl07 model; calc_kext.x takes it too)
-#   normaliz. dl84 (default) | mrn77  which published normalization of the
-#             a^-3.5 power law (mrn model; calc_kext.x takes it too)
 #   enthalpy  c2           astrodust Stage-1 density-corrected prefactor
 #
 ./calc_sed.x astrodust qm_stati nstate=500  # -> sed_astrodust_qm_stati_ns500_*.dat
@@ -62,7 +60,6 @@ make                        # calc_enthalpy.x calc_sed.x calc_kext.x
 ./calc_sed.x astrodust mathis_orig          # -> sed_astrodust_morig_*.dat
 ./calc_sed.x dl07 lmc2_10 draine euv        # -> sed_dl07_lmc2_10_euv_draine.dat
 ./calc_sed.x mrn draine euv                 # -> sed_mrn_euv_draine.dat
-./calc_sed.x mrn mrn77                      # -> sed_mrn_mrn77.dat
 ./calc_sed.x zubko euv hardfield            # -> sed_zubko_euv_hardfield.dat
 
 # the library, for embedding in an RT code.  No T-matrix in it: link with
@@ -79,7 +76,7 @@ make use_dustlib_scatmat.x  # reference consumer of the aligned-scattering API
 ./calc_kext.x astrodust euv # the same model carried into the ionizing band
 ./calc_kext.x dl07 euv      # -> ../data/dl07/kext_dl07_MW_euv.dat
 ./calc_kext.x mrn           # -> ../data/mrn/kext_mrn.dat
-./calc_kext.x mrn mrn77 euv # the MRN 1977 abundances -> ../data/mrn/kext_mrn_mrn77_euv.dat
+./calc_kext.x mrn euv       # -> ../data/mrn/kext_mrn_euv.dat
 ./calc_kext.x zubko         # -> ../data/zubko/kext_zubko_BARE_GR_S.dat (cut at the Lyman limit)
 ./calc_kext.x zubko euv     # -> ../data/zubko/kext_zubko_BARE_GR_S_euv.dat (the whole ZDA range)
 ./calc_kext.x from_files ../data/zubko/zubko_descriptor.txt
