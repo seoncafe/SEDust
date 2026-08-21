@@ -30,7 +30,7 @@
 
 \title{Polarization in SEDust: Implementation Notes}
 \author{Kwang-il Seon}
-\date{2026 July 20}
+\date{\docmoddate}
 
 \begin{document}
 \maketitle
@@ -1388,21 +1388,31 @@ are those of Table~\ref{tab:status}.
 6 & astrodust dielectric function load failed (extreme-ultraviolet band only) \\
 7 & \code{lam\_min} below the astrodust dielectric function's own shortest
     wavelength (extreme-ultraviolet band only) \\
-8 & the extreme-ultraviolet polarized table could not be read while the grid
-    reaches into that band and polarized optics were asked for \\
+8 & the polarized $Q$ table's wavelength grid does not sit node for node on
+    the long-wavelength end of the model's grid (wrong count, or a node that
+    differs) \\
 9 & the extreme-ultraviolet band of the grid runs outside the wavelengths the
     companion polarized table covers ($0.0124$--$0.0912\um$) \\
+10 & an explicitly named extinction table (\code{kext\_path}) could not be
+    read. It is $10$ here and $5$ elsewhere because this builder's polarized
+    codes already occupy $3$, $4$, $5$, $8$ and $9$ \\
+11 & \code{euv\_tmatrix = .true.} but the spheroid optics of a band below the
+    $Q$ table are not available --- unreachable with the shipped table, which
+    leaves no such band \\
 \bottomrule
 \end{tabular}
 \caption{Status codes of \code{sed\_init} and \code{build\_astrodust} in v1.20.}
 \label{tab:status}
 \end{table}
 
-Code~8 is declared for an unreadable extreme-ultraviolet polarized table. Note
-what the current code actually does with an \emph{absent} companion table: that is
-not an error --- \code{build\_Cpol} reports it on stderr and leaves the band zero
-(\S\ref{sec:euvpol}) --- so the status a caller sees in practice is $9$, raised
-when a table that \emph{was} read does not cover the requested grid.
+An \emph{absent} extreme-ultraviolet companion table is not an error:
+\code{build\_Cpol} reports it on stderr and leaves that band zero
+(\S\ref{sec:euvpol}), and the build succeeds. The two codes that band can raise
+are $9$, when a companion table that \emph{was} read does not cover the
+requested grid, and $8$, when the main polarized table and the model grid
+disagree node for node. An implicitly defaulted main polarized table that
+cannot be read degrades to zero polarized optics; only one named through
+\code{qpol\_path} raises $4$.
 
 \code{dust\_set\_alignment} and \code{dust\_set\_alignment\_profile} have their own
 independent numbering: $1$, $2$, $3$ for an out-of-range \code{a\_align},

@@ -40,7 +40,7 @@
 
 \title{SEDust: User Manual}
 \author{Kwang-il Seon}
-\date{2026 August 1}
+\date{\docmoddate}
 
 \begin{document}
 \maketitle
@@ -66,7 +66,8 @@ aligned-grain scattering matrix (\S\ref{sec:pol}). The one non-additive
 difference is that the \code{status} codes of \code{sed\_init} /
 \code{build\_astrodust} are numbered differently, because codes 3--5 are taken
 by the polarized inputs: what is \code{3} and \code{4} in v1.00 is \code{6} and
-\code{7} here (\S\ref{sec:status}). Code that only tests \code{status /= 0} is
+\code{7} here, and an unreadable \code{kext\_path} is \code{5} there and
+\code{10} here (\S\ref{sec:status}). Code that only tests \code{status /= 0} is
 unaffected.
 \end{abstract}
 
@@ -195,7 +196,7 @@ call build_astrodust(m, qtable_path, sizedist_path, NT, T_lo, T_hi &
                      [, kext_path] [, euv_tmatrix])
 call build_dl07     (m, qtable_path, sizedist_path, sd_index, U, NT, T_lo, T_hi &
                      [, status] [, lam_min] [, kext_path] [, lam_axis] &
-                     [, include_euv] [, stored_q_dir])
+                     [, include_euv] [, stored_q_dir] [, pah_xsec])
 call build_zubko    (m, config_path, data_dir, NT, T_lo, T_hi [, status] [, kext_path] &
                      [, lam_min] [, include_euv] [, qtable_path] [, optics])
 call build_from_files(m, descriptor_path, data_dir, NT, T_lo, T_hi [, status] &
@@ -235,6 +236,11 @@ common to both branches.
       root, with the \code{/qtable} of an HDF5 \code{qtable\_path} ahead of it.
       Passed blank, nothing stored is read and every optic is solved from the
       dielectric functions.
+\item \code{pah\_xsec} (optional, DL07): which vintage of the PAH cross
+      sections the carbonaceous channel is built on, \code{'dl07'} (default,
+      the DL07 paper's own prescription) or \code{'ld01'} (Li \& Draine 2001);
+      it is what the \code{ld01} keyword of the CLI drivers sets. Any other
+      string is refused with \code{status = 8} rather than defaulted.
 \item \code{qtable\_path} (optional, Zubko): the model's HDF5 product, which is
       where its stored cross sections then come from. This is an argument
       rather than hidden state so that a program writing \code{/kext} into a
@@ -347,7 +353,7 @@ call dust_emission(m, J_lam, lamI_total [, lamI_chan] [, status])
 \item \code{status} (optional): error report; see \S\ref{sec:status}.
 \end{itemize}
 
-\subsection{Solver choice (\code{m\%stoch\_method})}
+\subsection{Solver choice (\code{m\%stoch\_method})}\label{sec:solver}
 
 The field \code{m\%stoch\_method} selects how each grain is heated
 (Table~\ref{tab:solver}); \code{dust\_emission} honors it.
@@ -369,6 +375,54 @@ temperature \emph{distribution} (PAH/NIR features); \code{'equil'} forces
 equilibrium.}
 \label{tab:solver}
 \end{table}
+
+\paragraph{The cooling kernel of \code{'qm'} (\code{qm\_method}).}
+\code{'qm'} names the energy-space transition matrix; \emph{which}
+downward-transition rate fills it is a second and independent selector, the
+module variable \code{qm\_method} of \code{stoch\_qm\_mod}
+(\code{use stoch\_qm\_mod, only: qm\_method}), set once before the solve. It is
+module state, not a field of \code{m}, and the other three solvers never read
+it.
+
+\begin{center}
+\begin{tabular}{@{}lL{0.68\textwidth}@{}}
+\toprule
+\code{qm\_method} & downward transition rate \\
+\midrule
+\code{'dbdis'} & thermal-discrete: every transition $f < i$ retained.
+  \textbf{Default}, and the production reference. \\
+\code{'dbcon'} & thermal-continuous: the downward rates are collapsed onto the
+  nearest-neighbor transition, which reproduces the continuous-cooling
+  approximation of the Guhathakurta \& Draine temperature-space recursion. \\
+\code{'stati'} & exact-statistical (microcanonical): the rate carries the
+  degeneracy ratio $g_f/g_i$ in place of a Planck factor, with $g(U)$ counted
+  exactly by the Beyer--Swinehart algorithm over the vibrational mode spectrum,
+  and the emission is the degeneracy-weighted kernel rather than a bin
+  blackbody. No bin temperature enters it at all. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\code{'stati'} needs the full mode spectrum and a state count that stays
+representable, so it is applied only to PAH grains with $a \le 25$\,\AA\ and
+reverts to \code{'dbdis'} for every other grain --- silicate included, as in
+Draine's own production, whose silicate \code{'stati'} branch is flagged
+untested. For a silicate grain the counted $\ln g$ that survives the
+feasibility guards still carries a residual non-monotonicity of order $14$ in
+the log, which the $\exp(\ln g_k - \ln g_j)$ ratio amplifies into a spurious
+mid-infrared spike. Where it does run, \code{'stati'} agrees with
+\code{'dbdis'} to within a few percent in every band. An unrecognized
+\code{qm\_method} stops the run rather than being defaulted.
+
+\paragraph{Sizing the transition matrix.} Two further module variables of
+\code{stoch\_qm\_mod} set its dimensions, and again only \code{'qm'} reads
+them: \code{qm\_nstate\_default}, the number of enthalpy bins (default
+\code{200}), and \code{qm\_nisrf\_max}, the cap on how many radiation-field
+wavelengths the matrix is built on (default \code{200}). Draine's production
+settings are $500$ bins and the full $2500$-point field, with no downsampling.
+The CLI drivers expose the kernel and both sizes as \code{qm\_dbcon} /
+\code{qm\_stati}, \code{nstate=N} and \code{nisrf=N}
+(\S\ref{sec:standalone:options}).
 
 \subsection{Equilibrium-temperature options}\label{sec:eqtemp}
 
@@ -446,6 +500,7 @@ MPI host prints before a collective abort:
 \code{4} & \code{lam\_min} not coverable & \code{10} & polarized optics \\
 \code{5} & extinction table     & \code{90} & model name not one of the four \\
          &                      & \code{91} & \code{from\_files} without \code{config\_path} \\
+         &                      & \code{92} & \code{zubko\_optics} neither \code{'zda'} nor \code{'mie\_d03'} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -471,14 +526,20 @@ that calls them directly.
       \code{(tab\%NLAM, tab\%n\_channel)}.
 \item \code{build\_dl07}: \code{1} $Q$-table load failed;
       \code{2} size-distribution load failed;
+      \code{5} an explicitly named \code{kext\_path} failed to load;
       \code{7} \code{lam\_min} is shorter than the D03 dielectric functions
       ($6.1992\times10^{-5}$\um\ --- the longer-reaching of astrosilicate and
       graphite), which is refused rather than served with a refractive index
-      frozen at the table boundary. Codes \code{3}--\code{6}, \code{8} and
-      \code{9} cannot occur on this path: the DL07 model has no polarized
-      optics and needs no separate EUV dielectric function, because its optics
-      are D03 Mie at every wavelength. The numbering is shared with
-      \code{build\_astrodust} on purpose, so a host can decode one table.
+      frozen at the table boundary;
+      \code{8} \code{pah\_xsec} is neither \code{'dl07'} nor \code{'ld01'}.
+      Codes \code{3}, \code{4}, \code{6}, \code{9}, \code{10} and \code{11}
+      cannot occur on this path: the DL07 model has no polarized optics and
+      needs no separate EUV dielectric function, because its optics are D03 Mie
+      at every wavelength. Everything but \code{5} and \code{8} is numbered as
+      in \code{build\_astrodust} on purpose, so a host can decode one table.
+      \code{8} is reachable only by calling \code{build\_dl07} directly, since
+      \code{build\_dust} does not forward \code{pah\_xsec}, so no
+      \code{build\_dust} code corresponds to it.
 \item \code{build\_astrodust} (and \code{sed\_init}):
       \code{1} $Q$-table load failed;
       \code{2} size-distribution load failed;
@@ -528,6 +589,22 @@ that calls them directly.
 \item \code{dust\_extinction}: \code{1} an output array is not of size
       \code{m\%NLAM}; \code{2} no extinction table was loaded for this model;
       \code{3} \code{m\%lam} runs outside the table.
+\item \code{size\_integrated\_extinction}: \code{1} an output array is not of
+      size \code{m\%NLAM}. It reads no table, so it has no counterparts of
+      \code{dust\_extinction}'s \code{2} and \code{3}.
+\item \code{dust\_set\_alignment}: \code{1} $a_{\rm align} \le 0$;
+      \code{2} $\alpha_{\rm align} \le 0$; \code{3} $f_{\max}$ outside
+      $[0,1]$; \code{4} the alignment guard of \S\ref{sec:pol:align} ---
+      an aligned scattering table is loaded and was integrated under a
+      different profile. \code{4} is \emph{non-fatal}: the $f_{\rm align}$
+      update completes and the emission and \code{Cpol\_ext} channels honor it.
+\item \code{dust\_set\_alignment\_profile}: \code{1} \code{aeff\_in} and
+      \code{falign\_in} differ in size, or fewer than 2 points;
+      \code{2} \code{aeff\_in} not positive and strictly increasing;
+      \code{3} a \code{falign\_in} value outside $[-1,1]$; \code{4} the same
+      non-fatal alignment guard, which a tabulated profile always trips when a
+      table is loaded. Do not read a \code{4} from either setter as
+      \code{build\_astrodust}'s \code{4}: the numberings are independent.
 \end{itemize}
 
 %====================================================================
@@ -2044,6 +2121,12 @@ Zubko optics set &
 combination across axes is a valid run.}
 \label{tab:runoptions}
 \end{table}
+
+The three \code{qm} words name one solver and one cooling kernel between them:
+all three set \code{stoch\_method = 'qm'}, and they set \code{qm\_method} to
+\code{'dbdis'} (the default), \code{'dbcon'} and \code{'stati'} respectively
+(\S\ref{sec:solver}). They are values of one axis, not two settings, so
+\code{qm qm\_stati} is the refusal below rather than a compound request.
 
 Two kinds of combination are refused rather than resolved silently. Naming two
 values of one axis --- two solvers, or two graphite sources --- would leave the

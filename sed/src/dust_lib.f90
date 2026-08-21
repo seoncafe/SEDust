@@ -182,9 +182,10 @@ module dust_lib
    ! their optics in any order. (size_integrated_extinction's own header
    ! claimed the restriction for a while; it never applied to it.)
    !
-   ! status is 0 on success, 1 if an output array is not of size m%NLAM, 2 if
-   ! no extinction table was loaded for this model, and 3 if m%lam runs outside
-   ! the table; when it is omitted such a call stops the run.
+   ! dust_extinction's status is 0 on success, 1 if an output array is not of
+   ! size m%NLAM, 2 if no extinction table was loaded for this model, and 3 if
+   ! m%lam runs outside the table; when it is omitted such a call stops the run.
+   ! size_integrated_extinction reads no table, so it uses 1 alone.
    !
    ! All four builders carry scattering optics, so albedo and gbar are physical
    ! for every model: astrodust from the T-matrix Q table at every wavelength
@@ -234,6 +235,11 @@ module dust_lib
    !   dust_set_alignment_profile:  1 aeff_in/falign_in size mismatch or < 2 points
    !                                2 aeff_in not positive and strictly increasing
    !                                3 a falign_in value outside [-1, 1]
+   ! Either setter also returns 4 when an aligned scattering table is loaded and
+   ! the requested profile is not the one it was integrated under (a tabulated
+   ! profile never is).  4 is NON-FATAL: the falign update completes and the
+   ! emission and Cpol_ext channels re-integrate under the new profile; only the
+   ! preintegrated scattering matrices no longer correspond to it.
    ! A tabulated efficiency outside [-1, 1] is rejected rather than clamped:
    ! |f| <= 1 is the physical bound, so exceeding it is a caller error.
    ! NEGATIVE values are accepted on purpose -- a grain in the wrong internal
@@ -270,6 +276,7 @@ module dust_lib
    !   5   extinction table
    !   90  model name not one of the four
    !   91  from_files without config_path
+   !   92  zubko_optics not one of 'zda' | 'mie_d03'
    ! The four builders below keep their OWN numbering, which is not the same
    ! one -- an unreadable extinction table is 10 for astrodust, 5 for DL07, 6
    ! for zubko and 9 for from_files. A host calling them directly reads the
@@ -298,6 +305,9 @@ module dust_lib
    !                                  build_dl07 only:
    !                                  5 an explicitly named kext_path failed to
    !                                    load
+   !                                  8 pah_xsec is not 'dl07' | 'ld01'.  Only
+   !                                    reachable through build_dl07 itself;
+   !                                    build_dust does not forward pah_xsec.
    !                                  build_astrodust only:
    !                                 10 an explicitly named kext_path failed to
    !                                    load. It is 10 here and 5 everywhere

@@ -9,7 +9,7 @@
 
 \title{Reproducing the Hensley \& Draine (2023) Astrodust SED}
 \author{Kwang-il Seon}
-\date{2026 August 1}
+\date{\docmoddate}
 
 \newcommand{\Cabs}{\ensuremath{C_{\rm abs}}}
 \newcommand{\Qabs}{\ensuremath{Q_{\rm abs}}}
@@ -2278,8 +2278,9 @@ value. \emph{It is not one.} No other product carries the column at
 all. When the companion
 table \emph{is} present, the grid must lie inside it: an EUV block
 reaching outside \SIrange{0.0124}{0.0912}{\micro\meter} is refused with
-\texttt{status = 9}, and a table that was requested but cannot be read
-with \texttt{status = 8}. Below \SI{0.0124}{\micro\meter}
+\texttt{status = 9}. (\texttt{status = 8} is the neighboring check on
+the main polarized table, whose wavelength grid must sit node for node
+on the model's own.) Below \SI{0.0124}{\micro\meter}
 (\SI{100}{\electronvolt}) the opaque geometric-optics limit the table
 relies on is itself invalid, which is why that is the floor. Measured
 first-principles size integrals put the true
