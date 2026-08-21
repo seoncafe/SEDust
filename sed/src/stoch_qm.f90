@@ -2045,9 +2045,9 @@ contains
 
          ! Safety: make sure we have enough distinct modes
          if (nset_max < 3 .or. nset < 3) then
-            ! Fallback: too few modes for mode-tracking; use log-spaced
+            ! Too few distinct mode energies to track; bin U logarithmically
             nset = 0; nset_out = 0
-            call fallback_log_bins(nstate, umin, umax, u, ua, ub)
+            call log_spaced_energy_bins(nstate, umin, umax, u, ua, ub)
             deallocate(emodes_new)
             goto 500   ! jump to the T(U) and degeneracy computation
          end if
@@ -2234,8 +2234,10 @@ contains
       end subroutine select_de
 
 
-      ! Fallback: simple log-spaced bins when mode-tracking is infeasible
-      subroutine fallback_log_bins(ns, umin_f, umax_f, u_f, ua_f, ub_f)
+      ! Logarithmically spaced bins in internal energy U, spanning [umin, umax].
+      ! Used when the vibrational spectrum has too few distinct mode energies for
+      ! the mode-tracking bin construction above to resolve them.
+      subroutine log_spaced_energy_bins(ns, umin_f, umax_f, u_f, ua_f, ub_f)
          integer,  intent(in)  :: ns
          real(wp), intent(in)  :: umin_f, umax_f
          real(wp), intent(out) :: u_f(ns), ua_f(ns), ub_f(ns)
@@ -2255,7 +2257,7 @@ contains
          ub_f(1) = ua_f(2)
          ua_f(ns) = ub_f(ns - 1)
          ub_f(ns) = u_f(ns)
-      end subroutine fallback_log_bins
+      end subroutine log_spaced_energy_bins
 
 
       ! Number of states in one bin [ua_erg, ub_erg] from the cumulative

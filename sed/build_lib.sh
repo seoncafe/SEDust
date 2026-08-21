@@ -13,8 +13,10 @@
 #                                  that is content with the volume-equivalent
 #                                  sphere (euv_tmatrix = .false.), needs
 #                                  nothing else.  euv_tmatrix = .true. is then
-#                                  REFUSED with status 6, never answered with
-#                                  the sphere behind the caller's back.
+#                                  REFUSED -- status 6 from build_astrodust, 8
+#                                  from build_dust, which keeps its own single
+#                                  vocabulary -- never answered with the sphere
+#                                  behind the caller's back.
 #
 #   WITH_TMATRIX=1 ./build_lib.sh  The T-matrix and the spheroid optics of the
 #                                  EUV band go into the SAME archive, so the
@@ -153,5 +155,6 @@ ar rcs lib/libsedust.a lib/*.o
 if [ -n "$WITH_TMATRIX" ]; then
    echo "Built: sed/lib/libsedust.a  (with the T-matrix; call use_tmatrix_euv_band_optics)"
 else
-   echo "Built: sed/lib/libsedust.a  (no T-matrix; euv_tmatrix = .true. gives status 6)"
+   echo "Built: sed/lib/libsedust.a  (no T-matrix; euv_tmatrix = .true. gives"
+   echo "       status 6 from build_astrodust, 8 from build_dust)"
 fi
