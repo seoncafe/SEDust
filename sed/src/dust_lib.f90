@@ -210,6 +210,7 @@ module dust_lib
    ! Omitting it falls to the model's default, which is the HDF5 product --
    !   astrodust   ../data/astrodust/sedust_astrodust.h5
    !   dl07        ../data/dl07/sedust_dl07.h5
+   !   mrn         ../data/mrn/sedust_mrn.h5
    !   zubko       ../data/zubko/sedust_zubko.h5
    !   from_files  none
    ! -- with the model's EUV text table behind it for a tree built without
@@ -221,15 +222,15 @@ module dust_lib
    ! product path unconditionally, which made the soft default hard -- a tree
    ! without the curve could then not build a model for emission alone -- and
    ! it applied a text fallback to two models out of three. One route now, for
-   ! all four.
+   ! every model.
    !
    ! include_euv AND lam_min MEAN ONE THING EACH, FOR EVERY MODEL.
    ! include_euv selects the view: .false. cuts the model's own axis at
    ! i_lyman, the LAST node at or below 0.0912 um, so the grid a host gets
    ! COVERS the Lyman limit whatever model it named. lam_min states the
-   ! shortest wavelength the model must COVER, and never truncates: astrodust
-   ! and DL07 meet it by extending on the dielectric function their optics come
-   ! from, zubko and from_files meet it when their own tables already reach and
+   ! shortest wavelength the model must COVER, and never truncates: astrodust,
+   ! DL07 and MRN meet it by extending on the dielectric function their optics
+   ! come from, zubko and from_files meet it when their own tables already reach and
    ! refuse it (status 4 out of build_dust) when they do not.
    !
    ! Both were previously model-dependent, and a host with one call and one
@@ -252,12 +253,13 @@ module dust_lib
    ! its own optics tables, from 1.0e-3 um. A model grid reaching outside the
    ! table it was given is refused (status 3), never extrapolated.
    !
-   ! Every model carries its scattering optics, so all four write a physical
-   ! albedo into their tables:
+   ! Every model carries its scattering optics, so every one writes a physical
+   ! albedo into its table:
    !   astrodust  Csca and <cos> from the random-orientation T-matrix Q table
    !   dl07       Mie on the D03 astrosilicate and graphite dielectric
    !              functions (q_silicate_full / q_graphite_full); the PAH
    !              component scatters negligibly and enters through absorption
+   !   mrn        the same two calculations, on this model's own radius grid
    !   zubko      Q_sca and <cos> columns of the model's own ZDA optics tables
    !   from_files same, for whatever tables the descriptor names
    ! A population that genuinely does not scatter leaves its optics unallocated
@@ -277,8 +279,9 @@ module dust_lib
    ! M_dust/N_H = sum_pop rho_bulk * sum_a (4/3) pi a^3 dn(a). Every builder
    ! states those densities, so it is defined for every model in the tree:
    !   astrodust  rho_Ad = 2.74, rho_PAH = 2.0 g/cm^3 (HD23)
-   !   dl07       astrosilicate 3.5, graphite 2.24 g/cm^3 (Draine & Lee 1984,
-   !              Weingartner & Draine 2001)
+   !   dl07       astrosilicate 3.5, graphitic carbon 2.2 g/cm^3 (Draine & Li
+   !              2007 sec. 2)
+   !   mrn        the same two
    !   zubko      each component's density as its own ZDA optics file states it
    !   from_files the descriptor's rho, or the optics file's when that is 0
    ! It is the same number calc_kext.x normalizes the trailing K_abs column of
@@ -303,12 +306,13 @@ module dust_lib
    !   2   size distribution          7   grid inconsistent between components
    !   3   dielectric function        8   EUV spheroid optics unavailable
    !   4   lam_min not coverable      9   model definition (config / descriptor)
-   !   90  model name not one of the four
+   !   90  model name not one of those it codes
    !   91  from_files without config_path
    !   92  zubko_optics not one of 'zda' | 'mie_d03'
-   ! The four builders below it keep their OWN numbering, which is not the same
-   ! one -- an unreadable extinction table is 5 for astrodust and DL07, 6 for
-   ! zubko and 9 for from_files, and 6 means something else again for
+   !   93  the MRN normalization not one of 'dl84' | 'mrn77'
+   ! The builders below it keep their OWN numbering, which is not the same
+   ! one -- an unreadable extinction table is 5 for astrodust and DL07, 3 for
+   ! MRN, 6 for zubko and 9 for from_files, and 6 means something else again for
    ! astrodust. A host calling them directly reads the list below; a host on
    ! build_dust reads the list above and does not branch on the model name.
    !
@@ -335,6 +339,11 @@ module dust_lib
    !                                    library built without the T-matrix), or
    !                                    the registered one could not compute
    !                                    the band
+   !   build_mrn:     1 wavelength axis read failed
+   !                  2 lam_min below the D03 dielectric functions' own
+   !                    shortest wavelength (EUV band only)
+   !                  3 an explicitly named kext_path failed to load
+   !                  4 normalization is not 'dl84' | 'mrn77'
    !   build_zubko:   1 config read failed        2 fewer than 3 components
    !                  3 a component's optics read  4 grid inconsistent
    !                  5 a component's calorimetry read failed
@@ -368,7 +377,8 @@ module dust_lib
    use sed_paths,         only: sed_set_data_root, sed_get_data_root
    use sed_mathlib,           only: locate
    use sed_astrodust_mod, only: dust_model_t, build_dust, &
-                                build_astrodust, build_dl07, build_zubko, build_from_files, &
+                                build_astrodust, build_dl07, build_mrn, &
+                                build_zubko, build_from_files, &
                                 dust_emission, dust_emission_single_teq, &
                                 dust_extinction, size_integrated_extinction, &
                                 dust_mass_per_H, euv_band_optics_i, &
@@ -379,13 +389,13 @@ module dust_lib
 
    ! Re-exported model API.  build_dust is the one entry point: it takes the
    ! model by name and a data directory, and include_euv decides whether the
-   ! grid carries the ionizing band.  The four builders below it stay exported
+   ! grid carries the ionizing band.  The builders below it stay exported
    ! so that a host naming its own files keeps working unchanged.
    public :: dust_model_t, build_dust
-   public :: build_astrodust, build_dl07, build_zubko, build_from_files
+   public :: build_astrodust, build_dl07, build_mrn, build_zubko, build_from_files
    ! Where the library looks for the data it was not handed a path to.
    ! build_dust sets this from its own data_dir and restores it, so a host on
-   ! that entry point never calls these.  A host that calls the four builders
+   ! that entry point never calls these.  A host that calls the builders
    ! directly, and keeps its data somewhere other than <workdir>/../data, sets
    ! the root once before the first build.
    public :: sed_set_data_root, sed_get_data_root

@@ -46,9 +46,10 @@ It computes the infrared emission spectrum \emph{and} the transport optics
 radiation field, and is intended to be linked into a Fortran 3D
 radiative-transfer (RT) code. It handles several dust models as peers --- the
 HD23 \emph{astrodust}+PAH model, the Draine \& Li (2007) silicate+carbonaceous
-model, the Zubko, Dwek \& Arendt (2004) BARE-GR-S model, and arbitrary
-file-defined models --- through one object type, one emission call, and one
-extinction call. The numerically validated stochastic-heating solver is reused
+model, the Mathis, Rumpl \& Nordsieck (1977) graphite+silicate model, the
+Zubko, Dwek \& Arendt (2004) BARE-GR-S model, and arbitrary file-defined
+models --- through one object type, one emission call, and one extinction
+call. The numerically validated stochastic-heating solver is reused
 unchanged; the library is an additive layer on top of it.
 
 This version is the \textbf{scalar} branch (v1.00): unpolarized cross sections
@@ -158,6 +159,7 @@ builder & model & channels & notes \\
 \midrule
 \code{build\_astrodust} & HD23 astrodust+PAH & \code{AD}, \code{PAH} & $N_C{=}417$, D16 graphite \\
 \code{build\_dl07}      & Draine \& Li 2007   & \code{SIL}, \code{CARB} & $N_C{=}470$, D03 graphite \\
+\code{build\_mrn}       & Mathis, Rumpl \& Nordsieck 1977 & \code{GRA}, \code{SIL} & $a^{-3.5}$, no PAH \\
 \code{build\_zubko}     & Zubko (ZDA 2004) BARE-GR-S & \code{PAH}, \code{GRA}, \code{SIL} & neutral PAH only \\
 \code{build\_from\_files} & file-defined & \code{CH1}, \code{CH2}, $\dots$ & generic loader \\
 \bottomrule
@@ -170,7 +172,7 @@ parameters internally.}
 \noindent Signatures (all optional arguments in brackets; every optional is a
 keyword argument in the order shown). \code{build\_dust} is the one entry
 point --- it takes the model by name and a data directory and resolves the rest
-from the HDF5 products (\S\ref{sec:hdf5}); the four builders below it stay
+from the HDF5 products (\S\ref{sec:hdf5}); the builders below it stay
 exported so that a host naming its own files keeps working:
 \begin{lstlisting}
 call build_dust     (m, model, data_dir [, NT, T_lo, T_hi] [, include_euv] &
@@ -183,6 +185,9 @@ call build_astrodust(m, qtable_path, sizedist_path, NT, T_lo, T_hi &
 call build_dl07     (m, qtable_path, sizedist_path, sd_index, U, NT, T_lo, T_hi &
                      [, status] [, lam_min] [, kext_path] [, lam_axis] &
                      [, include_euv] [, stored_q_dir] [, pah_xsec])
+call build_mrn      (m, qtable_path, NT, T_lo, T_hi [, status] [, lam_min] &
+                     [, kext_path] [, lam_axis] [, include_euv] &
+                     [, stored_q_dir] [, normalization])
 call build_zubko    (m, config_path, data_dir, NT, T_lo, T_hi [, status] [, kext_path] &
                      [, lam_min] [, include_euv] [, qtable_path] [, optics])
 call build_from_files(m, descriptor_path, data_dir, NT, T_lo, T_hi [, status] &
@@ -210,10 +215,15 @@ call build_from_files(m, descriptor_path, data_dir, NT, T_lo, T_hi [, status] &
       host may call \code{build\_dust} from any working directory with an
       absolute path, and a file that cannot be read arrives as a \code{status},
       never as a runtime abort. A path the caller names itself is used as given
-      and never composed with the root. A host that calls the four builders
+      and never composed with the root. A host that calls the builders
       directly sets the root once with \code{sed\_set\_data\_root}, re-exported
       from \code{dust\_lib}.
-\item \code{stored\_q\_dir} (optional, DL07): where this model's stored cross
+\item \code{normalization} (optional, MRN): which published normalization of
+      the $a^{-3.5}$ power law, \code{'dl84'} (default, Draine \& Lee 1984) or
+      \code{'mrn77'} (MRN's own); it is what the \code{dl84} / \code{mrn77}
+      keywords of the CLI drivers set. Any other string is refused with
+      \code{status = 4} rather than defaulted. See \S\ref{sec:mrn}.
+\item \code{stored\_q\_dir} (optional, DL07 and MRN): where this model's stored cross
       sections come from. Omitted, the model's own directory under the data
       root, with the \code{/qtable} of an HDF5 \code{qtable\_path} ahead of it.
       Passed blank, nothing stored is read and every optic is solved from the
@@ -227,7 +237,7 @@ call build_from_files(m, descriptor_path, data_dir, NT, T_lo, T_hi [, status] &
       where its stored cross sections then come from. This is an argument
       rather than hidden state so that a program writing \code{/kext} into a
       product takes its optics from the \code{/qtable} of that same product.
-\item \code{lam\_min} (optional, astrodust and DL07): shortest wavelength
+\item \code{lam\_min} (optional, astrodust, DL07 and MRN): shortest wavelength
       [\um] the model must cover, for a host that transports ionizing
       radiation. See \S\ref{sec:euv}. \textbf{Omitting it reproduces the previous
       behavior exactly} --- the grid, and every number derived from it, is
@@ -281,6 +291,7 @@ builder & default \code{kext\_path} \\
 \midrule
 \code{build\_astrodust}   & \code{../data/astrodust/kext\_astrodust\_MW\_euv.dat} \\
 \code{build\_dl07}        & \code{../data/dl07/kext\_dl07\_MW\_euv.dat} \\
+\code{build\_mrn}         & \code{../data/mrn/kext\_mrn\_euv.dat} \\
 \code{build\_zubko}       & \code{../data/zubko/kext\_zubko\_BARE\_GR\_S\_euv.dat} \\
 \code{build\_from\_files} & none \\
 \bottomrule
@@ -294,7 +305,8 @@ ionizing radiation and one that does not; it is the \emph{narrower} non-EUV
 table that has to be named explicitly. The astrodust pair differs by the $633$
 wavelengths the \code{\_euv} $Q$ table carries below the Lyman limit; the DL07
 pair by those and by the further $61$ points its D03 optical constants reach
-past the table; the Zubko pair by $335$ --- its own ZDA tables carry $336$ nodes
+past the table, and the MRN pair by the same $694$, its optics being that same
+calculation; the Zubko pair by $335$ --- its own ZDA tables carry $336$ nodes
 below that limit and the narrow product keeps the last of them,
 \SI{0.08998}{\micro\meter}, so that it still covers the band a host transports
 --- and there the wide product is the tables' own range and the narrow one is
@@ -303,6 +315,86 @@ that range cut, the reverse of the other two: the Zubko model needs no EUV
 \SI{1.24}{\kilo\electronvolt}.}
 \label{tab:models:kext}
 \end{table}
+
+\subsection{The MRN model}\label{sec:mrn}
+
+\code{build\_mrn} is the classical Mathis, Rumpl \& Nordsieck (1977) mixture:
+graphite and astrosilicate spheres, one power law per material,
+%
+\begin{equation}
+  \frac{dn_i}{da} = A_i\, n_{\rm H}\, a^{-3.5},
+  \qquad 0.005\,\um \le a \le 0.25\,\um,
+  \label{eq:mrn}
+\end{equation}
+%
+cut sharply at both ends. Equation~\eqref{eq:mrn} is Draine \& Lee (1984,
+eq.~5.1); the cutoffs are MRN's own estimates, which DL84 held fixed. There are
+\emph{no} PAHs in it --- the smallest grain is a 50\,\AA\ graphite sphere and
+the $2175$\,\AA\ feature is graphite's --- so the emergent SED carries no
+aromatic emission features at all. That is the model, not a gap in the solve.
+
+\paragraph{Two published normalizations, and which one the reference is.}
+DL84 \S Va states both in one sentence: ``we adopted $A_{\rm sil} =
+10^{-25.11}$ cm$^{2.5}$/H, and $A_C = 10^{-25.16}$ cm$^{2.5}$/H [after
+adjustment to the Bohlin et al.\ value for $N_{\rm H}/E(B-V)$, the MRN values
+are $A_{\rm sil} = 10^{-25.10}$, $A_C = 10^{-25.13}$]''. Both are offered,
+because they differ by 7\% in the graphite abundance:
+
+\begin{center}
+\begin{tabular}{@{}lccl@{}}
+\toprule
+\code{normalization} & $\log_{10} A_{\rm gra}$ & $\log_{10} A_{\rm sil}$ & \\
+\midrule
+\code{'dl84'}  & $-25.16$ & $-25.11$ & Draine \& Lee (1984), \textbf{default} \\
+\code{'mrn77'} & $-25.13$ & $-25.10$ & MRN (1977) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent \code{'dl84'} is the default because it is the model Draine's own
+published curve \code{kext\_albedo\_MRN} is the size integral of: his
+parameter file for it states the grain volumes per H, $2.49\times10^{-27}$ and
+$2.79\times10^{-27}$ cm$^3$/H, and integrating $(4\pi/3)a^3\,A_i a^{-3.5}$ over
+$[0.005, 0.25]\,\um$ turns those into exactly these two $A_i$. That curve ships
+as \code{data/release/kext\_albedo\_MRN} and \code{calc\_kext.x mrn} prints
+the point-by-point comparison against it at the end of every run.
+
+\paragraph{Optics, enthalpy and grid.} Mie on the Draine (2003) dielectric
+functions --- the same \code{q\_silicate\_full} and \code{q\_graphite\_full}
+the DL07 model's silicate and graphite come from, graphite on the
+random-orientation average $\tfrac13\,E\!\parallel\!c + \tfrac23\,E\!\perp\!c$.
+MRN themselves used Wickramasinghe's optical constants; DL84 recomputed this
+size distribution on theirs, and D03 is the current revision of those. The
+enthalpies are the Draine \& Li (2001) heat capacities, and the densities
+$3.5$ and $2.2$\,g\,cm$^{-3}$ --- the values those capacities and the D03
+optics are both defined with. Because the optics are dielectric-function Mie at
+every wavelength, the model takes only a wavelength \emph{axis} from its
+product, exactly as DL07 does, and \code{lam\_min} extends the grid rather
+than the physics. The radius grid is the model's own: 70 log-spaced points with
+the two cutoffs of eq.~\eqref{eq:mrn} on its ends.
+
+\paragraph{What the comparison against Draine's curve shows.} From the far
+ultraviolet through $\sim20\,\um$ --- the whole band the size distribution was
+fitted in --- our $C_{\rm ext}$/H agrees with \code{kext\_albedo\_MRN} to
+$1$--$2\%$. Longward of $\sim60\,\um$ ours is lower, by $22\%$ at
+$100\,\um$ and $18\%$ at $1000\,\um$. That is an optical-constants vintage
+difference and not a defect here: Draine's MRN table is dated December 2002 and
+its silicate is his \code{ICOMP=7} ``smoothed UV silicate'', while ours is the
+2003 astrosilicate. His own two curves for the \emph{same} power law and the
+same $a_{\max}$ at essentially the same total volume per H --- the 2002 MRN
+table against the D03 \code{amax\_0.25um} one --- differ by $+23\%$ at
+$100\,\um$ and $+15\%$ at $1000\,\um$ in the same direction. Our D03 optics
+are the ones checked against his D03-vintage DL07 table, which they reproduce
+to $0.01\%$ in the same band (\S\ref{sec:ext}).
+
+\paragraph{Energy is conserved.} Solved with \code{equil} the model emits
+$0.99987$ of what it absorbs from the Mathis field, and with \code{draine}
+$1.00003$ --- the same $10^{-4}$ closure the DL07 model gives ($0.99991$).
+Under the default \code{heuristic} solver it emits $0.949$, against DL07's
+$0.977$; that shortfall is the heuristic solver's own accuracy on this size
+distribution, whose smallest grains are stochastically heated $50$\,\AA\
+graphite spheres, and not a property of the model
+(\S\ref{sec:solver}).
 
 \paragraph{Two routes to the Zubko model.} \code{build\_zubko} evaluates the ZDA
 log-polynomial size-distribution \emph{formula} (coefficients read from
@@ -520,14 +612,15 @@ MPI host prints before a collective abort:
 \code{1} & optics table         & \code{7}  & grid inconsistent between components \\
 \code{2} & size distribution    & \code{8}  & EUV spheroid optics unavailable \\
 \code{3} & dielectric function  & \code{9}  & model definition (config / descriptor) \\
-\code{4} & \code{lam\_min} not coverable & \code{90} & model name not one of the four \\
+\code{4} & \code{lam\_min} not coverable & \code{90} & model name not one it codes \\
 \code{5} & extinction table     & \code{91} & \code{from\_files} without \code{config\_path} \\
          &                      & \code{92} & \code{zubko\_optics} neither \code{'zda'} nor \code{'mie\_d03'} \\
+         &                      & \code{93} & the MRN \code{normalization} neither \code{'dl84'} nor \code{'mrn77'} \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\noindent The four builders keep their own numbering, listed below, for a host
+\noindent The builders keep their own numbering, listed below, for a host
 that calls them directly.
 
 \begin{itemize}
@@ -577,6 +670,15 @@ that calls them directly.
       Code \code{8} is reachable only by calling \code{build\_dl07} directly:
       \code{build\_dust} does not forward that argument, so no \code{build\_dust}
       code corresponds to it.
+\item \code{build\_mrn}: \code{1} the wavelength axis could not be read;
+      \code{2} \code{lam\_min} is shorter than the D03 dielectric functions
+      ($6.1992\times10^{-5}$\um), refused for the same reason as in
+      \code{build\_dl07};
+      \code{3} an explicitly named \code{kext\_path} failed to load;
+      \code{4} \code{normalization} is neither \code{'dl84'} nor
+      \code{'mrn77'}. This builder reads no size-distribution file --- its
+      distribution is eq.~\eqref{eq:mrn} --- and has no polarized optics, so it
+      needs only these four.
 \item \code{build\_zubko}: \code{1} config read; \code{2} fewer than 3 components;
       \code{3} a component's optics read; \code{4} grid inconsistent;
       \code{5} a component's calorimetry read failed;
@@ -671,7 +773,7 @@ column to six decimals, which floors to $0$ in the far infrared).
 scattering-weighted average, and re-weighting it would need the size-resolved
 optics the table does not carry.
 
-\paragraph{Every model scatters.} All four builders populate the
+\paragraph{Every model scatters.} Every builder populates the
 extinction-side scattering optics, so the \code{albedo} and \code{gbar} in every
 table are physical:
 
@@ -684,6 +786,8 @@ table are physical:
       \tfrac23\,E\!\perp\!c$) as the absorption. The two carbonaceous charge
       states share one scattering description: charge shifts PAH absorption
       features, not the graphite sphere's scattering.
+\item \textbf{MRN}: the same two calculations, on this model's own 70-point
+      radius grid.
 \item \textbf{Zubko / file-defined}: the $Q_{\rm sca}$ and $g$ columns of the
       model's own ZDA optics tables, read from the same file as $Q_{\rm abs}$.
       Those tables are a \emph{homogeneous-sphere} Mie calculation --- Zubko
@@ -736,6 +840,7 @@ model & grain densities [g/cm$^3$] & $M_{\rm dust}/N_{\rm H}$ [g/H] \\
 \midrule
 astrodust & astrodust $2.74$, PAH $2.0$ (HD23)            & $1.185\times10^{-26}$ \\
 DL07      & astrosilicate $3.5$, graphite $2.2$           & $1.750\times10^{-26}$ \\
+MRN       & astrosilicate $3.5$, graphite $2.2$           & $1.525\times10^{-26}$ \\
 Zubko     & each component's own ZDA optics header ($3.5$, $2.24$, $2.24$) & $1.444\times10^{-26}$ \\
 file-defined & the \code{pop:} line's \code{rho}, else the optics file's & --- \\
 \bottomrule
@@ -850,9 +955,9 @@ model was built from. On the default 1129-wavelength table a \code{lam\_min}
 below $0.0912$\um\ builds a band. On the \code{\_euv} table there is nothing
 left to ask for: it already reaches the short-wavelength end of the DH21
 dielectric function, so every \code{lam\_min} either falls inside the table (no
-band) or below the dielectric data (refused). DL07 can be extended below either,
-to $6.205\times10^{-5}$\um, because the D03 optical constants reach further than
-both.
+band) or below the dielectric data (refused). DL07 and MRN can be extended below
+either, to $6.205\times10^{-5}$\um, because the D03 optical constants their
+optics come from reach further than both.
 
 \subsection{A step in the field needs a grid point, exactly as a step in the
 material does}\label{sec:euv-lyman}
@@ -1120,6 +1225,7 @@ model & grid floor & implied photon energy \\
 \midrule
 astrodust & $1.000\times10^{-4}$\um\ (T-matrix $Q$ table) & $12398\,$eV \\
 DL07      & $1.000\times10^{-4}$\um\ (the same table)     & $12398\,$eV \\
+MRN       & $1.000\times10^{-4}$\um\ (the same table)     & $12398\,$eV \\
 Zubko     & $1.000\times10^{-3}$\um\ (ZDA optics tables)      & $1239.8\,$eV \\
 \bottomrule
 \end{tabular}
@@ -1187,7 +1293,7 @@ sampling changed separates the two: the sampling moves nothing at all
 ($0.0000\%$), which says the flat 51 points had already converged once the
 limits were right; the ghost carries the entire change.
 
-\textbf{All three shipped models moved}, and Zubko's move has nothing to do with
+\textbf{All three models shipped at the time moved}, and Zubko's move has nothing to do with
 the astrodust table --- its grid has always begun at $10^{-3}$\um, so it carried
 the same defect independently. Against the previous products: astrodust up to
 $12.1\%$ locally and $-1.1$ to $+0.9\%$ in integrated power, DL07 $9.7\%$ and
@@ -1361,6 +1467,7 @@ the files written here \emph{are} the optics that host gets in memory.
 \begin{lstlisting}[style=sh]
 ./calc_kext.x astrodust [euv | <lam_min in um>]
 ./calc_kext.x dl07 [ld01] [euv | <lam_min in um>]
+./calc_kext.x mrn       [dl84 | mrn77] [euv | <lam_min in um>]
 ./calc_kext.x zubko     [formula | table] [zda | mie_d03] [euv]
 ./calc_kext.x from_files <descriptor> [data_dir]
 \end{lstlisting}
@@ -1470,6 +1577,9 @@ carbonaceous vintage &
 Stage-1 enthalpy &
 \code{c2} &
 \code{calc\_sed.x} (astrodust), \code{calc\_enthalpy.x} \\
+MRN normalization &
+\code{dl84} (default), \code{mrn77} &
+\code{calc\_sed.x} and \code{calc\_kext.x} (mrn) \\
 Zubko size distribution &
 \code{formula} (default), \code{table} &
 \code{calc\_kext.x} (zubko) \\
@@ -1514,7 +1624,7 @@ and would otherwise have to drag both in to get the shared command line.
 
 \subsection{\code{calc\_sed.x} --- emission SEDs}\label{sec:standalone:sed}
 
-One program for the three shipped models: \code{./calc\_sed.x <model>
+One program for the shipped models: \code{./calc\_sed.x <model>
 [settings \ldots]}, the model name required and everything after it from the
 system of \S\ref{sec:standalone:options}. It writes
 \code{output/sed\_<model>[\_<submodel>][\_<tag>][\_<stage>].dat}.
@@ -1524,7 +1634,7 @@ system of \S\ref{sec:standalone:options}. It writes
 \SI{5000}{\kelvin}. Reads the T-matrix $Q$ table
 \code{../tmatrix/output/q\_astrodust\_P0.20\_Fe0.00\_1.400.dat} and
 \code{../data/release/size\_distribution.dat}; writes
-\code{output/astrodust\_irem\_ours\_<tag>S1.dat}, \code{\ldots S2.dat} and
+\code{output/sed\_astrodust[\_<tag>]\_S1.dat}, \code{\ldots S2.dat} and
 \code{\ldots PAH.dat}, each with $\lambda$ [\um] and \lamIlam/\Nh.
 Optional arguments, in any order: the shared settings of
 \S\ref{sec:standalone:options}, plus the two axes only this model has a referent
@@ -1541,7 +1651,7 @@ $\tfrac{1}{3}$ and $E \perp c$ by $\tfrac{2}{3}$, which is the original DL07
 choice; \code{gra\_d16\_spheroid} takes the same D16 material on Draine's
 $b/a = 1.4$ oblate spheroid table, random-orientation averaged. They tag their
 output \code{d03gra\_}, \code{d16gra\_} and \code{sphdgra\_}
-(\code{output/astrodust\_irem\_ours\_d03gra\_S1.dat} and so on). All three
+(\code{output/sed\_astrodust\_d03gra\_S1.dat} and so on). All three
 reach the PAH population only, so the S1 and S2 files they write are
 byte-identical to the production ones; what they move is the PAH sub-mm.
 
@@ -1553,7 +1663,7 @@ distribution, at $U = 1$ unless \code{logU=X} asks for another intensity.
 the valid list and the settings this driver takes. Those are the shared settings
 of \S\ref{sec:standalone:options} plus the graphite of the $\xi$ blend, which
 this model computes as well --- its own choice being \code{'d03\_sphere'}.
-Writes \code{output/dl07\_sed\_ours\_<model>[\_<tag>].dat} with columns
+Writes \code{output/sed\_dl07\_<submodel>[\_<tag>].dat} with columns
 $\lambda$, total, silicate and carbonaceous \lamIlam/\Nh.
 
 Naming a graphite source has one further effect here. The stored cross sections
@@ -1928,7 +2038,7 @@ motivated floor met the difference: \code{include\_euv} was an index cut for two
 models and a wavelength cut for the third, and \code{lam\_min} extended two
 models and truncated the other two.
 
-The four builders of \S\ref{sec:models} are unchanged and still exported, so a
+The builders of \S\ref{sec:models} are unchanged and still exported, so a
 host that names its own files keeps working. Two of them gained an optional
 argument that \code{build\_dust} uses: \code{include\_euv} on
 \code{build\_astrodust} (which axis to take out of an HDF5 $Q$ table) and
@@ -1961,7 +2071,7 @@ than at the build.
 
 \begin{lstlisting}
 cd sed
-./calc_qtable.x            # /grid and /qtable, all three models
+./calc_qtable.x            # /grid and /qtable, every model
 ./calc_kext.x <model> euv  # /kext, for each of the three
 \end{lstlisting}
 

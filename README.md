@@ -5,9 +5,10 @@ interstellar dust: dielectric functions -> T-matrix / Mie cross sections ->
 grain temperature distributions -> emergent infrared SED.
 
 SEDust is **model-agnostic**. The HD23 astrodust+PAH model, the Draine & Li
-(2007) carbonaceous+silicate model, and the Zubko et al. (2004) BARE-GR-S model
-are handled as peers through one derived type (`dust_model_t`) and one emission
-call (`dust_emission`). The solver core does not know which model it is running.
+(2007) carbonaceous+silicate model, the Mathis, Rumpl & Nordsieck (1977)
+graphite+silicate model, and the Zubko et al. (2004) BARE-GR-S model are handled
+as peers through one derived type (`dust_model_t`) and one emission call
+(`dust_emission`). The solver core does not know which model it is running.
 
 The whole package can also be linked into a Fortran 3D radiative-transfer code
 as a static library, `libsedust.a`, with a two-step API: initialize once, then
@@ -58,12 +59,13 @@ SEDust/
   data/         one directory per dust model, plus what the models share
     astrodust/  everything that model owns: `sedust_astrodust.h5` (the
     dl07/       primary form -- its wavelength axis, cross-section tables
-    zubko/      and extinction curve in one file), the same as text
+    mrn/        and extinction curve in one file), the same as text
+    zubko/
                 (`q_*.dat`, `kext_*.dat`), and, where the model IS a set of
                 files, its definition (the ZDA config, optics, calorimetry)
     dielectric/ shared material data: the D03 / DH21 / D16 optical
                 constants and the PAH cross sections.  A dielectric function
-                is not one model's -- DL07 and Zubko read the same D03
+                is not one model's -- DL07, MRN and Zubko read the same D03
                 astrosilicate -- so it does not live inside a model directory
     release/    published reference tables (HD23, Draine) and the HD23 size
                 distribution
@@ -77,10 +79,11 @@ paths outside this directory.
 
 ## What it computes
 
-- **Three grain models as peers** — HD23 astrodust+PAH, Draine & Li (2007)
-  carbonaceous+silicate, Zubko et al. (2004) BARE-GR-S — behind one
-  `dust_model_t` and one `dust_emission` call, plus a fourth builder that takes
-  a model defined by a descriptor file.
+- **Four grain models as peers** — HD23 astrodust+PAH, Draine & Li (2007)
+  carbonaceous+silicate, Mathis, Rumpl & Nordsieck (1977) graphite+silicate,
+  Zubko et al. (2004) BARE-GR-S — behind one `dust_model_t` and one
+  `dust_emission` call, plus a fifth builder that takes a model defined by a
+  descriptor file.
 - **Optics from first principles** — dielectric functions through Mie and the
   Mishchenko T-matrix (spheroids) to stored `Q` tables, and the size-integrated
   `C_ext` / `C_abs` / `C_sca` / `<cos>` per H that a transfer code takes as its
@@ -116,6 +119,8 @@ paths outside this directory.
 
 ## References
 
+- [Mathis, Rumpl & Nordsieck 1977, ApJ, 217, 425](https://ui.adsabs.harvard.edu/abs/1977ApJ...217..425M/abstract) — the a^-3.5 power-law graphite+silicate model.
+- [Draine & Lee 1984, ApJ, 285, 89](https://ui.adsabs.harvard.edu/abs/1984ApJ...285...89D/abstract) — the graphite and astrosilicate dielectric functions, and the MRN abundances adopted here.
 - [Draine & Anderson 1985, ApJ, 292, 494](https://ui.adsabs.harvard.edu/abs/1985ApJ...292..494D/abstract) — the Monte Carlo temperature-history method the `mc/` solver follows.
 - [Guhathakurta & Draine 1989, ApJ, 345, 230](https://ui.adsabs.harvard.edu/abs/1989ApJ...345..230G/abstract) — the transition-matrix solution for `P(T)` of stochastically heated grains.
 - [Draine & Li 2001, ApJ, 551, 807](https://ui.adsabs.harvard.edu/abs/2001ApJ...551..807D/abstract) — the grain enthalpy used here, and the LD01 PAH cross-section vintage.
@@ -132,4 +137,4 @@ Kwang-il Seon (KASI/UST)
 
 ---
 
-Last updated: 2026-08-21 16:58 KST
+Last updated: 2026-08-21 20:09 KST

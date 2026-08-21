@@ -1816,7 +1816,7 @@ in \texttt{docs/SEDust\_user\_manual.tex}.
 \section{Transport optics and the ionizing band}
 \label{sec:euv}
 
-\subsection{One driver, four models}
+\subsection{One driver, every model}
 
 \texttt{sed/src/calc\_kext.f90} builds a model and calls
 \texttt{dust\_extinction} on it, so the curve files it writes into
@@ -1824,7 +1824,8 @@ in \texttt{docs/SEDust\_user\_manual.tex}.
 than a separately maintained product:
 \begin{verbatim}
    ./calc_kext.x astrodust [euv | <lam_min in um>]
-   ./calc_kext.x dl07      [euv | <lam_min in um>]
+   ./calc_kext.x dl07      [ld01] [euv | <lam_min in um>]
+   ./calc_kext.x mrn       [dl84 | mrn77] [euv | <lam_min in um>]
    ./calc_kext.x zubko     [formula | table]
    ./calc_kext.x from_files <descriptor> [data_dir]
 \end{verbatim}

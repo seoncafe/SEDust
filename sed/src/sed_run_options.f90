@@ -30,6 +30,7 @@ module sed_run_options
    !   pah vintage    dl07 | ld01
    !   zubko sizedist formula | table
    !   zubko optics   zda | mie_d03
+   !   mrn norm       dl84 | mrn77
    !
    ! Every combination ACROSS axes is a valid run.  Only two things are refused:
    ! two values of one axis, and a setting the chosen solver does not read
@@ -92,6 +93,7 @@ module sed_run_options
       logical :: ax_pah_xsec       = .false.
       logical :: ax_zubko_sizedist = .false.
       logical :: ax_zubko_optics   = .false.
+      logical :: ax_mrn_norm       = .false.
 
       ! ---- what was asked for ------------------------------------------
       character(len=32) :: subject = ''
@@ -132,13 +134,17 @@ module sed_run_options
       integer           :: n_zubko_sizedist = 0
       character(len=16) :: zubko_optics = 'zda'
       integer           :: n_zubko_optics = 0
+
+      ! MRN: which published normalization of the a^-3.5 power law.
+      character(len=16) :: mrn_norm   = 'dl84'
+      integer           :: n_mrn_norm = 0
    end type run_options_t
 
 contains
 
    subroutine declare_run_options(o, program, subjects, solver, grid, field, &
                                   emission, qm_size, graphite, stage1, &
-                                  pah_xsec, zubko_sizedist, zubko_optics)
+                                  pah_xsec, zubko_sizedist, zubko_optics, mrn_norm)
       ! One call, before any argument is read, saying what this program has a
       ! referent for.  Everything not declared is refused by name.
       type(run_options_t), intent(inout) :: o
@@ -149,7 +155,7 @@ contains
       character(len=*), optional, intent(in) :: subjects(:)
       logical, optional, intent(in) :: solver, grid, field, emission, qm_size
       logical, optional, intent(in) :: graphite, stage1, pah_xsec
-      logical, optional, intent(in) :: zubko_sizedist, zubko_optics
+      logical, optional, intent(in) :: zubko_sizedist, zubko_optics, mrn_norm
       integer :: i
 
       o%program = program
@@ -165,13 +171,13 @@ contains
       end if
       call widen_run_options(o, solver, grid, field, emission, qm_size, &
                              graphite, stage1, pah_xsec, zubko_sizedist, &
-                             zubko_optics)
+                             zubko_optics, mrn_norm)
    end subroutine declare_run_options
 
 
    subroutine widen_run_options(o, solver, grid, field, emission, qm_size, &
                                 graphite, stage1, pah_xsec, zubko_sizedist, &
-                                zubko_optics)
+                                zubko_optics, mrn_norm)
       ! Add axes to the whitelist after the subject has been read, for a
       ! program whose axes depend on which model was named -- the graphite of
       ! the xi blend exists for astrodust and DL07 and not for Zubko, and the
@@ -179,7 +185,7 @@ contains
       type(run_options_t), intent(inout) :: o
       logical, optional, intent(in) :: solver, grid, field, emission, qm_size
       logical, optional, intent(in) :: graphite, stage1, pah_xsec
-      logical, optional, intent(in) :: zubko_sizedist, zubko_optics
+      logical, optional, intent(in) :: zubko_sizedist, zubko_optics, mrn_norm
       if (present(solver))         o%ax_solver         = o%ax_solver         .or. solver
       if (present(grid))           o%ax_grid           = o%ax_grid           .or. grid
       if (present(field))          o%ax_field          = o%ax_field          .or. field
@@ -190,6 +196,7 @@ contains
       if (present(pah_xsec))       o%ax_pah_xsec       = o%ax_pah_xsec       .or. pah_xsec
       if (present(zubko_sizedist)) o%ax_zubko_sizedist = o%ax_zubko_sizedist .or. zubko_sizedist
       if (present(zubko_optics))   o%ax_zubko_optics   = o%ax_zubko_optics   .or. zubko_optics
+      if (present(mrn_norm))       o%ax_mrn_norm       = o%ax_mrn_norm       .or. mrn_norm
    end subroutine widen_run_options
 
 
@@ -305,6 +312,14 @@ contains
          if (.not. axis_here(o, o%ax_zubko_optics, arg, 'Zubko-optics')) return
          o%zubko_optics = 'mie_d03';  o%n_zubko_optics = o%n_zubko_optics + 1
 
+      ! ---- MRN power-law normalization --------------------------------
+      case ('dl84')
+         if (.not. axis_here(o, o%ax_mrn_norm, arg, 'MRN-normalization')) return
+         o%mrn_norm = 'dl84';   o%n_mrn_norm = o%n_mrn_norm + 1
+      case ('mrn77')
+         if (.not. axis_here(o, o%ax_mrn_norm, arg, 'MRN-normalization')) return
+         o%mrn_norm = 'mrn77';  o%n_mrn_norm = o%n_mrn_norm + 1
+
       case default
          ieq = index(arg, '=')
          if (ieq > 1) then
@@ -409,6 +424,11 @@ contains
          stop 1
       end if
 
+      if (o%n_mrn_norm > 1) then
+         write(*,'(a)') ' '//trim(o%program)//': give at most one of dl84 / mrn77'
+         stop 1
+      end if
+
       ! nstate / nisrf size the energy-space transition matrix and its
       ! downsampled radiation field; no other solver builds one.
       if ((o%set_nstate .or. o%set_nisrf) .and. trim(o%solver) /= 'qm') then
@@ -470,6 +490,8 @@ contains
          call append_token(tag, trim(o%zubko_optics))
       if (o%ax_zubko_sizedist .and. .not. o%zubko_formula) &
          call append_token(tag, 'table')
+      if (o%ax_mrn_norm .and. trim(o%mrn_norm) /= 'dl84') &
+         call append_token(tag, trim(o%mrn_norm))
 
       if (o%stage1_density_corrected) call append_token(tag, 'c2')
       if (o%mathis_orig)              call append_token(tag, 'morig')
@@ -597,6 +619,9 @@ contains
          write(*,'(a)') '   size dist : formula (default) | table'
       if (o%ax_zubko_optics) &
          write(*,'(a)') '   optics    : zda (default) | mie_d03'
+      if (o%ax_mrn_norm) &
+         write(*,'(a)') '   normaliz. : dl84 (default) | mrn77   the published'// &
+                        ' a^-3.5 abundances'
    end subroutine write_run_option_usage
 
 

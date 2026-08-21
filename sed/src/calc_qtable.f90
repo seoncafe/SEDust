@@ -3,14 +3,15 @@ program calc_qtable
    ! two forms: the text products under data/qtable/, one on the non-ionizing
    ! grid and one carried into the ionizing band, and one HDF5 file per model,
    !
-   !   data/astrodust/sedust_astrodust.h5   data/dl07/sedust_dl07.h5   data/zubko/sedust_zubko.h5
+   !   data/astrodust/sedust_astrodust.h5   data/dl07/sedust_dl07.h5
+   !   data/mrn/sedust_mrn.h5               data/zubko/sedust_zubko.h5
    !
    ! which holds the WIDER of the two wavelength axes once, together with the
    ! index at which the non-ionizing part of it begins (see sedust_h5.f90).
    ! The narrow product is then a slice rather than a second copy, so the pair
    ! cannot disagree.  A build without HDF5 writes the text alone.
    !
-   !   ./calc_qtable.x [astrodust | dl07 | zubko | all]     (default: all)
+   !   ./calc_qtable.x [astrodust | dl07 | mrn | zubko | all]   (default: all)
    !
    ! The optics are computed HERE, from the dielectric functions and the PAH
    ! cross sections, by the same routines the SED solver calls -- these are our
@@ -32,6 +33,10 @@ program calc_qtable
    !   DL07    lambda = the astrodust Q table's, 1129 (non-EUV) or 1823 (EUV,
    !                    carried to 6.205e-5 um by the D03 optical constants)
    !           a_eff  = Draine's analytic 84-point grid, 3.548e-4 - 5.012 um
+   !   MRN     lambda = the DL07 axis, these optics being the same Mie on the
+   !                    same D03 dielectric functions
+   !           a_eff  = the model's own 70-point grid, 0.005 - 0.25 um, the
+   !                    sharp cutoffs of the power law ON its ends
    !   Zubko   lambda = the ZDA optics tables', 1201 (EUV, from 1e-3 um) or
    !                    865 (non-EUV, cut at the Lyman limit)
    !           a_eff  = the ZDA tables' own, 121 radii for silicate and
@@ -53,9 +58,10 @@ program calc_qtable
                                 qext_qt => qext, qabs_qt => qabs, qsca_qt => qsca, &
                                 gpar_qt => gpar, flag_qt => flag
    use sedust_h5
-   use sed_astrodust_mod, only: sed_init_dl07, NLAM, NA, lam, aeff, &
+   use sed_astrodust_mod, only: sed_init_dl07, build_mrn, dust_model_t, &
+                                NLAM, NA, lam, aeff, &
                                 RHO_ASTROSIL, RHO_GRAPHITE, &
-                                dl07_euv_lambda_floor
+                                d03_euv_lambda_floor
    use sedust_product_mod, only: lyman_index
    use enthalpy_astrodust_mod, only: RHO_AD, RHO_PAH
    use sed_run_options, only: run_options_t, declare_run_options, &
@@ -79,6 +85,7 @@ program calc_qtable
    ! ships data/<model>/ for what it runs.
    character(len=*), parameter :: D_ASTRODUST = '../data/astrodust/'
    character(len=*), parameter :: D_DL07      = '../data/dl07/'
+   character(len=*), parameter :: D_MRN       = '../data/mrn/'
    ! DL07 reference model, as calc_sed.x dl07 runs it.
    integer,  parameter :: SD_INDEX = 7
    real(wp), parameter :: U_ISRF = 1.0_wp
@@ -103,7 +110,7 @@ program calc_qtable
    ! vintage, the size distribution are all fixed by which model this is -- so
    ! no other axis has a referent, and a word naming one is refused by name.
    call declare_run_options(o, program='calc_qtable', &
-        subjects=[character(len=16):: 'astrodust', 'dl07', 'zubko', 'all'])
+        subjects=[character(len=16):: 'astrodust', 'dl07', 'mrn', 'zubko', 'all'])
    narg = command_argument_count()
    which = 'all'
    if (narg >= 1) then
@@ -111,7 +118,7 @@ program calc_qtable
       call read_run_subject(o, trim(which), taken)
       if (.not. taken) then
          write(*,'(a,a)') ' calc_qtable: unknown model ', trim(which)
-         write(*,'(a)')   ' usage: ./calc_qtable.x [astrodust | dl07 | zubko | all]'
+         write(*,'(a)')   ' usage: ./calc_qtable.x [astrodust | dl07 | mrn | zubko | all]'
          stop 1
       end if
    end if
@@ -120,7 +127,7 @@ program calc_qtable
       call read_run_option(trim(arg), o, taken)
       if (.not. taken) then
          write(*,'(a,a)') ' calc_qtable: unknown argument ', trim(arg)
-         write(*,'(a)')   ' usage: ./calc_qtable.x [astrodust | dl07 | zubko | all]'
+         write(*,'(a)')   ' usage: ./calc_qtable.x [astrodust | dl07 | mrn | zubko | all]'
          stop 1
       end if
    end do
@@ -128,9 +135,11 @@ program calc_qtable
    select case (trim(which))
    case ('astrodust');  call write_astrodust_tables()
    case ('dl07');       call write_dl07_tables()
+   case ('mrn');        call write_mrn_tables()
    case ('zubko');      call write_zubko_tables()
    case ('all');        call write_astrodust_tables()
-                        call write_dl07_tables();  call write_zubko_tables()
+                        call write_dl07_tables();  call write_mrn_tables()
+                        call write_zubko_tables()
    end select
 
 contains
@@ -216,7 +225,7 @@ contains
       ! extinction curve of the same model is built on it too, and the two must
       ! land on the same wavelength grid to share one axis in the HDF5 file.
       call sed_init_dl07(F_QT_EUV, F_SD, SD_INDEX, U_ISRF, NT_IN, T_LO, T_HI, &
-                         lam_min=dl07_euv_lambda_floor(), stored_q_dir='')
+                         lam_min=d03_euv_lambda_floor(), stored_q_dir='')
       ! The HDF5 file carries the WIDER of the two axes and the index where the
       ! non-ionizing part of it begins, so the narrow product is a slice of it
       ! rather than a second copy to keep in step.  Hence only this pass writes.
@@ -302,6 +311,84 @@ contains
       end if
       deallocate(se, sa, ss, sg, ge, ga, gs, gg, pn, pc)
    end subroutine dl07_dump
+
+
+
+   ! ===================================================================
+   subroutine write_mrn_tables()
+      ! The MRN optics are Mie on the D03 dielectric functions -- the SAME
+      ! calculation the DL07 silicate and graphite come from -- evaluated on
+      ! this model's own 70-point radius grid.  Nothing is copied from the DL07
+      ! tables: those are on Draine's 84-point grid, which runs from 3.5 A to
+      ! 5 um and shares no node with 0.005 - 0.25 um.
+      !
+      ! The grids come from build_mrn itself, with stored_q_dir = '' so that it
+      ! reads none of the tables this program is about to write; that is what
+      ! makes these files the model's own optics and not a copy of whatever
+      ! they already held.
+      call mrn_dump('', .false.)
+      call mrn_dump('_euv', .true.)
+   end subroutine write_mrn_tables
+
+
+   subroutine mrn_dump(tag, wide)
+      character(len=*), intent(in) :: tag
+      ! The ionizing pass.  It alone writes the HDF5 file: that file carries
+      ! the WIDER axis and the index where the non-ionizing part of it begins,
+      ! so the narrow product is a slice rather than a second copy.
+      logical, intent(in) :: wide
+      type(dust_model_t) :: m
+      real(wp) :: Qe, Qs, Qa, g
+      integer  :: u1, u2, jw, ja
+      real(wp), allocatable :: se(:,:), sa(:,:), ss(:,:), sg(:,:)
+      real(wp), allocatable :: ge(:,:), ga(:,:), gs(:,:), gg(:,:)
+
+      ! The axis is the astrodust Q table's, as the DL07 one is: these optics
+      ! are the same Mie on the same dielectric functions, so the two models
+      ! that share a calculation share a wavelength grid.  The floor of the
+      ! wide pass comes from those functions rather than from a number written
+      ! here, so this table and the extinction curve of the same model land on
+      ! one grid and can share an axis on disk.
+      if (wide) then
+         call build_mrn(m, F_QT_EUV, NT_IN, T_LO, T_HI, &
+                        lam_min=d03_euv_lambda_floor(), stored_q_dir='')
+      else
+         call build_mrn(m, F_QT, NT_IN, T_LO, T_HI, stored_q_dir='')
+      end if
+
+      allocate(se(NLAM,NA), sa(NLAM,NA), ss(NLAM,NA), sg(NLAM,NA))
+      allocate(ge(NLAM,NA), ga(NLAM,NA), gs(NLAM,NA), gg(NLAM,NA))
+
+      call open_table(u1, D_MRN//'q_mrn_sil'//trim(tag)//'.dat', &
+           'MRN silicate: Mie on the D03 astrosilicate dielectric function', &
+           NLAM, NA, .true.)
+      call open_table(u2, D_MRN//'q_mrn_gra'//trim(tag)//'.dat', &
+           'MRN graphite: Mie on the D03 graphite dielectric functions, ' // &
+           '1/3 E||c + 2/3 E-perp-c', NLAM, NA, .true.)
+
+      do jw = 1, NLAM
+         do ja = 1, NA
+            call q_silicate_full(aeff(ja), lam(jw), Qe, Qs, Qa, g)
+            call put_row(u1, lam(jw), aeff(ja), Qe, Qa, Qs, g)
+            se(jw,ja) = Qe;  sa(jw,ja) = Qa;  ss(jw,ja) = Qs;  sg(jw,ja) = g
+            call q_graphite_full(aeff(ja), lam(jw), Qe, Qs, Qa, g)
+            call put_row(u2, lam(jw), aeff(ja), Qe, Qa, Qs, g)
+            ge(jw,ja) = Qe;  ga(jw,ja) = Qa;  gs(jw,ja) = Qs;  gg(jw,ja) = g
+         end do
+      end do
+      close(u1);  close(u2)
+      write(*,'(a,i0,a,i0,a)') ' mrn'//trim(tag)//': ', NLAM, ' x ', NA, ' cells written'
+
+      if (wide) then
+         call h5_model_file('mrn', lam, lyman_index(lam))
+         call h5_add_component('mrn', 'gra', aeff, ge, ga, gs, gg, RHO_GRAPHITE, &
+              'Mie on the D03 graphite dielectric functions, 1/3 E||c + 2/3 E-perp-c', &
+              F_GRA_D03)
+         call h5_add_component('mrn', 'sil', aeff, se, sa, ss, sg, RHO_ASTROSIL, &
+              'Mie on the D03 astrosilicate dielectric function', F_SIL_D03)
+      end if
+      deallocate(se, sa, ss, sg, ge, ga, gs, gg)
+   end subroutine mrn_dump
 
 
    ! ===================================================================

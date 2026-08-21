@@ -2,7 +2,7 @@ program check_build_dust
    ! Does build_dust, reading the HDF5 products, give the same model as the
    ! builders reading the text products?
    !
-   !   ./check_build_dust.x [astrodust | dl07 | zubko | all]
+   !   ./check_build_dust.x [astrodust | dl07 | mrn | zubko | all]
    !
    ! For each model and each wavelength set, this builds the model twice --
    ! once through build_dust on data/<model>/sedust_<model>.h5 and once through the
@@ -17,9 +17,9 @@ program check_build_dust
    ! checked is that nothing is off by more than that.
    use constants,         only: wp
    use sed_astrodust_mod, only: dust_model_t, build_dust, build_astrodust, build_dl07, &
-                                build_zubko, size_integrated_extinction, &
+                                build_mrn, build_zubko, size_integrated_extinction, &
                                 dust_mass_per_H, dust_extinction, &
-                                dl07_euv_lambda_floor, sed_verbose
+                                d03_euv_lambda_floor, sed_verbose
    use euv_astrodust_tmatrix, only: use_tmatrix_euv_band_optics
    use zubko_io,          only: read_zubko_optics
    use sedust_product_mod, only: read_sedust_qtable
@@ -39,6 +39,7 @@ program check_build_dust
    character(len=*), parameter :: F_ZU_H5 = '../data/zubko/sedust_zubko.h5'
    character(len=*), parameter :: K_AD   = '../data/astrodust/kext_astrodust_MW_euv.dat'
    character(len=*), parameter :: K_DL   = '../data/dl07/kext_dl07_MW_euv.dat'
+   character(len=*), parameter :: K_MRN  = '../data/mrn/kext_mrn_euv.dat'
    ! The mie_d03 curve, because the text side of the zubko comparison is the
    ! mie_d03 optics -- the text q_zubko_*.dat ARE that set.  Naming the default
    ! curve here would compare the size integral of one set of optics against
@@ -65,10 +66,12 @@ program check_build_dust
    select case (trim(which))
    case ('astrodust');  call check_astrodust()
    case ('dl07');       call check_dl07()
+   case ('mrn');        call check_mrn()
    case ('zubko');      call check_zubko()
-   case ('all');        call check_astrodust();  call check_dl07();  call check_zubko()
+   case ('all');        call check_astrodust();  call check_dl07()
+                        call check_mrn();        call check_zubko()
    case default
-      write(*,'(a)') ' usage: ./check_build_dust.x [astrodust | dl07 | zubko | all]'
+      write(*,'(a)') ' usage: ./check_build_dust.x [astrodust | dl07 | mrn | zubko | all]'
       stop 1
    end select
 
@@ -110,10 +113,29 @@ contains
       call build_dust(mh, 'dl07', DDIR, NT_IN, T_LO, T_HI, .true., status=st)
       call fail_if(st /= 0, 'dl07 wide: build_dust status', st)
       call build_dl07(mt, F_QT_E, F_SD, 7, 1.0_wp, NT_IN, T_LO, T_HI, status=st, &
-                      lam_min=dl07_euv_lambda_floor(), kext_path=K_DL)
+                      lam_min=d03_euv_lambda_floor(), kext_path=K_DL)
       call fail_if(st /= 0, 'dl07 wide: build_dl07 status', st)
       call compare('dl07, EUV', mh, mt)
    end subroutine check_dl07
+
+   subroutine check_mrn()
+      ! Like DL07, this model takes only a wavelength axis from a product, so
+      ! the two routes differ in where the axis comes from and in nothing else.
+      type(dust_model_t) :: mh, mt
+      integer :: st
+      call build_dust(mh, 'mrn', DDIR, NT_IN, T_LO, T_HI, .false., status=st)
+      call fail_if(st /= 0, 'mrn narrow: build_dust status', st)
+      call build_mrn(mt, F_QT, NT_IN, T_LO, T_HI, status=st, kext_path=K_MRN)
+      call fail_if(st /= 0, 'mrn narrow: build_mrn status', st)
+      call compare('mrn, non-EUV', mh, mt)
+
+      call build_dust(mh, 'mrn', DDIR, NT_IN, T_LO, T_HI, .true., status=st)
+      call fail_if(st /= 0, 'mrn wide: build_dust status', st)
+      call build_mrn(mt, F_QT_E, NT_IN, T_LO, T_HI, status=st, &
+                     lam_min=d03_euv_lambda_floor(), kext_path=K_MRN)
+      call fail_if(st /= 0, 'mrn wide: build_mrn status', st)
+      call compare('mrn, EUV', mh, mt)
+   end subroutine check_mrn
 
    subroutine check_zubko()
       ! zubko stores TWO optics sets, so this compares like with like: the text

@@ -5,6 +5,7 @@ program calc_sed
    !
    !   ./calc_sed.x astrodust [settings ...]
    !   ./calc_sed.x dl07 [submodel] [settings ...]
+   !   ./calc_sed.x mrn [settings ...]
    !   ./calc_sed.x zubko [settings ...]
    !
    ! The model name is required; without one, or with one this program does
@@ -21,6 +22,8 @@ program calc_sed
    !     lambda[um]  lambda*I_lambda / N_H            (per enthalpy stage)
    !   sed_dl07_<submodel>[_<tag>].dat
    !     lambda[um]  total  silicate  carbonaceous
+   !   sed_mrn[_<tag>].dat
+   !     lambda[um]  total  graphite  silicate
    !   sed_zubko[_<tag>].dat
    !     lambda[um]  total  PAH  graphite  silicate
    ! all in erg s^-1 cm^-2 sr^-1 H^-1 (the HD23 / DL07 convention).
@@ -33,7 +36,7 @@ program calc_sed
    use sed_astrodust_mod, only: sed_init, sed_solve, sed_solve_pah, &
                                 sed_solve_qm_batch, stoch_method, NLAM, lam, &
                                 sed_init_dl07, sed_solve_dl07, &
-                                dust_model_t, build_zubko, dust_emission
+                                dust_model_t, build_zubko, build_mrn, dust_emission
    ! Which graphite optics the carbonaceous xi blend takes; each model sets its
    ! own before the arguments are applied on top.
    use qpah,              only: qpah_graphite_source, nc_coeff, nc_integer
@@ -58,6 +61,7 @@ program calc_sed
    ! file rather than a second one.
    character(len=*), parameter :: F_QT_AD = '../data/astrodust/sedust_astrodust.h5'
    character(len=*), parameter :: F_QT_DL = '../data/dl07/sedust_dl07.h5'
+   character(len=*), parameter :: F_QT_MRN = '../data/mrn/sedust_mrn.h5'
    character(len=*), parameter :: F_QT_ZU = '../data/zubko/sedust_zubko.h5'
    character(len=*), parameter :: F_SIZE  = '../data/release/size_distribution.dat'
    character(len=*), parameter :: F_ZDA_CFG = '../data/zubko/ZDA_BARE_GR_S_Config.dat'
@@ -83,7 +87,7 @@ program calc_sed
    ! Stage-1 enthalpy exist only for the models that compute them, and are
    ! added below once the model is known.
    call declare_run_options(opt, program='calc_sed', &
-        subjects=[character(len=16):: 'astrodust', 'dl07', 'zubko'], &
+        subjects=[character(len=16):: 'astrodust', 'dl07', 'mrn', 'zubko'], &
         solver=.true., grid=.true., field=.true., emission=.true., qm_size=.true.)
 
    narg = command_argument_count()
@@ -103,6 +107,9 @@ program calc_sed
    case ('dl07')
       call widen_run_options(opt, graphite=.true., pah_xsec=.true.)
       U_field = 1.0_wp                  ! the DL07 reference intensity
+   case ('mrn')
+      call widen_run_options(opt, mrn_norm=.true.)
+      U_field = 1.0_wp                  ! the Mathis ISRF at its nominal strength
    case ('zubko')
       U_field = 1.0_wp                  ! the reference intensity of its published SED
    end select
@@ -143,6 +150,7 @@ program calc_sed
    select case (trim(model))
    case ('astrodust');  call solve_astrodust()
    case ('dl07');       call solve_dl07()
+   case ('mrn');        call solve_mrn()
    case ('zubko');      call solve_zubko()
    end select
 
@@ -153,6 +161,7 @@ contains
       write(*,'(a)') ' usage:'
       write(*,'(a)') '   ./calc_sed.x astrodust [settings ...]'
       write(*,'(a)') '   ./calc_sed.x dl07 [submodel] [settings ...]'
+      write(*,'(a)') '   ./calc_sed.x mrn [settings ...]'
       write(*,'(a)') '   ./calc_sed.x zubko [settings ...]'
       write(*,'(a)') ''
       write(*,'(a)') '   dl07 submodel : mw31_00..mw31_60 (default mw31_60),'// &
@@ -413,6 +422,93 @@ contains
 
       deallocate(J_lam, lamI_tot, lamI_sil, lamI_carb)
    end subroutine solve_dl07
+
+
+
+   ! ===================================================================
+   subroutine solve_mrn()
+      ! Mathis, Rumpl & Nordsieck (1977) graphite + silicate spheres, one
+      ! a^-3.5 power law per material over 0.005 - 0.25 um.  No PAHs: the
+      ! model has none, so the SED carries no aromatic features and the
+      ! shortest-wavelength emission is that of a stochastically heated 50 A
+      ! graphite sphere.
+      type(dust_model_t)    :: m
+      real(wp), allocatable :: J_lam(:), lamI_tot(:), lamI_chan(:,:)
+      integer  :: k, ic, u, status
+      character(len=192) :: fname
+
+      fname = trim(tagged('sed_mrn'))//'.dat'
+
+      call report_header('Mathis, Rumpl & Nordsieck (1977) graphite + silicate emission')
+      write(*,'(a,f8.3)') ' U (Mathis)    : ', U_field
+      write(*,'(a,a)')    ' normalization : ', trim(opt%mrn_norm)
+      ! Before the build: the field convention fixes the CMB temperature that
+      ! goes into the cooling term, and the solver choice is stamped on the
+      ! model.
+      call apply_run_options(opt)
+      call report_run_options(opt)
+      write(*,'(a,a)')    ' output file   : ', trim(fname)
+
+      ! One product, two views: include_euv picks which part of its axis.
+      call build_mrn(m, F_QT_MRN, NT_IN, T_LO, T_HI, status=status, &
+                     include_euv=opt%euv, normalization=trim(opt%mrn_norm))
+      if (status /= 0) then
+         write(*,'(a,i0)') ' calc_sed: build_mrn failed, status = ', status
+         stop 1
+      end if
+      m%verbose = .true.
+      write(*,'(a,i0,a,es11.4,a,es11.4,a)') ' build_mrn done. NLAM=', m%NLAM, &
+           ',  grid = ', m%lam(1), ' to ', m%lam(m%NLAM), ' um'
+
+      allocate(J_lam(m%NLAM), lamI_tot(m%NLAM), lamI_chan(m%NLAM, m%n_channel))
+      call J_Mathis(U_field, m%lam, J_lam)
+      if (opt%hard_euv_field) call add_hard_euv_component(m%lam, J_lam)
+
+      write(*,'(a)') ' solving MRN SED (graphite + silicate) ...'
+      call dust_emission(m, J_lam, lamI_tot, lamI_chan, status)
+      if (status /= 0) then
+         write(*,'(a,i0)') ' calc_sed: dust_emission failed, status = ', status
+         stop 1
+      end if
+
+      open(newunit=u, file=trim(fname), status='replace', action='write')
+      ! f5.2 holds every intensity the reference runs use; a field scaled far
+      ! up by logU= would fill it with asterisks, so that one takes an exponent.
+      if (U_field < 1000.0_wp) then
+         write(u,'(a,f5.2)')  '# MRN (1977) model SED (this work),'// &
+              ' Mathis ISRF U = ', U_field
+      else
+         write(u,'(a,es10.3)')'# MRN (1977) model SED (this work),'// &
+              ' Mathis ISRF U = ', U_field
+      end if
+      write(u,'(a)') '# graphite + silicate spheres, dn/da = A_i a^-3.5,'// &
+           ' 0.005 - 0.25 um, Mie on the D03 dielectric functions'
+      if (trim(opt%mrn_norm) == 'dl84') then
+         write(u,'(a)') '# normalization: Draine & Lee (1984), log10 A ='// &
+              ' -25.16 (graphite), -25.11 (silicate) [cm^2.5/H]'
+      else
+         write(u,'(a)') '# normalization: MRN (1977), log10 A ='// &
+              ' -25.13 (graphite), -25.10 (silicate) [cm^2.5/H]'
+      end if
+      write(u,'(a,a)') '# solver = ', trim(m%stoch_method)
+      if (opt%hard_euv_field) write(u,'(a,es10.3,a,es10.3)') &
+           '# artificial hard component below the Lyman limit: W*B_lambda(T), T = ', &
+           T_HARD_EUV, ' K, W = ', W_HARD_EUV
+      write(u,'(a)') '# columns: lambda[um]  lamI_total/NH  lamI_GRA/NH  lamI_SIL/NH'
+      write(u,'(a)') '#          [erg s^-1 cm^-2 sr^-1 H^-1]'
+      ! e3 on the intensities: carried into the EUV, lambda*I_lambda underflows
+      ! to subnormals and a two-digit exponent field drops the E there
+      ! (4.29970510-319), which readers outside Fortran cannot parse.
+      do k = 1, m%NLAM
+         write(u,'(es14.6,3(1x,es16.8e3))') m%lam(k), lamI_tot(k), &
+              (lamI_chan(k, ic), ic = 1, m%n_channel)
+      end do
+      close(u)
+      write(*,'(a,a)') ' wrote ', trim(fname)
+      write(*,'(a)') ' calc_sed: done.'
+
+      deallocate(J_lam, lamI_tot, lamI_chan)
+   end subroutine solve_mrn
 
 
    ! ===================================================================

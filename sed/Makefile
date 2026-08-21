@@ -13,9 +13,10 @@
 # Run (from this directory; data paths are relative to ../):
 #   ./calc_enthalpy.x            # astrodust enthalpy tables (add c2 for the
 #                                #   Stage-1 density-corrected prefactor)
-#   ./calc_qtable.x                    # -> ../data/<model>/ (all three models' Q tables)
+#   ./calc_qtable.x                    # -> ../data/<model>/ (every model's Q tables)
 #   ./calc_sed.x astrodust             # astrodust+PAH SED  -> output/
 #   ./calc_sed.x dl07                  # Draine & Li (2007) SED
+#   ./calc_sed.x mrn                   # Mathis, Rumpl & Nordsieck (1977) SED
 #   ./calc_sed.x zubko                 # Zubko/ZDA SED
 #
 #   Every program here takes ONE vocabulary of run settings
@@ -28,13 +29,18 @@
 #     qm sizes  nstate=N, nisrf=N
 #     graphite  gra_d03_sphere | gra_d16_sphere | gra_d16_spheroid
 #               (astrodust, dl07: the PAH xi blend)
+#     normaliz. dl84 (default) | mrn77   (mrn: which published a^-3.5
+#               normalization)
 #     enthalpy  c2                   (astrodust: Stage-1 prefactor)
 #   ./calc_sed.x astrodust qm_stati nstate=500
 #   ./calc_sed.x dl07 lmc2_10 draine euv
+#   ./calc_sed.x mrn draine euv
 #   ./calc_sed.x zubko euv hardfield
 #   ./calc_kext.x astrodust            # -> ../data/kext_astrodust_MW.dat
 #   ./calc_kext.x astrodust euv        # carried into the ionizing band
 #   ./calc_kext.x dl07 euv
+#   ./calc_kext.x mrn
+#   ./calc_kext.x mrn mrn77 euv
 #   ./calc_kext.x zubko
 #   ./calc_kext.x from_files <descriptor> [data_dir]
 #   ./check_build_dust.x               # build_dust on HDF5 vs the text builders
@@ -182,7 +188,7 @@ calc_qtable.x: $(SRC_PIPE) $(SRC_CLIOPT) src/calc_qtable.f90
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./calc_qtable.x     (writes ../data/<model>/)'
 
-# Thermal-emission SED of any of the three shipped models, for one
+# Thermal-emission SED of any shipped model, for one
 # illuminated cell.  It is built against the T-matrix because the astrodust
 # EUV band, when one is asked for, is solved on the oblate spheroid of the Q
 # table rather than on a volume-equivalent sphere.
