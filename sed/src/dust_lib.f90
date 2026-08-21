@@ -265,7 +265,8 @@ module dust_lib
    ! on success, 1 if an output array is not of size m%NLAM, 2 if no table was
    ! loaded, and 3 if m%lam reaches outside the table; when status is omitted
    ! such a call stops the run. dust_emission adds status 3 = m is not the most
-   ! recently built model, and size_integrated_extinction the same.
+   ! recently built model.  size_integrated_extinction reads no table and is not
+   ! restricted to the last-built model, so it uses status 1 alone.
    !
    ! DUST MASS. The cross sections above are per H nucleon. A host that carries
    ! a dust mass density instead converts with the model's own dust mass per H:
@@ -304,6 +305,7 @@ module dust_lib
    !   4   lam_min not coverable      9   model definition (config / descriptor)
    !   90  model name not one of the four
    !   91  from_files without config_path
+   !   92  zubko_optics not one of 'zda' | 'mie_d03'
    ! The four builders below it keep their OWN numbering, which is not the same
    ! one -- an unreadable extinction table is 5 for astrodust and DL07, 6 for
    ! zubko and 9 for from_files, and 6 means something else again for
@@ -320,6 +322,9 @@ module dust_lib
    !                                  2 size-distribution load failed
    !                                  5 an explicitly named kext_path failed to
    !                                    load
+   !   build_dl07 only:               8 pah_xsec is not 'dl07' | 'ld01'.  Only
+   !                                    reachable through build_dl07 itself;
+   !                                    build_dust does not forward pah_xsec.
    !   build_astrodust only, and only when lam_min asks for the EUV band:
    !                                  3 astrodust dielectric function load failed
    !                                  4 lam_min below that dielectric function's
