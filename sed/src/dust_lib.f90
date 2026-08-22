@@ -255,10 +255,12 @@ module dust_lib
    !
    ! Every model carries its scattering optics, so every one writes a physical
    ! albedo into its table:
-   !   astrodust  Csca and <cos> from the random-orientation T-matrix Q table
+   !   astrodust  Csca and <cos> from the random-orientation T-matrix Q table,
+   !              plus the graphite fraction xi_gra(a) of HD23 eq. 15 for the
+   !              PAHs, which is the only part of a PAH that scatters
    !   dl07       Mie on the D03 astrosilicate and graphite dielectric
-   !              functions (q_silicate_full / q_graphite_full); the PAH
-   !              component scatters negligibly and enters through absorption
+   !              functions (q_silicate_full / q_graphite_full); the
+   !              carbonaceous grains scatter as the graphite sphere
    !   mrn        the same two calculations, on this model's own radius grid
    !   zubko      Q_sca and <cos> columns of the model's own ZDA optics tables
    !   from_files same, for whatever tables the descriptor names

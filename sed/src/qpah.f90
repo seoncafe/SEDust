@@ -27,7 +27,8 @@ module qpah
    use constants,                 only: wp, pi
    use q_graphite_d16_sphere_mod, only: q_graphite_d16_sphere_abs
    use q_graphite_d16_mod,        only: q_graphite_d16_spheroid_abs => q_graphite_d16_abs
-   use q_graphite_mod,            only: q_graphite_d03_abs => q_graphite_abs
+   use q_graphite_mod,            only: q_graphite_d03_abs => q_graphite_abs, &
+                                       q_graphite_full
    implicit none
    private
    public :: qpah_dl07
@@ -57,6 +58,7 @@ module qpah
    !                   b/a = 1.4 oblate spheroid (qlib_gra_D16MGemt_1.400),
    !                   random-orientation averaged. Sensitivity test only.
    public :: qpah_graphite_source
+   public :: xi_graphite, qpah_sca
    character(len=16), save :: qpah_graphite_source = 'd16_sphere'
    ! Carbon-atom-count coefficient Nc = nc_coeff*(a/10A)^3. Default 417 =
    ! HD23 eq.21 (rho_PAH = 2.0 g/cm^3), used by the astrodust path. Draine's
@@ -95,6 +97,57 @@ module qpah
    real(kind=wp), save :: xi_FGMIN  = 0.01_wp
 
 contains
+
+   pure function xi_graphite(radius) result(xi)
+      ! Graphite fraction of the carbonaceous cross section, HD23 eq. 16
+      ! (= DL07 eq. 7): the transition from a PAH molecule to a graphite
+      ! grain, complete well above A_T = 50 A and floored at FGMIN = 0.01
+      ! below it.  Every cross section that carries the transition -- the
+      ! two absorption vintages and the scattering -- reads it from here, so
+      ! there is one curve and not three copies of it.
+      real(kind=wp), intent(in) :: radius      ! [um]
+      real(kind=wp) :: xi
+      if (radius <= xi_A_T_um) then
+         xi = xi_FGMIN
+      else
+         xi = xi_FGMIN + (1.0_wp - xi_FGMIN) * (1.0_wp - (xi_A_T_um/radius)**3)
+      end if
+   end function xi_graphite
+
+
+   subroutine qpah_sca(radius, lambda, Qsca, gsca)
+      ! Scattering of the carbonaceous grain that qpah_abs gives the
+      ! absorption of.  A PAH molecule has no scattering prescription --
+      ! DL07 and HD23 write C^neu and C^ion for absorption alone -- so what
+      ! scatters is the graphite fraction of HD23 eq. 15,
+      !
+      !     Q_sca(a, lambda) = xi_gra(a) * Q_sca^gra(a, lambda) ,
+      !
+      ! and g is the graphite value, since graphite is the only thing in the
+      ! mixture that scatters at all.  Above the PAH cutoff (21.4 eV) the
+      ! carbonaceous grain IS graphite, exactly as it is in absorption there,
+      ! so xi drops out.
+      !
+      ! The graphite comes from the D03 dielectric functions by Mie, the same
+      ! random-orientation average (1/3 E||c + 2/3 E-perp-c) qpah_abs takes
+      ! its 'd03_sphere' branch from.  The two D16 sources are absorption
+      ! tables and carry no Q_sca or g, so they cannot serve this; the
+      ! difference is a material one and it lives in the FIR, while the
+      ! scattering this routine returns matters only in the far-UV.
+      real(kind=wp), intent(in)  :: radius        ! [um]
+      real(kind=wp), intent(in)  :: lambda        ! [um]
+      real(kind=wp), intent(out) :: Qsca, gsca
+      real(kind=wp) :: Qext_gra, Qsca_gra, Qabs_gra, x
+
+      call q_graphite_full(radius, lambda, Qext_gra, Qsca_gra, Qabs_gra, gsca)
+      x = 1.0_wp / lambda
+      if (x >= 17.25d0) then
+         Qsca = Qsca_gra
+      else
+         Qsca = xi_graphite(radius) * Qsca_gra
+      end if
+   end subroutine qpah_sca
+
 
    subroutine q_graphite_xi_blend_abs(radius, lambda, Qabs_gra)
       ! Graphite Q_abs entering the xi_gra blend of DL07 eq. 5-7 /
@@ -233,11 +286,7 @@ contains
       else
          call q_graphite_xi_blend_abs(radius, lambda, Qabs_gra)
       end if
-      if (radius <= xi_A_T_um) then
-         xi_gra = xi_FGMIN
-      else
-         xi_gra = xi_FGMIN + (1.0_wp - xi_FGMIN) * (1.0_wp - (xi_A_T_um/radius)**3)
-      end if
+      xi_gra = xi_graphite(radius)
 
       if (x >= 17.25d0) then
          ! Below the PAH cutoff wavelength: pure graphite
@@ -378,11 +427,7 @@ contains
       else
          call q_graphite_xi_blend_abs(radius, lambda, Qabs_gra)
       end if
-      if (radius <= xi_A_T_um) then
-         xi_gra = xi_FGMIN
-      else
-         xi_gra = xi_FGMIN + (1.0_wp - xi_FGMIN) * (1.0_wp - (xi_A_T_um/radius)**3)
-      end if
+      xi_gra = xi_graphite(radius)
 
       if (x >= 17.25d0) then
          Qabs = Qabs_gra
