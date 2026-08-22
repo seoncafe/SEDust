@@ -62,8 +62,8 @@ module dust_lib
    ! from the same weighting; the size integral and the alignment weight are
    ! done here, but the sin^2(gamma) geometry factor and any turbulent
    ! depolarization are left to the radiative transfer, exactly as for
-   ! lamI_pol. Populations without scattering or polarized optics (the PAHs)
-   ! contribute zero to those terms and enter through absorption only.
+   ! lamI_pol. The PAHs carry no polarized optics and contribute zero to those
+   ! terms; they do scatter, through the graphite fraction of HD23 eq. 15.
    !
    ! WHERE THE NUMBERS COME FROM. The four SCALAR outputs -- Cext, Cabs, Csca,
    ! gbar -- are READ FROM A TABLE, one of the data/kext_*.dat products of

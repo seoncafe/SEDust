@@ -49,7 +49,7 @@ module sed_astrodust_mod
                                     sd_dn_pah=>dn_pah, sd_fion=>f_ion
    use enthalpy_astrodust_mod, only: enthalpy_S1, enthalpy_S2, RHO_AD, RHO_PAH
    use enthalpy,              only: enthalpy_DL01
-   use qpah,                  only: qpah_dl07, qpah_ld01, qpah_abs, &
+   use qpah,                  only: qpah_dl07, qpah_ld01, qpah_abs, qpah_sca, &
                                     qpah_xsec_vintage, &
                                     nc_coeff, nc_integer, qpah_graphite_source
    use pah_ld01_mod,          only: q_pah_ld01, use_ld01_pah_xsec
@@ -367,6 +367,11 @@ module sed_astrodust_mod
    ! share the 'Car0' enthalpy (H_pah_first). The Cabs_pah/kappB_pah/kappCMB_pah
    ! arrays above are reused as charge-resolved scratch inside sed_solve_dl07.
    real(wp), allocatable :: Cabs_cneu(:,:), Cabs_cion(:,:)   ! [cm^2] (NLAM, NA)
+   ! Scattering of the same carbonaceous grains.  ONE pair for both charge
+   ! states: charge moves the PAH absorption features and nothing else, and
+   ! what scatters is the graphite fraction xi_gra(a) of HD23 eq. 15, which
+   ! does not know about charge either.
+   real(wp), allocatable :: Csca_pah(:,:), gsca_pah(:,:)     ! [cm^2], - (NLAM, NA)
    ! Scattering of the DL07 carbonaceous grains.  Charge changes the PAH
    ! absorption features only, and a PAH is a molecule whose Rayleigh
    ! scattering is negligible, so the two charge states share one scattering
@@ -608,7 +613,7 @@ contains
       ! model.
       logical, optional, intent(in) :: include_euv
       integer  :: i, ja, jw, jt, is, scstat, euv_stat
-      real(wp) :: a_um, x, t, Q_neu, Q_ion
+      real(wp) :: a_um, x, t, Q_neu, Q_ion, Q_sca_c, g_sca_c
       real(wp) :: qext1, qsca1, qabs1, gsca1
       real(wp) :: ad_lam_lo, ad_lam_hi
       real(wp), allocatable :: lam_grid(:)
@@ -753,10 +758,12 @@ contains
       if (allocated(Cabs_cneu)) deallocate(Cabs_cneu, Cabs_cion, dn_cneu, dn_cion, &
                kappB_cneu, kappB_cion, log_kappB_cneu, log_kappB_cion, &
                kappCMB_cneu, kappCMB_cion)
+      if (allocated(Csca_pah)) deallocate(Csca_pah, gsca_pah)
       allocate(Cabs_cneu(NLAM, NA), Cabs_cion(NLAM, NA), dn_cneu(NA), dn_cion(NA), &
                kappB_cneu(NT, NA), kappB_cion(NT, NA), &
                log_kappB_cneu(NT, NA), log_kappB_cion(NT, NA), &
                kappCMB_cneu(NA), kappCMB_cion(NA))
+      allocate(Csca_pah(NLAM, NA), gsca_pah(NLAM, NA))
 
       lam    = lam_grid
       aeff   = sd_aeff
@@ -946,6 +953,13 @@ contains
             end if
             Cabs_cneu(jw, ja) = Q_neu * PI * (a_um * UM2CM)**2
             Cabs_cion(jw, ja) = Q_ion * PI * (a_um * UM2CM)**2
+            ! Scattering of the same grain: the graphite fraction of HD23
+            ! eq. 15 scatters, the PAH part does not.  Its whole weight is in
+            ! the far-UV -- 3.5% of this model's total tau_sca at 0.1 um in
+            ! the HD23 release, and below 0.2% longward of 0.15 um.
+            call qpah_sca(a_um, lam(jw), Q_sca_c, g_sca_c)
+            Csca_pah(jw, ja) = Q_sca_c * PI * (a_um * UM2CM)**2
+            gsca_pah(jw, ja) = g_sca_c
          end do
          dn_cneu(ja) = (1.0_wp - sd_fion(ja)) * dn_pah(ja)
          dn_cion(ja) =          sd_fion(ja)   * dn_pah(ja)
@@ -3198,9 +3212,13 @@ contains
       allocate(m%pops(3))
       ! Only the astrodust grains are aligned. HD23 take the PAHs to be
       ! unaligned, so the two PAH populations get no polarized optics and
-      ! contribute nothing to the polarized emission. The astrodust grains also
-      ! carry all the scattering, so Csca / gsca go here alone and the PAHs enter
-      ! dust_extinction through absorption only.
+      ! contribute nothing to the polarized emission. They do scatter, though:
+      ! what scatters in a PAH population is the graphite fraction xi_gra(a)
+      ! of HD23 eq. 15 -- there is no PAH scattering cross section, only a PAH
+      ! absorption one -- so Csca_pah carries xi_gra(a) times the graphite
+      ! sphere and both charge states share it. Leaving it out costs 3.2% of
+      ! tau_sca at 0.1 um against the HD23 release and nothing longward of
+      ! 0.3 um.
       !
       ! The scattering optics (Csca / gsca) are attached in both cases, so
       ! Cext / Csca / gbar and the total SED are identical between a polarized
@@ -3224,9 +3242,11 @@ contains
                       Csca_in=Csca, gsca_in=gsca_ad, rho_bulk=RHO_AD)
       end if
       call set_pop(m%pops(2), 'pah', 2, dn_cneu, Cabs_cneu, kappB_cneu, H_pah_first, &
-                   log_H_pah_first, log_kappB_cneu, kappCMB_cneu, rho_bulk=RHO_PAH)
+                   log_H_pah_first, log_kappB_cneu, kappCMB_cneu, &
+                   Csca_in=Csca_pah, gsca_in=gsca_pah, rho_bulk=RHO_PAH)
       call set_pop(m%pops(3), 'pah', 2, dn_cion, Cabs_cion, kappB_cion, H_pah_first, &
-                   log_H_pah_first, log_kappB_cion, kappCMB_cion, rho_bulk=RHO_PAH)
+                   log_H_pah_first, log_kappB_cion, kappCMB_cion, &
+                   Csca_in=Csca_pah, gsca_in=gsca_pah, rho_bulk=RHO_PAH)
 
       call load_model_extinction_table(m, sed_data_path(KEXT_ASTRODUST), kext_path, kext_ok, &
                                        default_h5=sed_data_path(KEXT_H5_ASTRODUST))
@@ -4909,9 +4929,12 @@ contains
    !   C_polext = sum_pop sum_a dn(a) * Cpol_ext(lambda, a) * f_align(a)
    !   C_birext = sum_pop sum_a dn(a) * Cbir_ext(lambda, a) * f_align(a)
    ! A population whose Csca / gsca / Cpol_ext / Cbir_ext are unallocated
-   ! contributes zero to those terms; in the astrodust model the PAHs are exactly
-   ! that case, so they enter through absorption only. C_birext is also zero
-   ! when the model was built from a 3-block table with no birefringence.
+   ! contributes zero to those terms; the PAHs are that case for the polarized
+   ! pair, being unaligned, but not for the scalar one -- what scatters in a
+   ! PAH population is the graphite fraction xi_gra(a) of HD23 eq. 15, since a
+   ! PAH has an absorption cross section and no scattering one. C_birext is
+   ! also zero when the model was built from a 3-block table with no
+   ! birefringence.
    !
    ! Units: all cross sections [cm^2/H]; gbar dimensionless. C_polext and
    ! C_birext are the MAXIMUM dichroic and birefringent extinction -- the size

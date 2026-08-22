@@ -1816,10 +1816,10 @@ builders now carry scattering optics --- astrodust from the T-matrix
 $Q$ table, DL07 from Mie on the D03 astrosilicate and graphite
 dielectric functions, Zubko and the file-defined models from the
 $Q_{\rm sca}$ and $g$ columns of their own tables --- so the albedo is
-a physical quantity for every model, not just astrodust. Populations
-that genuinely do not scatter (the astrodust PAHs, which are
-Rayleigh-negligible) leave those arrays unallocated and contribute
-zero. The two polarized outputs follow the same summation weighted by
+a physical quantity for every model, not just astrodust. No population of a shipped model leaves those
+arrays unallocated: the PAHs scatter through their graphite fraction
+$\xi_{\rm gra}(a)$ of HD23 equation~(15), which is the only part of a
+PAH that has a scattering cross section at all. The two polarized outputs follow the same summation weighted by
 the alignment efficiency, $\sum_a {\rm d}n(a) C(\lambda,a)
 f_{\rm align}(a)$, and stay zero for a model with no aligned
 population.
