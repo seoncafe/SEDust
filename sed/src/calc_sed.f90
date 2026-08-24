@@ -63,7 +63,6 @@ program calc_sed
    character(len=*), parameter :: F_QT_DL = '../data/dl07/sedust_dl07.h5'
    character(len=*), parameter :: F_QT_MRN = '../data/mrn/sedust_mrn.h5'
    character(len=*), parameter :: F_QT_ZU = '../data/zubko/sedust_zubko.h5'
-   character(len=*), parameter :: F_SIZE  = '../data/release/size_distribution.dat'
    character(len=*), parameter :: F_ZDA_CFG = '../data/zubko/ZDA_BARE_GR_S_Config.dat'
    character(len=*), parameter :: D_ZUBKO   = '../data/zubko/'
 
@@ -214,7 +213,7 @@ contains
 
       call report_header('Hensley & Draine (2023) astrodust + PAH SED')
       write(*,'(a,a)')    ' Q table     : ', F_QT_AD
-      write(*,'(a,a)')    ' size_dist   : ', F_SIZE
+      write(*,'(a)')      ' size_dist   : HD23 eqs. (17), (24), analytic'
       write(*,'(a,f8.3)') ' U_mathis    : ', U_field
       write(*,'(a,i0)')   ' NT (T grid) : ', NT_IN
       call apply_run_options(opt)
@@ -227,9 +226,9 @@ contains
 
       call use_tmatrix_euv_band_optics()
       if (opt%euv) then
-         call sed_init(F_QT_AD, F_SIZE, NT_IN, T_LO, T_HI, include_euv=.true.)
+         call sed_init(F_QT_AD, NT_IN, T_LO, T_HI, include_euv=.true.)
       else
-         call sed_init(F_QT_AD, F_SIZE, NT_IN, T_LO, T_HI)
+         call sed_init(F_QT_AD, NT_IN, T_LO, T_HI)
       end if
       write(*,'(a,i0,a)') ' sed_init done. NLAM=', NLAM, ' wavelengths cached.'
       write(*,'(a)') ''
@@ -371,10 +370,10 @@ contains
 
       ! One product, two views: include_euv picks which part of its axis.
       if (own_optics) then
-         call sed_init_dl07(F_QT_DL, F_SIZE, sd_index, U_field, NT_IN, T_LO, T_HI, &
+         call sed_init_dl07(F_QT_DL, sd_index, U_field, NT_IN, T_LO, T_HI, &
                             include_euv=opt%euv, stored_q_dir='')
       else
-         call sed_init_dl07(F_QT_DL, F_SIZE, sd_index, U_field, NT_IN, T_LO, T_HI, &
+         call sed_init_dl07(F_QT_DL, sd_index, U_field, NT_IN, T_LO, T_HI, &
                             include_euv=opt%euv)
       end if
       write(*,'(a,i0,a)') ' sed_init_dl07 done. NLAM=', NLAM, '.'

@@ -4,7 +4,7 @@ module dust_lib
    !
    !   use dust_lib
    !   type(dust_model_t) :: m
-   !   call build_astrodust(m, qtab, sizedist, NT, T_lo, T_hi)   ! once
+   !   call build_astrodust(m, qtab, NT, T_lo, T_hi)   ! once
    !   ...
    !   do icell = 1, ncells
    !      ! ... assemble local mean intensity J_lam(:) on m%lam ...
@@ -34,7 +34,7 @@ module dust_lib
    ! not anything in the grain.
    !
    ! build_astrodust and build_dl07 take the optional lam_min [um]:
-   !   call build_dl07(m, qtab, sizedist, NT, T_lo, T_hi, lam_min=6.21e-5_wp)
+   !   call build_dl07(m, qtab, NT, T_lo, T_hi, lam_min=6.21e-5_wp)
    ! Log-spaced points are then prepended from lam_min up to the table, no more
    ! coarsely than the table's own dln(lambda) at its short end (taken from the
    ! table rather than written down: 0.00794 on the _euv axis, 0.01156 on the
@@ -106,7 +106,7 @@ module dust_lib
    !
    ! A host that computes a band and cannot afford this passes
    ! euv_tmatrix = .false.:
-   !   call build_astrodust(m, qtab, sizedist, NT, T_lo, T_hi, &
+   !   call build_astrodust(m, qtab, NT, T_lo, T_hi, &
    !                        lam_min=0.0124_wp, euv_tmatrix=.false.)
    ! which substitutes Bohren-Huffman Mie for the volume-equivalent SPHERE and
    ! runs in a tenth of a second. It is an APPROXIMATION: good to ~2% where the
@@ -324,7 +324,8 @@ module dust_lib
    ! The exact non-zero code only distinguishes the failing stage; the contract
    ! is simply "0 = built, non-zero = build failed". Codes for each builder:
    !   build_astrodust / build_dl07:  1 Q-table load failed
-   !                                  2 size-distribution load failed
+   !                                  (2 is retired: the size distributions
+   !                                    are analytic, nothing is read)
    !                                  5 an explicitly named kext_path failed to
    !                                    load
    !   build_dl07 only:               8 pah_xsec is not 'dl07' | 'ld01'.  Only

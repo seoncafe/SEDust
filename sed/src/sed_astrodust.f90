@@ -5,7 +5,7 @@ module sed_astrodust_mod
    ! only the local mean intensity J_lam varies per call.
    !
    ! API:
-   !   call sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi)
+   !   call sed_init(qtable_path, NT_in, T_lo, T_hi)
    !   ...
    !   do icell = 1, ncells
    !      ... compute J_lam in this cell ...
@@ -31,7 +31,7 @@ module sed_astrodust_mod
                                     qt_lam=>lam_t, qt_aeff=>aeff_t, &
                                     qt_qext=>qext, qt_qabs=>qabs, qt_qsca=>qsca, &
                                     qt_gpar=>gpar
-   use size_dist_mod,         only: load_size_dist, sd_n=>n_size, &
+   use size_dist_mod,         only: hd23_size_distribution, sd_n=>n_size, &
                                     sd_aeff=>a_dist, sd_dn=>dn_ad, &
                                     sd_dn_pah=>dn_pah, sd_fion=>f_ion
    use enthalpy_astrodust_mod, only: enthalpy_S1, enthalpy_S2, RHO_AD, RHO_PAH
@@ -347,8 +347,8 @@ module sed_astrodust_mod
 
    ! PAH-population data (set by sed_init alongside Astrodust). PAH cross
    ! sections from DL07 (qpah_dl07), mixed neutral + cation per the
-   ! ionization fraction f_ion(a) read from size_distribution.dat
-   ! column 4. Enthalpy uses DL01 'Car0' (carbonaceous) per HD23 §3.2.
+   ! ionization fraction f_ion(a) of HD23 eq. (19) (size_dist_mod).
+   ! Enthalpy uses DL01 'Car0' (carbonaceous) per HD23 §3.2.
    real(wp), allocatable :: dn_pah(:)             ! [1/H per bin] (NA)
    real(wp), allocatable :: Cabs_pah(:,:)         ! [cm^2] (NLAM, NA)
    real(wp), allocatable :: kappB_pah_first(:,:)  ! (NT, NA)
@@ -440,16 +440,15 @@ contains
    end subroutine sed_forget_euv_band_optics
 
    ! =====================================================================
-   subroutine sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status, lam_min, &
+   subroutine sed_init(qtable_path, NT_in, T_lo, T_hi, status, lam_min, &
                        astrodust_index_path, euv_tmatrix, include_euv)
-      character(len=*), intent(in) :: qtable_path, sizedist_path
+      character(len=*), intent(in) :: qtable_path
       integer,          intent(in) :: NT_in
       real(wp),         intent(in) :: T_lo, T_hi
       ! Optional status (0 = success). When present, a failed input read is
       ! reported through it instead of stopping the process; when absent the
       ! readers keep their message + stop behavior (as the CLI drivers expect).
       !   status = 1  Q-table load failed
-      !   status = 2  size-distribution load failed
       !   status = 3  astrodust dielectric function load failed (EUV band only)
       !   status = 4  lam_min below the astrodust dielectric function's own
       !               shortest wavelength (EUV band only)
@@ -525,12 +524,9 @@ contains
       else
          call load_q_table(qtable_path)
       end if
-      if (present(status)) then
-         call load_size_dist(sizedist_path, ok=rok)
-         if (.not. rok) then;  status = 2;  return;  end if
-      else
-         call load_size_dist(sizedist_path)
-      end if
+      ! HD23 size distributions, alignment and ionization fractions: analytic
+      ! (size_dist_mod), on the 167-radius grid of the HD23 release table.
+      call hd23_size_distribution()
 
       call euv_extended_lambda_grid(lam_grid, lam_min, n_extra=n_euv)
 
@@ -759,8 +755,8 @@ contains
       ! populations (NOT pre-blended): Teq, P(T) and the emission are all
       ! nonlinear in Cabs, so the correct mixture emission is
       !   (1-f_ion) E[C^neu] + f_ion E[C^ion],   each solved independently,
-      ! not  E[(1-f_ion)C^neu + f_ion C^ion].  f_ion(a) from
-      ! size_distribution.dat column 4. C = pi*(a_cm)^2 * Q convention.
+      ! not  E[(1-f_ion)C^neu + f_ion C^ion].  f_ion(a) from HD23
+      ! eq. (19). C = pi*(a_cm)^2 * Q convention.
       do ja = 1, NA
          a_um = aeff(ja)
          do jw = 1, NLAM
@@ -877,7 +873,7 @@ contains
       ! solved as SEPARATE stochastically-heated populations (different
       ! absorption -> different T distribution) and summed, mirroring
       ! sed_solve_dl07 -- NOT pre-blended by f_ion. PAH size distribution
-      ! from size_distribution.dat col 3, split into neutral/cation by
+      ! of HD23 eq. (17), split into neutral/cation by
       ! f_ion(a); DL01 'Car0' carbonaceous enthalpy shared by both states.
       real(wp), intent(in)  :: J_lam(:)
       real(wp), intent(out) :: lamI_lam_out(:)
@@ -931,17 +927,16 @@ contains
    ! with the PAH ionization fraction computed directly from the WD01b
    ! grain-charging model (pah_ionfrac) at intensity u_isrf.
    ! =====================================================================
-   subroutine sed_init_dl07(qtable_path, sizedist_path, sd_index, u_isrf, &
+   subroutine sed_init_dl07(qtable_path, sd_index, u_isrf, &
                             NT_in, T_lo, T_hi, status, lam_min, lam_axis, include_euv, &
                             stored_q_dir)
-      character(len=*), intent(in) :: qtable_path, sizedist_path
+      character(len=*), intent(in) :: qtable_path
       integer,          intent(in) :: sd_index, NT_in
       real(wp),         intent(in) :: u_isrf, T_lo, T_hi
       ! Optional status (0 = success). When present, a failed input read is
       ! reported through it instead of stopping the process; when absent the
       ! readers keep their message + stop behavior (as the CLI drivers expect).
       !   status = 1  Q-table load failed
-      !   status = 2  size-distribution load failed
       !   status = 4  lam_min below the D03 dielectric functions' own shortest
       !               wavelength (EUV band only).  There is no code 3 here:
       !               this model needs no separate EUV dielectric function, so
@@ -1048,13 +1043,6 @@ contains
       else
          call load_q_table(qtable_path)
       end if
-      if (present(status)) then
-         call load_size_dist(sizedist_path, ok=rok)
-         if (.not. rok) then;  status = 2;  return;  end if
-      else
-         call load_size_dist(sizedist_path)
-      end if
-
       ! Only the TEXT route needs the grid built here: the two branches above
       ! already have the axis, and neither loaded a Q table for this to read.
       if (.not. present(lam_axis) .and. .not. is_hdf5_path(qtable_path)) &
@@ -2555,18 +2543,17 @@ contains
 
    ! Build the HD23 astrodust model into m. Channels: AD_S1, AD_S2, PAH
    ! (PAH = neutral + cation populations summed into one channel).
-   subroutine build_astrodust(m, qtable_path, sizedist_path, NT_in, T_lo, T_hi, status, &
+   subroutine build_astrodust(m, qtable_path, NT_in, T_lo, T_hi, status, &
                               lam_min, astrodust_index_path, kext_path, euv_tmatrix, &
                               include_euv)
       type(dust_model_t), intent(out) :: m
-      character(len=*),   intent(in)  :: qtable_path, sizedist_path
+      character(len=*),   intent(in)  :: qtable_path
       integer,            intent(in)  :: NT_in
       real(wp),           intent(in)  :: T_lo, T_hi
       ! Optional status (0 = success, non-zero = model build failed). When
       ! present, a failed input read is reported through it instead of stopping
       ! the process; when absent the build stops on error (CLI behavior).
       !   status = 1  Q-table load failed
-      !   status = 2  size-distribution load failed
       !   status = 3  astrodust dielectric function load failed (EUV band only)
       !   status = 4  lam_min below that dielectric function's shortest
       !               wavelength (EUV band only)
@@ -2603,7 +2590,7 @@ contains
 
       ! Astrodust/HD23 optics: Nc=417 (rho=2.0), D16 turbostratic graphite.
       nc_coeff = 417.0d0;  nc_integer = .false.;  qpah_graphite_source = 'd16_sphere'
-      call sed_init(qtable_path, sizedist_path, NT_in, T_lo, T_hi, status=status, &
+      call sed_init(qtable_path, NT_in, T_lo, T_hi, status=status, &
                     lam_min=lam_min, astrodust_index_path=astrodust_index_path, &
                     euv_tmatrix=euv_tmatrix, include_euv=include_euv)  ! sets globals
       if (present(status)) then
@@ -2656,18 +2643,17 @@ contains
 
    ! Build the DL07 model into m. Channels: SIL, CARB (carbonaceous =
    ! neutral + cation summed). Reuses sed_init_dl07 to set the globals.
-   subroutine build_dl07(m, qtable_path, sizedist_path, sd_index, u_isrf, &
+   subroutine build_dl07(m, qtable_path, sd_index, u_isrf, &
                          NT_in, T_lo, T_hi, status, lam_min, kext_path, lam_axis, &
                          include_euv, stored_q_dir, pah_xsec)
       type(dust_model_t), intent(out) :: m
-      character(len=*),   intent(in)  :: qtable_path, sizedist_path
+      character(len=*),   intent(in)  :: qtable_path
       integer,            intent(in)  :: sd_index, NT_in
       real(wp),           intent(in)  :: u_isrf, T_lo, T_hi
       ! Optional status (0 = success, non-zero = model build failed). When
       ! present, a failed input read is reported through it instead of stopping
       ! the process; when absent the build stops on error (CLI behavior).
       !   status = 1  Q-table load failed
-      !   status = 2  size-distribution load failed
       !   status = 4  lam_min below the D03 dielectric functions' shortest
       !               wavelength (EUV band only); see sed_init_dl07
       !   status = 5  the requested extinction table failed to load
@@ -2724,11 +2710,11 @@ contains
       ! request with no effect at all.  That vintage is solved from the
       ! dielectric functions instead.
       if (trim(vintage) == 'dl07') then
-         call sed_init_dl07(qtable_path, sizedist_path, sd_index, u_isrf, NT_in, T_lo, T_hi, &
+         call sed_init_dl07(qtable_path, sd_index, u_isrf, NT_in, T_lo, T_hi, &
                             status=status, lam_min=lam_min, lam_axis=lam_axis, &
                             include_euv=include_euv, stored_q_dir=stored_q_dir)
       else
-         call sed_init_dl07(qtable_path, sizedist_path, sd_index, u_isrf, NT_in, T_lo, T_hi, &
+         call sed_init_dl07(qtable_path, sd_index, u_isrf, NT_in, T_lo, T_hi, &
                             status=status, lam_min=lam_min, lam_axis=lam_axis, &
                             include_euv=include_euv, stored_q_dir='')
       end if
@@ -3832,7 +3818,7 @@ contains
 
    ! =====================================================================
    subroutine build_dust(m, model, data_dir, NT_in, T_lo, T_hi, include_euv, status, &
-                         lam_min, kext_path, sd_index, u_isrf, sizedist_path, &
+                         lam_min, kext_path, sd_index, u_isrf, &
                          config_path, astrodust_index_path, euv_tmatrix, message, &
                          zubko_optics)
       ! One entry point for every model this library codes, built from ONE
@@ -3844,11 +3830,11 @@ contains
       ! WHAT IT RESOLVES.  data_dir is the SEDust data directory.  The optics
       ! come from data_dir/sedust_<model>.h5 -- the wavelength axis, the
       ! cross-section tables and the extinction curve alike -- so a host names
-      ! one directory instead of a Q table, a size-distribution file and an
-      ! extinction table separately, and ships only the models it runs.  What
-      ! is NOT in that file, because it is not optics, still comes from beside
-      ! it: the size distribution (data_dir/release/size_distribution.dat, or
-      ! the ZDA config) and the calorimetry.
+      ! one directory instead of a Q table and an extinction table
+      ! separately, and ships only the models it runs.  What is NOT in that
+      ! file, because it is not optics, still comes from beside it: the ZDA
+      ! config and the calorimetry.  The HD23 and WD01 size distributions are
+      ! analytic and need no file.
       !
       ! WHAT include_euv DECIDES.  The grid, and it decides it the same way for
       ! every model: .false. (the default) builds on the non-ionizing part of
@@ -3908,7 +3894,7 @@ contains
       ! Each builder's code is mapped onto this list:
       !   status = 0   built
       !   status = 1   optics table (Q table, or a component's optics)
-      !   status = 2   size distribution
+      !   status = 2   size distribution (retired: none is read from a file)
       !   status = 3   dielectric function
       !   status = 4   lam_min not coverable by this model
       !   status = 5   extinction table
@@ -3931,8 +3917,6 @@ contains
       ! reference MW R_V = 3.1, b_C = 6e-5 model at U = 1.
       integer,  optional, intent(in)  :: sd_index
       real(wp), optional, intent(in)  :: u_isrf
-      ! Size distribution, when it is not the one beside the product.
-      character(len=*), optional, intent(in) :: sizedist_path
       ! zubko: the ZDA config.  from_files: the descriptor, and then required.
       character(len=*), optional, intent(in) :: config_path
       character(len=*), optional, intent(in) :: astrodust_index_path
@@ -3942,7 +3926,7 @@ contains
       ! recomputation).  See build_zubko.
       character(len=*), optional, intent(in) :: zubko_optics
 
-      character(len=512) :: h5, sd, cfg, ddir
+      character(len=512) :: h5, cfg, ddir
       character(len=SED_PATHLEN) :: saved_root
       integer  :: nt, st
       real(wp) :: tlo, thi
@@ -3971,8 +3955,6 @@ contains
       call sed_set_data_root(trim(ddir))
 
       h5  = sedust_h5_file(trim(ddir), model)
-      sd  = trim(ddir)//'/release/size_distribution.dat'
-      if (present(sizedist_path)) sd = sizedist_path
       ! kext_path is NOT given a value here.  Naming a file is a contract --
       ! the builder fails if it cannot be read -- and passing the product path
       ! unconditionally turned the model's own SOFT default into a hard one,
@@ -3990,7 +3972,7 @@ contains
       case ('astrodust')
          ! The Q table IS the optics here, so the HDF5 path goes straight in;
          ! sed_init reads /qtable/astrodust from it and cuts at i_lyman.
-         call build_astrodust(m, trim(h5), trim(sd), nt, tlo, thi, status=st, &
+         call build_astrodust(m, trim(h5), nt, tlo, thi, status=st, &
                               lam_min=lam_min, astrodust_index_path=astrodust_index_path, &
                               kext_path=kext_path, euv_tmatrix=euv_tmatrix, &
                               include_euv=wide)
@@ -4002,14 +3984,14 @@ contains
          ! no astrodust product to borrow one from.
          call read_sedust_grid(trim(h5), wide, lam_h5, i_lyman, got)
          if (got) then
-            call build_dl07(m, trim(h5), trim(sd), sdi, uisrf, nt, tlo, thi, &
+            call build_dl07(m, trim(h5), sdi, uisrf, nt, tlo, thi, &
                             status=st, lam_min=lam_min, kext_path=kext_path, &
                             lam_axis=lam_h5)
             deallocate(lam_h5)
          else
             ! No product to read: the text route, on the astrodust Q table the
             ! model's grid has always come from.
-            call build_dl07(m, trim(ddir)//dl07_text_qtable(wide), trim(sd), sdi, uisrf, &
+            call build_dl07(m, trim(ddir)//dl07_text_qtable(wide), sdi, uisrf, &
                             nt, tlo, thi, status=st, lam_min=lam_min, &
                             kext_path=kext_path)
          end if

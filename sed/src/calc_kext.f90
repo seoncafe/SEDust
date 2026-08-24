@@ -73,7 +73,6 @@ program calc_kext
    ! file rather than a second one.
    character(len=*), parameter :: F_QT   = '../data/astrodust/sedust_astrodust.h5'
    character(len=*), parameter :: F_QT_DL = '../data/dl07/sedust_dl07.h5'
-   character(len=*), parameter :: F_SD  = '../data/release/size_distribution.dat'
    character(len=*), parameter :: F_EXT = '../data/release/extinction.dat'
    character(len=*), parameter :: F_SCA = '../data/release/scattering.dat'
    character(len=*), parameter :: F_REF_DL07 = &
@@ -205,11 +204,11 @@ program calc_kext
          write(*,'(a,es12.5,a,es12.5,a)') ' DH21 astrodust dielectric function covers ', &
             lam_lo, ' - ', lam_hi, ' um'
          write(*,'(a,es12.5,a)') ' requested lam_min = ', lam_min, ' um'
-         call build_astrodust(m, F_QT, F_SD, NT_IN, T_LO, T_HI, lam_min=lam_min, &
+         call build_astrodust(m, F_QT, NT_IN, T_LO, T_HI, lam_min=lam_min, &
                               include_euv=.true.)
          fout = '../data/astrodust/kext_astrodust_MW_euv.dat'
       else
-         call build_astrodust(m, F_QT, F_SD, NT_IN, T_LO, T_HI)
+         call build_astrodust(m, F_QT, NT_IN, T_LO, T_HI)
          fout = '../data/astrodust/kext_astrodust_MW.dat'
       end if
 
@@ -238,11 +237,11 @@ program calc_kext
          lam_lo = max(lam_lo, lam_lo2)
          if (lam_min <= 0.0_wp) lam_min = d03_euv_lambda_floor()
          write(*,'(a,es12.5,a)') ' requested lam_min = ', lam_min, ' um'
-         call build_dl07(m, F_QT_DL, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI, &
+         call build_dl07(m, F_QT_DL, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI, &
                          lam_min=lam_min, include_euv=.true., pah_xsec=pah_xsec)
          fout = '../data/dl07/kext_'//trim(pah_xsec)//'_MW_euv.dat'
       else
-         call build_dl07(m, F_QT_DL, F_SD, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI, &
+         call build_dl07(m, F_QT_DL, SD_INDEX_DL07, U_ISRF_DL07, NT_IN, T_LO, T_HI, &
                          pah_xsec=pah_xsec)
          fout = '../data/dl07/kext_'//trim(pah_xsec)//'_MW.dat'
       end if
@@ -556,8 +555,11 @@ contains
          return
       end if
       select case (model)
-      case ('astrodust', 'dl07')
-         sdfile = F_SD
+      case ('astrodust')
+         sdfile = 'HD23 eqs. (17), (24): lognormal + log-polynomial, constants refit'// &
+                  ' to the HD23 release table (size_dist.f90)'
+      case ('dl07')
+         sdfile = 'WD01 R_V = 3.1, b_C = 6e-5 (grain_dist.f90)'
       case ('mrn')
          ! This model's size distribution is a formula with no file behind it,
          ! so the provenance attribute records the power law rather than a path.
@@ -718,7 +720,7 @@ contains
       call add_note('#   100 A -> 100% ionized); scattering from the graphite fraction')
       call add_note('#   xi_gra(a) of HD23 eq. 15, which is all of the mixture that')
       call add_note('#   scatters (3.5% of tau_sca at 0.1 um, nothing past 0.3 um).')
-      call add_note('# Size integral over the HD23 release size distribution (per H).')
+      call add_note('# Size integral over the HD23 size distribution (analytic, per H).')
       call add_note('# Computed from the SED pipeline optics (sed_init), all components.')
       write(s,'(a,es13.6,a)') '# Dust mass per H, M_dust/N_H = ', Mdust_H, &
            ' g/H  (rho_Ad=2.74, rho_PAH=2.0 g/cm^3; K_abs = C_abs/H / this).'
@@ -736,7 +738,7 @@ contains
       call add_note('#')
       call add_note('# Model definition: Hensley & Draine (2023), ApJ 948, 55')
       call add_note('#   (astrodust + PAH, Milky Way R_V = 3.1 fit).')
-      call add_note('# Size distribution: ' // F_SD)
+      call add_note('# Size distribution: HD23 eqs. (17), (24), analytic (size_dist.f90)')
       call add_note('# Optics:')
       call add_note('#   astrodust : the random-orientation T-matrix Q table, read at EVERY')
       call add_note('#     wavelength of the range stated below, the ionizing band included:')

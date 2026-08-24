@@ -7,7 +7,6 @@ program main_pT_compare
    ! Namelist:
    !   &pT_compare_input
    !     qtable_path   = '...'
-   !     sizedist_path = '...'
    !     U_isrf        = 1.585
    !     ad_stage      = 'S2'
    !     pop           = 'astrodust'   ! 'astrodust' or 'pah'
@@ -38,12 +37,12 @@ program main_pT_compare
    integer, parameter :: NHIST_LOC = 600
    integer, parameter :: MAX_GRAINS = 8
 
-   character(len=512) :: qtable_path, sizedist_path, out_prefix
+   character(len=512) :: qtable_path, out_prefix
    character(len=16)  :: ad_stage, pop
    real(wp) :: U_isrf, T_lo, T_hi
    real(wp) :: a_um_list(MAX_GRAINS)
    integer  :: N_events, base_seed, NT_init
-   namelist /pT_compare_input/ qtable_path, sizedist_path, U_isrf, ad_stage, &
+   namelist /pT_compare_input/ qtable_path, U_isrf, ad_stage, &
                                pop, a_um_list, N_events, base_seed, &
                                out_prefix, NT_init, T_lo, T_hi
 
@@ -70,7 +69,6 @@ program main_pT_compare
 
    ! defaults
    qtable_path   = '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat'
-   sizedist_path = '../data/release/size_distribution.dat'
    U_isrf        = 1.585_wp
    ad_stage      = 'S2'
    pop           = 'astrodust'
@@ -128,7 +126,7 @@ program main_pT_compare
    if (trim(pop) == 'pah') comp_for_mc = 'pah'
 
    ! Load all pipeline data
-   call sed_init(trim(qtable_path), trim(sizedist_path), NT_init, T_lo, T_hi)
+   call sed_init(trim(qtable_path), NT_init, T_lo, T_hi)
    write(*,'(a,i0,a,i0,a,i0)') '  loaded NLAM=', NLAM, '  NA=', NA, '  NT=', NT_init
 
    allocate(J_lam(NLAM), Cabs_grain(NLAM), kappB_grain(NT_init), H_grain(NT_init))

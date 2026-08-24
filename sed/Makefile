@@ -208,6 +208,12 @@ check_build_dust.x: $(SRC_PIPE) $(SRC_EUVTM) src/check_build_dust.f90 | $(TMARCH
 	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
 	@echo 'Built: ./check_build_dust.x'
 
+# The analytic HD23 size distribution (size_dist.f90) against the HD23 release
+# table data/release/size_distribution.dat.
+test_size_distribution.x: src/size_dist.f90 src/test_size_distribution.f90
+	$(FC) $(FFLAGS) $^ -o $@
+	@echo 'Built: ./test_size_distribution.x'
+
 # Builds every model from a foreign working directory with an absolute
 # data_dir, and checks that a bad one comes back as a status instead of an
 # abort.  Links the LIBRARY, not the pipeline sources, because that is what a
@@ -269,7 +275,7 @@ clean:
 
 cleanall: clean
 	rm -f *.a calc_enthalpy.x calc_sed.x calc_kext.x
-	rm -f calc_qtable.x check_build_dust.x use_dustlib.x
+	rm -f calc_qtable.x check_build_dust.x use_dustlib.x test_size_distribution.x
 	rm -f output/sed_astrodust_*.dat output/enthalpy_*.dat
 
 .PHONY: all clean cleanall

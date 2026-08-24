@@ -33,7 +33,6 @@ program check_build_dust
    ! pair) before this test.
    character(len=*), parameter :: F_QT   = '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400.dat'
    character(len=*), parameter :: F_QT_E = '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400_euv.dat'
-   character(len=*), parameter :: F_SD   = '../data/release/size_distribution.dat'
    character(len=*), parameter :: F_CFG  = '../data/zubko/ZDA_BARE_GR_S_Config.dat'
    character(len=*), parameter :: D_ZUB  = '../data/zubko/'
    character(len=*), parameter :: F_ZU_H5 = '../data/zubko/sedust_zubko.h5'
@@ -90,13 +89,13 @@ contains
       integer :: st
       call build_dust(mh, 'astrodust', DDIR, NT_IN, T_LO, T_HI, .false., status=st)
       call fail_if(st /= 0, 'astrodust narrow: build_dust status', st)
-      call build_astrodust(mt, F_QT, F_SD, NT_IN, T_LO, T_HI, status=st, kext_path=K_AD)
+      call build_astrodust(mt, F_QT, NT_IN, T_LO, T_HI, status=st, kext_path=K_AD)
       call fail_if(st /= 0, 'astrodust narrow: build_astrodust status', st)
       call compare('astrodust, non-EUV', mh, mt)
 
       call build_dust(mh, 'astrodust', DDIR, NT_IN, T_LO, T_HI, .true., status=st)
       call fail_if(st /= 0, 'astrodust wide: build_dust status', st)
-      call build_astrodust(mt, F_QT_E, F_SD, NT_IN, T_LO, T_HI, status=st, kext_path=K_AD)
+      call build_astrodust(mt, F_QT_E, NT_IN, T_LO, T_HI, status=st, kext_path=K_AD)
       call fail_if(st /= 0, 'astrodust wide: build_astrodust status', st)
       call compare('astrodust, EUV', mh, mt)
    end subroutine check_astrodust
@@ -106,13 +105,13 @@ contains
       integer :: st
       call build_dust(mh, 'dl07', DDIR, NT_IN, T_LO, T_HI, .false., status=st)
       call fail_if(st /= 0, 'dl07 narrow: build_dust status', st)
-      call build_dl07(mt, F_QT, F_SD, 7, 1.0_wp, NT_IN, T_LO, T_HI, status=st, kext_path=K_DL)
+      call build_dl07(mt, F_QT, 7, 1.0_wp, NT_IN, T_LO, T_HI, status=st, kext_path=K_DL)
       call fail_if(st /= 0, 'dl07 narrow: build_dl07 status', st)
       call compare('dl07, non-EUV', mh, mt)
 
       call build_dust(mh, 'dl07', DDIR, NT_IN, T_LO, T_HI, .true., status=st)
       call fail_if(st /= 0, 'dl07 wide: build_dust status', st)
-      call build_dl07(mt, F_QT_E, F_SD, 7, 1.0_wp, NT_IN, T_LO, T_HI, status=st, &
+      call build_dl07(mt, F_QT_E, 7, 1.0_wp, NT_IN, T_LO, T_HI, status=st, &
                       lam_min=d03_euv_lambda_floor(), kext_path=K_DL)
       call fail_if(st /= 0, 'dl07 wide: build_dl07 status', st)
       call compare('dl07, EUV', mh, mt)

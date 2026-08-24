@@ -77,7 +77,6 @@ program calc_qtable
    ! because every other program reads the HDF5 product.
    character(len=*), parameter :: F_QT  = '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400.dat'
    character(len=*), parameter :: F_QT_EUV = '../data/astrodust/q_astrodust_P0.20_Fe0.00_1.400_euv.dat'
-   character(len=*), parameter :: F_SD  = '../data/release/size_distribution.dat'
    character(len=*), parameter :: D_ZUBKO = '../data/zubko/'
    ! Every product a model owns goes into that model's own directory, so the
    ! text tables and the HDF5 file land beside each other and beside the
@@ -217,14 +216,14 @@ contains
       ! read, and they would freeze at whatever they already held instead of
       ! following the optics routines.  F_QT is a text table, so no HDF5
       ! product is read either.  Solve from the dielectric functions, always.
-      call sed_init_dl07(F_QT, F_SD, SD_INDEX, U_ISRF, NT_IN, T_LO, T_HI, &
+      call sed_init_dl07(F_QT, SD_INDEX, U_ISRF, NT_IN, T_LO, T_HI, &
                          stored_q_dir='')
       call dl07_dump('', .false.)
       call dl07_settings()
       ! The floor comes from the model, not from a number written here: the
       ! extinction curve of the same model is built on it too, and the two must
       ! land on the same wavelength grid to share one axis in the HDF5 file.
-      call sed_init_dl07(F_QT_EUV, F_SD, SD_INDEX, U_ISRF, NT_IN, T_LO, T_HI, &
+      call sed_init_dl07(F_QT_EUV, SD_INDEX, U_ISRF, NT_IN, T_LO, T_HI, &
                          lam_min=d03_euv_lambda_floor(), stored_q_dir='')
       ! The HDF5 file carries the WIDER of the two axes and the index where the
       ! non-ionizing part of it begins, so the narrow product is a slice of it
