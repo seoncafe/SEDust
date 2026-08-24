@@ -190,13 +190,13 @@ parameters internally.}
 \noindent Signatures (all optional arguments in brackets; every optional is a
 keyword argument in the order shown):
 \begin{lstlisting}
-call build_astrodust(m, qtable_path, sizedist_path, NT, T_lo, T_hi &
+call build_astrodust(m, qtable_path, NT, T_lo, T_hi &
                      [, status] [, qpol_path] [, qpol_wave_path] [, qpol_aeff_path] &
                      [, scatmat_path] [, load_polarized_optics] &
                      [, lam_min] [, astrodust_index_path] &
                      [, qpol_euv_path] [, qpol_euv_wave_path] &
                      [, kext_path] [, euv_tmatrix])
-call build_dl07     (m, qtable_path, sizedist_path, sd_index, U, NT, T_lo, T_hi &
+call build_dl07     (m, qtable_path, sd_index, U, NT, T_lo, T_hi &
                      [, status] [, lam_min] [, kext_path] [, lam_axis] &
                      [, include_euv] [, stored_q_dir] [, pah_xsec])
 call build_mrn      (m, qtable_path, NT, T_lo, T_hi [, status] [, lam_min] &
@@ -601,7 +601,6 @@ that calls them directly.
       \code{3} \code{lamI\_chan} present but not
       \code{(tab\%NLAM, tab\%n\_channel)}.
 \item \code{build\_dl07}: \code{1} $Q$-table load failed;
-      \code{2} size-distribution load failed;
       \code{5} an explicitly named \code{kext\_path} failed to load;
       \code{7} \code{lam\_min} is shorter than the D03 dielectric functions
       ($6.1992\times10^{-5}$\um\ --- the longer-reaching of astrosilicate and
@@ -618,7 +617,8 @@ that calls them directly.
       \code{build\_dust} code corresponds to it.
 \item \code{build\_astrodust} (and \code{sed\_init}):
       \code{1} $Q$-table load failed;
-      \code{2} size-distribution load failed;
+      (\code{2} is retired: the HD23 size distribution is analytic and
+      nothing is read);
       \code{3} an explicit \code{scatmat\_path} failed to load;
       \code{4} an explicit \code{qpol\_path} could not be read (an implicit
       default degrades gracefully instead);
@@ -1482,7 +1482,7 @@ Both \code{build\_astrodust} and \code{build\_dl07} take an optional
 \code{lam\_min} [\um] for a host that needs to reach below the table it was
 given:
 \begin{lstlisting}
-call build_dl07(m, qtab, sizedist, NT, T_lo, T_hi, lam_min=6.21e-5_wp)
+call build_dl07(m, qtab, NT, T_lo, T_hi, lam_min=6.21e-5_wp)
 \end{lstlisting}
 Log-spaced points are then prepended from \code{lam\_min} up to the table, at a
 step no coarser than the table's own $\Delta\ln\lambda$ at its short-wavelength
@@ -2703,7 +2703,7 @@ call build_dust(m, 'zubko', '../data', include_euv = .false., status = st)
 call build_dust(m, model, data_dir [, NT, T_lo, T_hi] [, include_euv] [, status] &
                 [, message] [, lam_min] [, kext_path] [, sd_index] [, u_isrf] &
                 [, zubko_optics] &
-                [, sizedist_path] [, config_path] [, astrodust_index_path] &
+                [, config_path] [, astrodust_index_path] &
                 [, euv_tmatrix])
 \end{lstlisting}
 
@@ -2754,7 +2754,7 @@ Every place that names an optics file dispatches on the \code{.h5} suffix, so no
 caller needs a second flag to say which form it meant:
 
 \begin{lstlisting}
-call build_astrodust(m, '../data/astrodust/sedust_astrodust.h5', sizedist, NT, T_lo, T_hi, &
+call build_astrodust(m, '../data/astrodust/sedust_astrodust.h5', NT, T_lo, T_hi, &
                      status=st, include_euv=.false.)
 \end{lstlisting}
 

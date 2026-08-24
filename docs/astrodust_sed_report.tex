@@ -539,7 +539,7 @@ $\fc = 0.193$. The result is insensitive to $f_{\rm Fe}$
 The solver lives in \texttt{sed\_astrodust\_mod} and exposes a
 two-step API designed for a cell-by-cell 3D-RT driver:
 \begin{verbatim}
-   call sed_init(qtable_path, sizedist_path, NT, T_lo, T_hi)
+   call sed_init(qtable_path, NT, T_lo, T_hi)
    ...
    do icell = 1, ncells
       ... build J_lam in this cell ...

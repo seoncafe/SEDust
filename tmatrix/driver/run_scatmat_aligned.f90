@@ -34,7 +34,7 @@ program run_scatmat_aligned
    use tmatrix_status, only: TMATRIX_SUCCESS
    use scattering_matrix_expansion, only: scatmat_from_moments
    use read_index,    only: load_index, interp_m
-   use size_dist_mod, only: load_size_dist, n_size, a_dist, dn_ad
+   use size_dist_mod, only: hd23_size_distribution, n_size, a_dist, dn_ad
    use q_table_jori_mod, only: falign_hd23, A_ALIGN, ALPHA_ALIGN, FMAX_ALIGN
    use aligned_population_optics, only: accumulate_aligned_population, &
                                         oriented_mueller_grid
@@ -43,7 +43,6 @@ program run_scatmat_aligned
 
    character(len=*), parameter :: f_index = &
       '../data/dielectric/index_DH21Ad_P0.20_0.00_1.400'
-   character(len=*), parameter :: f_sdist = '../data/release/size_distribution.dat'
    character(len=*), parameter :: f_stem  = &
       'output/scatmat_aligned_astrodust_P0.20_Fe0.00_1.400'
 
@@ -106,7 +105,7 @@ program run_scatmat_aligned
    end if
 
    call load_index(f_index)
-   call load_size_dist(f_sdist)
+   call hd23_size_distribution()
    ! n_prof is read only inside the same use_profile branch that fills it; the
    ! zero keeps that plain to a reader (and to the compiler) when no profile
    ! file was given.
@@ -355,7 +354,7 @@ contains
       write(u,'(a)') '#   P = 0.20, f_Fe = 0.00, axis ratio b/a = 1.4 (oblate, NP = -1)'
       write(u,'(a,es9.2,a,i0)') '#   T-matrix: DDELT = ', DDELT, ', NDGS = ', NDGS
       write(u,'(a,a)') '#   dielectric index : ', trim(f_index)
-      write(u,'(a,a)') '#   size distribution: ', trim(f_sdist)
+      write(u,'(a)') '#   size distribution: HD23 eq. (24), analytic (sed/src/size_dist.f90)'
       if (use_profile) then
          write(u,'(a,a)') '#   alignment profile: tabulated file ', trim(prof_file)
       else

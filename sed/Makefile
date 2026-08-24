@@ -322,6 +322,12 @@ clean:
 	rm -f *.o *.mod
 	rm -rf tmarch.d
 
+# The analytic HD23 size distribution (size_dist.f90) against the HD23 release
+# table data/release/size_distribution.dat.
+test_size_distribution.x: src/size_dist.f90 src/test_size_distribution.f90
+	$(FC) $(FFLAGS) $^ -o $@
+	@echo 'Built: ./test_size_distribution.x'
+
 cleanall: clean
 	rm -f *.a calc_enthalpy.x calc_sed.x calc_qtable.x \
 	      calc_kext.x calc_polext.x calc_polarized_optics.x \

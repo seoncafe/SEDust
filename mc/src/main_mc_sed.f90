@@ -6,7 +6,6 @@ program main_mc_sed
    !
    !   &mc_sed_input
    !     qtable_path  = '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat'
-   !     sizedist_path = '../data/size_distribution.dat'
    !     U_isrf       = 1.585           ! log U = 0.20
    !     ad_stage     = 'S2'            ! 'S1_C1' | 'S1_C2' | 'S2'
    !     N_events     = 20000
@@ -24,12 +23,12 @@ program main_mc_sed
    use mc_sed,            only: mc_sed_solve_total
    implicit none
 
-   character(len=512) :: qtable_path, sizedist_path, out_prefix
+   character(len=512) :: qtable_path, out_prefix
    character(len=16)  :: ad_stage, mc_engine
    real(wp) :: U_isrf, T_lo, T_hi
    integer  :: N_events, base_seed, NT_init
    logical  :: use_mc_for_large_grain
-   namelist /mc_sed_input/ qtable_path, sizedist_path, U_isrf, ad_stage, &
+   namelist /mc_sed_input/ qtable_path, U_isrf, ad_stage, &
                            N_events, base_seed, out_prefix, NT_init, T_lo, T_hi, &
                            use_mc_for_large_grain, mc_engine
 
@@ -40,7 +39,6 @@ program main_mc_sed
 
    ! defaults
    qtable_path   = '../tmatrix/output/q_astrodust_P0.20_Fe0.00_1.400.dat'
-   sizedist_path = '../data/size_distribution.dat'
    U_isrf        = 1.585_wp
    ad_stage      = 'S2'
    N_events      = 20000
@@ -85,7 +83,6 @@ program main_mc_sed
 
    write(*,'(a)') '== mc_sed input =='
    write(*,'(a,a)') '  qtable    = ', trim(qtable_path)
-   write(*,'(a,a)') '  sizedist  = ', trim(sizedist_path)
    write(*,'(a,es12.4)') '  U_isrf    = ', U_isrf
    write(*,'(a,a)') '  ad_stage  = ', trim(ad_stage)
    write(*,'(a,l1,a)') '  use_mc_for_large = ', use_mc_for_large_grain, &
@@ -97,7 +94,7 @@ program main_mc_sed
    write(*,'(a,a)') '  out_prefix= ', trim(out_prefix)
    write(*,'(a,i0)') '  threads   = ', omp_get_max_threads()
 
-   call sed_init(trim(qtable_path), trim(sizedist_path), NT_init, T_lo, T_hi)
+   call sed_init(trim(qtable_path), NT_init, T_lo, T_hi)
    write(*,'(a,i0,a,i0)') '  loaded NLAM=', NLAM, '  NT=', NT_init
 
    allocate(J_lam(NLAM), lamI_lam_ad(NLAM), lamI_lam_pah(NLAM), lamI_lam_tot(NLAM))

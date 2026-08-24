@@ -42,18 +42,17 @@ program compare_scatmat_aligned
    use asymptotic_optics, only: rayleigh_limit, spheroid_dipole_polarizability
    use scattering_matrix_oriented, only: mueller_matrix_fixed_orientation, &
                                          rayleigh_mueller_matrix_oriented
-   use size_dist_mod,    only: load_size_dist, n_size, a_dist, dn_ad
+   use size_dist_mod,    only: hd23_size_distribution, n_size, a_dist, dn_ad
    use q_table_jori_mod, only: falign_hd23
    use aligned_population_optics, only: accumulate_aligned_population
    implicit none
 
    character(len=*), parameter :: f_index = &
       '../data/dielectric/index_DH21Ad_P0.20_0.00_1.400'
-   character(len=*), parameter :: f_sdist  = '../data/release/size_distribution.dat'
    character(len=*), parameter :: f_qjori  = &
       'output/q_astrodust_jori_P0.20_Fe0.00_1.400.dat.gz'
-   character(len=*), parameter :: f_wave   = '../data/dielectric/DH21_wave'
-   character(len=*), parameter :: f_aeff   = '../data/dielectric/DH21_aeff'
+   character(len=*), parameter :: f_wave   = '../data/astrodust/DH21_wave'
+   character(len=*), parameter :: f_aeff   = '../data/astrodust/DH21_aeff'
 
    integer,  parameter :: NPL     = 201          ! tmatrix_expansion_size
    real(wp), parameter :: EPS_BA  = 1.4_wp
@@ -544,7 +543,7 @@ contains
       write(*,'(a)') '----------------------------------------------------------------------'
       write(*,'(a)') ' Anchor F: size-integrated aligned K/Csca vs the jori table (0.55 um)'
 
-      call load_size_dist(f_sdist)
+      call hd23_size_distribution()
       call read_qjori_perori(f_qjori, f_wave, f_aeff, lam_j, aeff_j, nlam, naeff, &
                              qext_j, qsca_j, qbir_j, has_bir)
       if (.not. has_bir) then

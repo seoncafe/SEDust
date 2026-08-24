@@ -43,13 +43,12 @@ program run_scatmat
    use scattering_matrix_expansion, only: scatmat_from_moments, vdm_hovenier_test
    use read_index,   only: load_index, interp_m
    use asymptotic_optics, only: rayleigh_limit, geometric_optics_limit
-   use size_dist_mod, only: load_size_dist, n_size, a_dist, dn_ad
+   use size_dist_mod, only: hd23_size_distribution, n_size, a_dist, dn_ad
    implicit none
 
    character(len=*), parameter :: f_wave  = '../data/dielectric/DH21_wave'
    character(len=*), parameter :: f_index = &
       '../data/dielectric/index_DH21Ad_P0.20_0.00_1.400'
-   character(len=*), parameter :: f_sdist = '../data/release/size_distribution.dat'
    character(len=*), parameter :: f_stem  = &
       'output/scatmat_astrodust_P0.20_Fe0.00_1.400'
 
@@ -106,7 +105,7 @@ program run_scatmat
    end if
 
    call load_index(f_index)
-   call load_size_dist(f_sdist)
+   call hd23_size_distribution()
    write(*,'(a,i0,a,es11.4,a,es11.4,a)') ' size distribution: ', n_size, &
       ' bins, a_eff = ', a_dist(1), ' .. ', a_dist(n_size), ' um'
    write(*,'(a,i0)') ' wavelengths requested: ', nwl
@@ -377,8 +376,8 @@ contains
       write(u,'(a)') '# SEDust -- size-integrated scattering matrix,'
       write(u,'(a)') '# randomly oriented DH21 astrodust spheroids.'
       write(u,'(a)') '#   P = 0.20, f_Fe = 0.00, axis ratio b/a = 1.4 (oblate)'
-      write(u,'(a)') '#   size distribution: data/release/size_distribution.dat,'
-      write(u,'(a)') '#     astrodust column, C_sca-weighted average over sizes.'
+      write(u,'(a)') '#   size distribution: HD23 eq. (24), analytic (sed/src/size_dist.f90),'
+      write(u,'(a)') '#     astrodust, C_sca-weighted average over sizes.'
       write(u,'(a)') '#'
       write(u,'(a)') '# Randomly oriented particles with a plane of symmetry have'
       write(u,'(a)') '# six independent scattering-matrix elements:'

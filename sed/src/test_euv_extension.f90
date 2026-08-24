@@ -85,7 +85,6 @@ program test_euv_extension
 
    character(len=*), parameter :: QTAB  = &
       '../data/astrodust/sedust_astrodust.h5'
-   character(len=*), parameter :: SIZED = '../data/release/size_distribution.dat'
    ! Our own orientation-resolved run, used instead of the implicit default
    ! because it carries the 4th (forward-amplitude real-part) block: with the
    ! 3-block release table Cbir_ext is zero everywhere and check 4 could not
@@ -196,13 +195,13 @@ program test_euv_extension
    ! ---- scalar builds: unextended vs extended --------------------------
    ! Scalar mode first, so checks 1-3 exercise the grid and the unpolarized
    ! optics on their own, with no polarized table in the picture.
-   call build_astrodust(m_scal_base, QTAB, SIZED, NT_IN, T_LO, T_HI, status=st, &
+   call build_astrodust(m_scal_base, QTAB, NT_IN, T_LO, T_HI, status=st, &
                         load_polarized_optics=.false.)
    if (st /= 0) then
       write(*,'(a,i0)') ' FATAL: scalar unextended build failed, status = ', st
       stop 2
    end if
-   call build_astrodust(m_scal_euv, QTAB, SIZED, NT_IN, T_LO, T_HI, status=st, &
+   call build_astrodust(m_scal_euv, QTAB, NT_IN, T_LO, T_HI, status=st, &
                         load_polarized_optics=.false., lam_min=LAM_MIN, euv_tmatrix=.false.)
    if (st /= 0) then
       write(*,'(a,i0)') ' FATAL: scalar extended build failed, status = ', st
@@ -225,19 +224,19 @@ program test_euv_extension
    call check_join(nfail)
 
    ! ---- polarized builds: unextended vs extended -----------------------
-   call build_astrodust(m_base, QTAB, SIZED, NT_IN, T_LO, T_HI, status=st, &
+   call build_astrodust(m_base, QTAB, NT_IN, T_LO, T_HI, status=st, &
                         qpol_path=QPOL, qpol_wave_path=QWAVE, qpol_aeff_path=QAEFF)
    if (st /= 0) then
       write(*,'(a,i0)') ' FATAL: polarized unextended build failed, status = ', st
       stop 2
    end if
    if (euv_given) then
-      call build_astrodust(m_euv, QTAB, SIZED, NT_IN, T_LO, T_HI, status=st, &
+      call build_astrodust(m_euv, QTAB, NT_IN, T_LO, T_HI, status=st, &
                            qpol_path=QPOL, qpol_wave_path=QWAVE, qpol_aeff_path=QAEFF, &
                            lam_min=LAM_MIN, qpol_euv_path=trim(euv_q), &
                            qpol_euv_wave_path=trim(euv_wave), euv_tmatrix=.false.)
    else
-      call build_astrodust(m_euv, QTAB, SIZED, NT_IN, T_LO, T_HI, status=st, &
+      call build_astrodust(m_euv, QTAB, NT_IN, T_LO, T_HI, status=st, &
                            qpol_path=QPOL, qpol_wave_path=QWAVE, qpol_aeff_path=QAEFF, &
                            lam_min=LAM_MIN, euv_tmatrix=.false.)
    end if
@@ -282,13 +281,13 @@ program test_euv_extension
    ! written digits (1e-7) for a reason check 6 is not about.  stored_q_dir = ''
    ! is how a caller says "solve everything"; the stored route has its own
    ! comparison, in check_build_dust.x.
-   call build_dl07(m_dl_base, QTAB, SIZED, SD_INDEX, U_ISRF, NT_IN, T_LO, T_HI, status=st, &
+   call build_dl07(m_dl_base, QTAB, SD_INDEX, U_ISRF, NT_IN, T_LO, T_HI, status=st, &
                    stored_q_dir='')
    if (st /= 0) then
       write(*,'(a,i0)') ' FATAL: DL07 unextended build failed, status = ', st
       stop 2
    end if
-   call build_dl07(m_dl_euv, QTAB, SIZED, SD_INDEX, U_ISRF, NT_IN, T_LO, T_HI, &
+   call build_dl07(m_dl_euv, QTAB, SD_INDEX, U_ISRF, NT_IN, T_LO, T_HI, &
                    status=st, lam_min=LAM_MIN, stored_q_dir='')
    if (st /= 0) then
       write(*,'(a,i0)') ' FATAL: DL07 extended build failed, status = ', st

@@ -181,11 +181,12 @@ aligned_population_optics.o: driver/aligned_population_optics.f90 tmatrix_api.o 
 	# The Z-node loop of one size is the only parallel region in this tree.
 	$(FC) $(DRIVER_FFLAGS) $(OMPFLAGS) -I. -c -o $@ $<
 
-# Readers shared with the SED solver.  size_dist.f90 and q_table_jori.f90 fix
-# their own working precision and pull in nothing else.
+# Readers shared with the SED solver.  size_dist.f90 fixes its own working
+# precision and pulls in nothing else; q_table_jori.f90 takes the HD23
+# alignment law from it.
 size_dist.o: ../sed/src/size_dist.f90
 	$(FC) $(DRIVER_FFLAGS) -c -o $@ $<
-q_table_jori.o: ../sed/src/q_table_jori.f90
+q_table_jori.o: ../sed/src/q_table_jori.f90 size_dist.o
 	$(FC) $(DRIVER_FFLAGS) -c -o $@ $<
 # ../sed/src/mie.f90 takes its working precision from ../sed/src/constants.f90.
 # That module is compiled for euv_polarized_optics.x alone, which is the only

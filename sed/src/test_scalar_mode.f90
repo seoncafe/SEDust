@@ -40,7 +40,6 @@ program test_scalar_mode
 
    character(len=*), parameter :: QTAB  = &
       '../data/astrodust/sedust_astrodust.h5'
-   character(len=*), parameter :: SIZED = '../data/release/size_distribution.dat'
    ! The default polarized table, passed only to exercise the contradiction
    ! path (its contents are never read there -- the clash is caught first).
    character(len=*), parameter :: QPOL  = &
@@ -78,7 +77,7 @@ program test_scalar_mode
    write(*,'(a)') '==================================================================='
 
    ! ---- polarized build (default: loads the polarized optics) ----------
-   call build_astrodust(m_pol, QTAB, SIZED, NT_IN, T_LO, T_HI, status=st)
+   call build_astrodust(m_pol, QTAB, NT_IN, T_LO, T_HI, status=st)
    if (st /= 0) then
       write(*,'(a,i0)') ' FATAL: polarized build_astrodust failed, status = ', st
       stop 2
@@ -105,7 +104,7 @@ program test_scalar_mode
    call dust_emission(m_pol, J, total_p)
 
    ! ---- scalar-only build (never opens the polarized table) ------------
-   call build_astrodust(m_scalar, QTAB, SIZED, NT_IN, T_LO, T_HI, status=st, &
+   call build_astrodust(m_scalar, QTAB, NT_IN, T_LO, T_HI, status=st, &
                         load_polarized_optics=.false.)
    if (st /= 0) then
       write(*,'(a,i0)') ' FATAL: scalar build_astrodust failed, status = ', st
@@ -191,7 +190,7 @@ contains
       before = scratch_present(tmpdir)
       ! A fresh scalar build must open no polarized table, hence create no
       ! scratch file at all.
-      call build_astrodust(m_tmp, QTAB, SIZED, NT_IN, T_LO, T_HI, status=st4, &
+      call build_astrodust(m_tmp, QTAB, NT_IN, T_LO, T_HI, status=st4, &
                            load_polarized_optics=.false.)
       after = scratch_present(tmpdir)
       ok = (st4 == 0 .and. (.not. before) .and. (.not. after))
@@ -207,10 +206,10 @@ contains
       integer :: s_qpol, s_scat
       logical :: ok
       ! (a) explicit qpol_path with load_polarized_optics = .false.
-      call build_astrodust(m_bad, QTAB, SIZED, NT_IN, T_LO, T_HI, status=s_qpol, &
+      call build_astrodust(m_bad, QTAB, NT_IN, T_LO, T_HI, status=s_qpol, &
                            qpol_path=QPOL, load_polarized_optics=.false.)
       ! (b) explicit scatmat_path with load_polarized_optics = .false.
-      call build_astrodust(m_bad, QTAB, SIZED, NT_IN, T_LO, T_HI, status=s_scat, &
+      call build_astrodust(m_bad, QTAB, NT_IN, T_LO, T_HI, status=s_scat, &
                            scatmat_path=QPOL, load_polarized_optics=.false.)
       ok = (s_qpol == 5 .and. s_scat == 5)
       write(*,'(a)')        ' [5] contradiction (scalar mode + explicit polarized path)'

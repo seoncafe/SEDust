@@ -4,7 +4,7 @@ module dust_lib
    !
    !   use dust_lib
    !   type(dust_model_t) :: m
-   !   call build_astrodust(m, qtab, sizedist, NT, T_lo, T_hi)   ! once
+   !   call build_astrodust(m, qtab, NT, T_lo, T_hi)   ! once
    !   ...
    !   do icell = 1, ncells
    !      ! ... assemble local mean intensity J_lam(:) on m%lam ...
@@ -284,7 +284,8 @@ module dust_lib
    ! list below; a host on build_dust reads the list above and does not branch
    ! on the model name. Codes for each builder:
    !   build_astrodust / build_dl07:  1 Q-table load failed
-   !                                  2 size-distribution load failed
+   !                                  (2 is retired: the size distributions
+   !                                    are analytic, nothing is read)
    !                                  6 astrodust dielectric function load
    !                                    failed (EUV band only)
    !                                  7 lam_min below the dielectric function's

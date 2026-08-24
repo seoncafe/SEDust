@@ -16,8 +16,8 @@ program calc_polext
    ! Only astrodust grains are summed. HD23 take the PAHs to be
    ! unaligned (f_align = 0), so they contribute nothing here.
    !
-   ! The size distribution dn_Ad/N_H comes from size_distribution.dat and
-   ! is ALREADY integrated over each size bin -- do not multiply by da.
+   ! The size distribution dn_Ad/N_H is the HD23 analytic one (size_dist_mod),
+   ! ALREADY integrated over each size bin -- do not multiply by da.
    !
    ! Output: output/polarized_extinction_ours.dat
    !   lambda[um]  ours[cm^2/H]  reference[cm^2/H]  ratio
@@ -28,14 +28,13 @@ program calc_polext
    use constants,        only: wp, pi, um2cm
    use q_table_jori_mod, only: load_q_table_jori, falign_hd23, &
                                nj_lam, nj_aeff, lam_j, aeff_j, qpol_ext
-   use size_dist_mod,    only: load_size_dist, n_size, a_dist, dn_ad
+   use size_dist_mod,    only: hd23_size_distribution, n_size, a_dist, dn_ad
    use sed_run_options,  only: run_options_t, declare_run_options, read_run_option
    implicit none
 
    character(len=*), parameter :: F_Q    = '../data/astrodust/q_DH21Ad_P0.20_Fe0.00_1.400.dat.gz'
    character(len=*), parameter :: F_WAVE = '../data/astrodust/DH21_wave'
    character(len=*), parameter :: F_AEFF = '../data/astrodust/DH21_aeff'
-   character(len=*), parameter :: F_SD   = '../data/release/size_distribution.dat'
    character(len=*), parameter :: F_REF  = '../data/release/polarized_extinction.dat'
    character(len=*), parameter :: F_OUT  = 'output/polarized_extinction_ours.dat'
 
@@ -79,11 +78,7 @@ program calc_polext
    end if
    write(*,'(a,i0,a,i0)') '   NLAM=', nj_lam, '  NA=', nj_aeff
 
-   call load_size_dist(F_SD, ok)
-   if (.not. ok) then
-      write(*,'(a)') ' calc_polext: failed to load the size distribution.'
-      stop 1
-   end if
+   call hd23_size_distribution()
    write(*,'(a,i0)') '   size bins=', n_size
 
    ! ---- size weights: dn/H * f_align * geometric cross section --------

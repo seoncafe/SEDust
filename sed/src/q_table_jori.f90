@@ -55,6 +55,8 @@ module q_table_jori_mod
    ! keeps a fresh clone working with no manual setup step and avoids a
    ! dependency on a zlib binding. A path that does not end in `.gz` is
    ! opened directly.
+   use size_dist_mod, only: falign_hd23, falign_powerlaw, &
+                            A_ALIGN, ALPHA_ALIGN, FMAX_ALIGN
 
    use, intrinsic :: iso_fortran_env, only: real64, error_unit
    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -72,6 +74,9 @@ module q_table_jori_mod
       end function c_getpid
    end interface
 
+   ! The HD23 alignment law and its constants live in size_dist_mod with the
+   ! rest of the HD23 size-distribution fit; re-exported here for the
+   ! polarized-optics callers.
    public :: load_q_table_jori, falign_hd23, falign_powerlaw
    ! The raw orientation-resolved arrays, before the dichroic and
    ! random-orientation combinations are formed from them.  Exposed so that
@@ -101,11 +106,6 @@ module q_table_jori_mod
    integer, parameter :: NHEAD  = 12     ! header lines in the Q table
    integer, parameter :: NORI   = 3      ! orientations stored
 
-   ! Alignment efficiency, Hensley & Draine (2023) Table 1:
-   !   f_align(a) = f_max / (1 + (a_align/a)**alpha_align)
-   real(wp), parameter :: A_ALIGN     = 0.0749_wp   ! [um]
-   real(wp), parameter :: ALPHA_ALIGN = 1.80_wp
-   real(wp), parameter :: FMAX_ALIGN  = 1.00_wp
 
    integer  :: nj_lam = 0, nj_aeff = 0
    real(wp), allocatable :: lam_j(:), aeff_j(:)                ! grid axes [um]
@@ -127,39 +127,6 @@ module q_table_jori_mod
 
 contains
 
-   ! Alignment efficiency for a grain of effective radius a [um].
-   !
-   ! This analytic form is the canonical one for SEDust. Note that
-   ! data/release/size_distribution.dat also ships an f_align column; the two
-   ! agree to a median ratio of 1.0000 but differ by up to 0.32% at the small
-   ! end. The formula is preferred because it is the published fit, it is
-   ! defined for any radius grid rather than the tabulated one, and it keeps
-   ! the alignment model in one place. Do not mix the two.
-   pure function falign_hd23(a) result(f)
-      real(wp), intent(in) :: a
-      real(wp)             :: f
-      f = falign_powerlaw(a, FMAX_ALIGN, A_ALIGN, ALPHA_ALIGN)
-   end function falign_hd23
-
-
-   ! The same power-law rolloff with the three parameters left free,
-   !
-   !   f_align(a) = f_max / (1 + (a_align/a)**alpha_align),
-   !
-   ! so that a host can impose an alignment state other than the HD23 fit --
-   ! a different critical radius a_align where the efficiency reaches
-   ! f_max/2, a different sharpness alpha_align, or an overall reduction
-   ! f_max < 1 standing for imperfect alignment. a is the effective radius
-   ! [um]; f = 0 for a non-positive radius.
-   pure function falign_powerlaw(a, f_max, a_align, alpha_align) result(f)
-      real(wp), intent(in) :: a, f_max, a_align, alpha_align
-      real(wp)             :: f
-      if (a <= 0.0_wp) then
-         f = 0.0_wp
-      else
-         f = f_max / (1.0_wp + (a_align / a)**alpha_align)
-      end if
-   end function falign_powerlaw
 
 
    subroutine load_q_table_jori(q_file, wave_file, aeff_file, ok)

@@ -49,7 +49,6 @@ program test_scatmat_aligned
       '../tmatrix/output/q_astrodust_jori_P0.20_Fe0.00_1.400.dat.gz'
    character(len=*), parameter :: QWAVE = '../data/astrodust/DH21_wave'
    character(len=*), parameter :: QAEFF = '../data/astrodust/DH21_aeff'
-   character(len=*), parameter :: SIZED = '../data/release/size_distribution.dat'
 
    real(wp), parameter :: CM2_TO_UM2 = 1.0e8_wp    ! 1 cm^2 = 1e8 um^2
 
@@ -573,7 +572,7 @@ contains
       ! Build the model with the 4-block jori table so dust_extinction returns a
       ! non-zero Cbir_ext; this also leaves qpol_ext / qbir_ext / lam_j / aeff_j
       ! and the size distribution loaded for the independent quadrature.
-      call build_astrodust(m, QTAB, SIZED, 100, 2.7_wp, 5.0e3_wp, status=st, &
+      call build_astrodust(m, QTAB, 100, 2.7_wp, 5.0e3_wp, status=st, &
                            qpol_path=QPOL, qpol_wave_path=QWAVE, qpol_aeff_path=QAEFF)
       if (st /= 0) then
          write(*,'(a,i0)') ' [4] K consistency: build_astrodust failed, status = ', st

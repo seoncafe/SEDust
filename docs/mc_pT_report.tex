@@ -520,8 +520,8 @@ have broad distributions extending to several hundred K.
 \section{SED builder over a grain size distribution}\label{sec:sed}
 
 The \verb|mc_sed| module integrates $P(T)$ across the HD23 astrodust+PAH
-size distribution (read by \verb|sed_astrodust_mod::sed_init| from
-\verb|data/release/size_distribution.dat|) and produces the emission
+size distribution (evaluated by \verb|sed_astrodust_mod::sed_init| from
+the HD23 analytic forms in \verb|size_dist.f90|) and produces the emission
 SED $\lambda I_\lambda / N_H$ in the same units as the production
 \verb|sed_solve| routine.
 
@@ -611,7 +611,7 @@ the cost of the dynamic schedule with variable work per grain.
 We compare \verb|main_mc_sed.x| against the production astrodust
 pipeline \verb|calc_sed.x astrodust|.  Both implementations read the
 same Q table (\verb|q_astrodust_P0.20_Fe0.00_1.400.dat|), the same
-size distribution (HD23 \verb|size_distribution.dat|), the same
+HD23 size distribution (\verb|size_dist.f90|), the same
 Mathis ISRF at $\log U=0.20$, and the same Stage 2 astrodust
 enthalpy.
 
