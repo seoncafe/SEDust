@@ -71,16 +71,8 @@ program check_build_dust
    ! itself, and a ratio of two such by twice that.  Stand a factor of 10 above
    ! it, so that this reports a real disagreement and not the last digit.
    real(wp), parameter :: TOL = 1.0e-5_wp
-   ! What the DustEM models are held to instead; see the note above.  Not
-   ! rounding-tight any more: the product stores its computed quantities as
-   ! 32-bit (see the storage-precision note in sedust_h5.f90), whose relative
-   ! resolution is 1.2e-7, while the DustEM text tables the other route reads
-   ! carry 7 to 13 significant digits.  The two routes therefore cannot agree
-   ! better than float32 resolution however exactly they follow the same steps,
-   ! and 1e-6 is the smallest round number safely above it.  Anything larger
-   ! than that IS a disagreement in the interpolation, which is what this
-   ! checks.
-   real(wp), parameter :: TOL_STORED = 1.0e-6_wp
+   ! What the DustEM models are held to instead; see the note above.
+   real(wp), parameter :: TOL_STORED = 1.0e-10_wp
 
    character(len=32) :: which
    integer :: narg, nbad
@@ -203,15 +195,8 @@ contains
       ! Does /qtable/{sil,gra,pah} hold the distributed tables as they stand?
       ! This is the set the model is built on by default, and the seven codes
       ! the SHG benchmark compares against read those same files, so anything
-      ! but a round-trip would make that comparison measure an optics
+      ! but an exact round-trip would make that comparison measure an optics
       ! difference instead of the solver.  Read both sides and diff them.
-      !
-      ! The round trip is exact to float32 and no further: the product stores
-      ! its computed quantities as 32-bit (see the storage-precision note in
-      ! sedust_h5.f90).  So the bound below is that resolution applied to each
-      ! array's own largest entry, which is exactly what correctly rounded
-      ! narrowing can produce and nothing more.  Anything above it is a
-      ! transcription bug, which is what this checks.
       character(len=*), parameter :: COMP(3) = [character(len=3) :: 'sil', 'gra', 'pah']
       character(len=*), parameter :: FILE(3) = [character(len=24) :: &
            'suvSil_121_1201.dat', 'Gra_121_1201.dat', 'PAH_28_1201_neu.dat']
@@ -220,9 +205,6 @@ contains
       real(wp) :: rho_f, rho_h, da, ds, dg
       integer  :: ic, nsize, nwave
       logical  :: ok
-      ! One unit in the last place of a float32 significand, doubled so that
-      ! the bound is not itself decided by the last bit of its own arithmetic.
-      real(wp), parameter :: F32_ULP = 2.0_wp * 2.0_wp**(-24)
 
       write(*,'(a)') ''
       write(*,'(a)') ' === zubko default set: /qtable vs the distributed files'
@@ -242,11 +224,8 @@ contains
          write(*,'(a,a4,a,es9.2,a,es9.2,a,es9.2)') '   ', trim(COMP(ic)), &
               '  max|dQ_abs| ', da, '  max|dQ_sca| ', ds, '  max|dg| ', dg
          ! Stored as written: the product holds these arrays, it does not
-         ! recompute them, so the only difference allowed is the narrowing to
-         ! 32-bit storage.
-         call fail_if(da > F32_ULP*maxval(abs(qa_f)) .or. &
-                      ds > F32_ULP*maxval(abs(qs_f)) .or. &
-                      dg > F32_ULP*maxval(abs(gg_f)), &
+         ! recompute them, so anything but zero is a transcription bug.
+         call fail_if(da /= 0.0_wp .or. ds /= 0.0_wp .or. dg /= 0.0_wp, &
                       'zubko zda: /qtable/'//trim(COMP(ic))//' is not the file', 0)
          deallocate(a_f, l_f, qa_f, qs_f, gg_f, a_h, qe_h, qa_h, qs_h, gg_h)
       end do

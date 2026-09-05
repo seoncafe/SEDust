@@ -222,9 +222,9 @@ test_size_distribution.x: src/size_dist.f90 src/test_size_distribution.f90
 	$(FC) $(FFLAGS) $^ -o $@
 	@echo 'Built: ./test_size_distribution.x'
 
-# The storage-precision policy of the HDF5 products themselves: every
-# coordinate axis 64-bit, every regime code 8-bit integer, every computed
-# quantity 32-bit.  It reads the FILE types of every product in the tree.
+# The storage-precision policy of the HDF5 products themselves: every value --
+# computed quantity or coordinate axis -- 64-bit float, every regime code
+# 8-bit integer.  It reads the FILE types of every product in the tree.
 test_h5_storage_policy.x: src/sedust_h5.f90 src/test_h5_storage_policy.f90
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./test_h5_storage_policy.x'

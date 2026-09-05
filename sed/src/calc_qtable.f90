@@ -864,18 +864,15 @@ contains
       call h5_write_1d(gid, 'a_eff', aeff, units='um', long_name='grain effective radius')
       if (present(absonly)) then
          call h5_write_2d(gid, 'Q_abs', absonly, units='1', &
-                          long_name='absorption efficiency', single=.true.)
+                          long_name='absorption efficiency')
          call h5_put_attr_s(gid, 'scatters', 'no -- absorption prescription only')
       else
-         call h5_write_2d(gid, 'Q_ext', qe, units='1', &
-                          long_name='extinction efficiency', single=.true.)
-         call h5_write_2d(gid, 'Q_abs', qa, units='1', &
-                          long_name='absorption efficiency', single=.true.)
-         call h5_write_2d(gid, 'Q_sca', qs, units='1', &
-                          long_name='scattering efficiency', single=.true.)
+         call h5_write_2d(gid, 'Q_ext', qe, units='1', long_name='extinction efficiency')
+         call h5_write_2d(gid, 'Q_abs', qa, units='1', long_name='absorption efficiency')
+         call h5_write_2d(gid, 'Q_sca', qs, units='1', long_name='scattering efficiency')
          if (present(gg)) then
             call h5_write_2d(gid, 'g',  gg, units='1', &
-                             long_name='scattering asymmetry <cos>', single=.true.)
+                             long_name='scattering asymmetry <cos>')
             call h5_put_attr_s(gid, 'scatters', 'yes')
          else
             ! Scattering with no asymmetry parameter: the two large G18D
