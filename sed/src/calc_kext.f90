@@ -7,6 +7,8 @@ program calc_kext
    !   ./calc_kext.x astrodust [euv | <lam_min in um>]
    !   ./calc_kext.x dl07 [ld01] [euv | <lam_min in um>]
    !   ./calc_kext.x zubko     [formula | table] [euv]
+   !   ./calc_kext.x themis    [euv]
+   !   ./calc_kext.x g18d      [euv]
    !   ./calc_kext.x from_files <descriptor> [data_dir]
    !
    ! `ld01` asks for the DL07 model with the Li & Draine (2001) carbonaceous
@@ -63,7 +65,8 @@ program calc_kext
    !====================================================================
    use constants,         only: wp
    use sed_astrodust_mod, only: build_astrodust, build_dl07, build_mrn, build_zubko, &
-                                build_from_files, size_integrated_extinction, &
+                                build_from_files, build_dustem, &
+                                size_integrated_extinction, &
                                 dust_mass_per_H, dust_model_t, &
                                 d03_euv_lambda_floor, astrodust_euv_lambda_floor
    use q_astrodust_mod,   only: astrodust_index_lambda_range, get_astrodust_index_path
@@ -120,6 +123,14 @@ program calc_kext
    character(len=*), parameter :: F_ZDA_CFG  = '../data/zubko/ZDA_BARE_GR_S_Config.dat'
    character(len=*), parameter :: F_ZDA_DESC = '../data/zubko/zubko_descriptor.txt'
    character(len=*), parameter :: D_ZUBKO    = '../data/zubko/'
+   ! The two models defined by DustEM input files.  Each is its GRAIN_*.DAT
+   ! plus the optics and calorimetry tables under its own oprop/ and hcap/.
+   character(len=*), parameter :: F_GRAIN_THEMIS = '../data/themis/GRAIN_J13.DAT'
+   character(len=*), parameter :: D_THEMIS       = '../data/themis/'
+   character(len=*), parameter :: F_GRAIN_G18D   = '../data/g18d/GRAIN_G17_ModelD.DAT'
+   character(len=*), parameter :: D_G18D         = '../data/g18d/'
+   character(len=*), parameter :: F_QT_THEMIS    = '../data/themis/sedust_themis.h5'
+   character(len=*), parameter :: F_QT_G18D      = '../data/g18d/sedust_g18d.h5'
 
    ! DL07 model: WD01 MW R_V = 3.1, b_C = 6e-5 (Draine's "60" model), MMP83 field.
    integer,  parameter :: SD_INDEX_DL07 = 7
@@ -158,6 +169,9 @@ program calc_kext
    integer            :: n_free
    character(len=16)  :: zubko_optics
    character(len=256) :: opt, fout, desc, ddir, arg
+   ! Which populations of a DustEM-defined model carry no G_<gtype>.DAT, and
+   ! hence no scattering asymmetry.  Blank for every other model.
+   character(len=256) :: gmiss
 
    call use_tmatrix_euv_band_optics()
 
@@ -166,7 +180,7 @@ program calc_kext
    ! read; the DL07 model and zubko add their own once the subject is known.
    call declare_run_options(o, program='calc_kext', &
         subjects=[character(len=16):: 'astrodust', 'dl07', 'mrn', 'zubko', &
-                                      'from_files'], &
+                                      'themis', 'g18d', 'from_files'], &
         grid=.true.)
 
    narg = command_argument_count()
@@ -218,8 +232,25 @@ program calc_kext
    zubko_optics  = o%zubko_optics
    pah_xsec      = o%pah_xsec
 
+   ! The positional argument only some models have a referent for: a
+   ! wavelength floor (astrodust, dl07, mrn) or a descriptor path
+   ! (from_files).  A model whose grid IS its own tables can carry neither, so
+   ! a leftover word is refused by name rather than accepted and ignored --
+   ! the rule the shared option system follows for every other word.  It used
+   ! to be dropped in silence, so `./calc_kext.x zubko formla` wrote the
+   ! default curve as though the misspelt word had been honored.
+   select case (trim(model))
+   case ('zubko', 'themis', 'g18d')
+      if (len_trim(opt) > 0) then
+         write(*,'(a,a,a,a)') ' calc_kext: ', trim(model), &
+            ' has no setting called ', trim(opt)
+         call print_usage();  stop 1
+      end if
+   end select
+
    nnote = 0
    Mdust_H = 0.0_wp
+   gmiss = ''
 
    select case (trim(model))
 
@@ -352,6 +383,40 @@ program calc_kext
       end if
 
    ! ===================================================================
+   case ('themis', 'g18d')
+      ! Two published models carried as DustEM input files, and the two HD23
+      ! Sec. 6.2.2 compares the astrodust model against.  Their optics tables
+      ! reach 0.04 um, shortward of the Lyman limit, so `euv` keeps the whole
+      ! grid and its absence cuts it at that limit -- the zubko convention,
+      ! for the same reason: these tables ARE the model definition and there
+      ! is no dielectric function to extend them with.
+      ! The optics come from the model's own product, so that /kext and
+      ! /qtable of one file are the same numbers -- the zubko rule.  A tree
+      ! that has not run ./calc_qtable.x for this model yet has no product,
+      ! and build_dustem reads the DustEM text tables instead; the two routes
+      ! agree bit for bit, test_dustem_product.x measuring that.
+      if (trim(model) == 'themis') then
+         call build_dustem(m, F_GRAIN_THEMIS, D_THEMIS, NT_IN, T_LO, T_HI, &
+                           include_euv=euv, gsca_missing=gmiss, &
+                           qtable_path=F_QT_THEMIS)
+      else
+         call build_dustem(m, F_GRAIN_G18D, D_G18D, NT_IN, T_LO, T_HI, &
+                           include_euv=euv, gsca_missing=gmiss, &
+                           qtable_path=F_QT_G18D)
+      end if
+      if (euv) then
+         fout = '../data/'//trim(model)//'/kext_'//trim(model)//'_euv.dat'
+      else
+         fout = '../data/'//trim(model)//'/kext_'//trim(model)//'.dat'
+      end if
+      if (.not. m%gsca_complete) then
+         write(*,'(a)') ' *** WARNING: no scattering asymmetry for this model.'
+         write(*,'(a,a)') ' *** The DustEM distribution ships no G_ file for: ', trim(gmiss)
+         write(*,'(a)') ' *** The <cos> column is written as 0 throughout;' // &
+                        ' it is NOT a measurement.'
+      end if
+
+   ! ===================================================================
    case ('from_files')
       if (len_trim(opt) == 0) then;  call print_usage();  stop 1;  end if
       desc = opt
@@ -390,6 +455,8 @@ program calc_kext
    case ('dl07');       call header_dl07()
    case ('mrn');        call header_mrn()
    case ('zubko');      call header_zubko()
+   case ('themis');     call header_themis()
+   case ('g18d');       call header_g18d()
    case ('from_files'); call header_from_files()
    end select
 
@@ -434,22 +501,33 @@ program calc_kext
 contains
 
    function kext_tag() result(t)
-      ! The suffix a curve carries when it is NOT the model's default optics:
-      ! the second stored optics set for zubko, the earlier cross-section
-      ! vintage for the DL07 model.  Each model's own choice is unmarked, so
-      ! the shipped file names and the /kext group do not move.
+      ! The suffix a curve carries when it is NOT the model's default: the
+      ! tabulated size distribution or the second stored optics set for zubko,
+      ! the earlier cross-section vintage for the DL07 model.  Each model's own
+      ! default is unmarked, so the shipped file names and the /kext group do
+      ! not move.
+      !
+      ! Every non-default AXIS appends, in the fixed order below, so that a run
+      ! setting two of them lands somewhere neither of them alone does.  The
+      ! size-distribution axis used to be unmarked: `zubko table` then wrote the
+      ! same kext_zubko_BARE_GR_S.dat and the same /kext group as the default
+      ! formula route, which meant the two routes -- whose normalizations differ
+      ! by 0.4-1.1% -- overwrote one another with nothing in the name to say
+      ! which of them a file held.
       character(len=16) :: t
       t = ''
+      if (trim(model) == 'zubko' .and. .not. zubko_formula) &
+         t = trim(t)//'_table'
       if (trim(model) == 'zubko' .and. trim(zubko_optics) /= 'zda') &
-         t = '_'//trim(zubko_optics)
+         t = trim(t)//'_'//trim(zubko_optics)
       if (trim(product) == 'dl07' .and. trim(pah_xsec) /= 'dl07') &
-         t = '_'//trim(pah_xsec)
+         t = trim(t)//'_'//trim(pah_xsec)
    end function kext_tag
 
 
    function h5_kext_group() result(g)
-      ! Where that curve goes inside the product: /kext for the default set,
-      ! /kext_<optics> for another.
+      ! Where that curve goes inside the product: /kext for the model's own
+      ! default, /kext<tag> for any other combination of axes.
       character(len=32) :: g
       g = 'kext'//trim(kext_tag())
    end function h5_kext_group
@@ -462,6 +540,8 @@ contains
       write(*,'(a)') '   ./calc_kext.x dl07 [ld01] [euv | <lam_min in um>]'
       write(*,'(a)') '   ./calc_kext.x mrn       [euv | <lam_min in um>]'
       write(*,'(a)') '   ./calc_kext.x zubko     [formula | table] [euv]'
+      write(*,'(a)') '   ./calc_kext.x themis    [euv]'
+      write(*,'(a)') '   ./calc_kext.x g18d      [euv]'
       write(*,'(a)') '   ./calc_kext.x from_files <descriptor> [data_dir]'
       write(*,'(a)') ''
       write(*,'(a)') ' Writes lambda / albedo / <cos> / C_ext per H (+ C_abs, C_sca, and'
@@ -469,7 +549,9 @@ contains
       write(*,'(a)') ' ../data/.  `euv` asks for the ionizing band: for astrodust and'
       write(*,'(a)') ' dl07 it extends the grid down to whatever the model dielectric'
       write(*,'(a)') ' function itself covers; for zubko, whose own tables already reach'
-      write(*,'(a)') ' 1.24 keV, it keeps the band that the default cuts at the Lyman limit.'
+      write(*,'(a)') ' 1.24 keV, it keeps the band that the default cuts at the Lyman limit;'
+      write(*,'(a)') ' themis and g18d, whose DustEM grid starts at 0.04 um, take it the'
+      write(*,'(a)') ' same way.'
       write(*,'(a)') ' `dl07 ld01` is the DL07 model with the Li & Draine (2001) carbonaceous'
       write(*,'(a)') ' absorption in place of the Draine & Li (2007) one -- everything else'
       write(*,'(a)') ' the same -- and lands beside it as ../data/dl07/kext_ld01_MW[_euv].dat.'
@@ -640,6 +722,13 @@ contains
          else
             sdfile = desc
          end if
+      case ('themis')
+         ! The DustEM formula each GRAIN line names, on that line's own radii;
+         ! the file IS the size distribution, so it is what the attribute
+         ! records.
+         sdfile = F_GRAIN_THEMIS
+      case ('g18d')
+         sdfile = F_GRAIN_G18D
       case default
          return                      ! from_files: no shipped file to extend
       end select
@@ -1096,6 +1185,106 @@ contains
            'header of each component''s own ZDA optics table.')
       call add_note('#')
    end subroutine header_zubko
+
+
+   subroutine header_dustem_common(grain_file, data_dir)
+      ! What THEMIS and G18 Model D share: the file set, and the statement
+      ! that everything in it is read unchanged.
+      character(len=*), intent(in) :: grain_file, data_dir
+      call add_note('#')
+      call add_note('# Model definition: ' // grain_file)
+      call add_note('#   a DustEM GRAIN_*.DAT -- one line per grain population giving its')
+      call add_note('#   size-distribution shape, mass per H, bulk density and radius range.')
+      call add_note('# Optics: ' // data_dir // 'oprop/Q_<gtype>.DAT (Qabs, Qsca) and')
+      call add_note('#   ' // data_dir // 'oprop/G_<gtype>.DAT (<cos theta>), on the common')
+      call add_note('#   grid ' // data_dir // 'oprop/LAMBDA.DAT.')
+      call add_note('# Calorimetry: ' // data_dir // 'hcap/C_<gtype>.DAT, the heat capacity')
+      call add_note('#   per unit volume of grain material.')
+      call add_note('#   All of these are the DustEM tables read unchanged: nothing here is')
+      call add_note('#   recomputed from a dielectric function, and no table is edited.')
+      call add_note('# Size distribution: the DustEM formula the GRAIN line names, evaluated')
+      call add_note('#   on that line''s own nsize radii spaced evenly in ln a between amin')
+      call add_note('#   and amax, and normalized to the stated M_dust/M_H with DustEM''s own')
+      call add_note('#   proton mass 1.67262158e-24 g.  The optics tables carry a radius grid')
+      call add_note('#   of their own and are interpolated onto the model radii, linearly in')
+      call add_note('#   radius, which is what DustEM does with the same tables.')
+   end subroutine header_dustem_common
+
+
+   subroutine header_themis()
+      if (euv) then
+         call add_note('# model = themis_J13_euv')
+      else
+         call add_note('# model = themis_J13')
+      end if
+      call add_note('# Size-integrated extinction, albedo and scattering asymmetry per H')
+      call add_note('# for the THEMIS dust model.')
+      call add_note('#')
+      call add_note('# Sources: Jones et al. (2013), A&A 558, A62 -- the carbon grains;')
+      call add_note('#   Koehler et al. (2014), A&A 565, L9 -- the silicates;')
+      call add_note('#   Ysard et al. (2015) -- densities and mass ratios;')
+      call add_note('#   Compiegne et al. (2011), A&A 525, A103 -- DustEM itself.')
+      call add_note('#   Hensley & Draine (2023), ApJ 948, 55, Sec. 6.2.2 and Fig. 16 compare')
+      call add_note('#   their astrodust model against this one.')
+      call header_dustem_common(F_GRAIN_THEMIS, D_THEMIS)
+      if (euv) then
+         call header_wavelength_range('The range is the DustEM wavelength grid itself, ' // &
+              '0.04 um to 1e5 um.')
+      else
+         call header_wavelength_range('The DustEM wavelength grid cut at the Lyman limit.')
+         call add_note('#   The grid reaches 0.04 um; the wavelengths shortward of 0.0912 um')
+         call add_note('#   are dropped, table row by table row, because an interstellar')
+         call add_note('#   radiation field carries no photon there.  Nothing is recomputed.')
+      end if
+      call header_common_format_and_scope('Densities: the rho field of each ' // &
+           'population line of ' // F_GRAIN_THEMIS // '.')
+      call add_note('#')
+   end subroutine header_themis
+
+
+   subroutine header_g18d()
+      if (euv) then
+         call add_note('# model = g18d_ModelD_euv')
+      else
+         call add_note('# model = g18d_ModelD')
+      end if
+      call add_note('# Size-integrated extinction, albedo and scattering asymmetry per H')
+      call add_note('# for Model D of Guillet et al. (2018).')
+      call add_note('#')
+      call add_note('# Sources: Guillet et al. (2018), A&A 610, A16, their Model D;')
+      call add_note('#   Compiegne et al. (2011), A&A 525, A103 -- DustEM itself.')
+      call add_note('#   Hensley & Draine (2023), ApJ 948, 55, Sec. 6.2.2 and Fig. 16 compare')
+      call add_note('#   their astrodust model against this one.')
+      call add_note('#   The two large populations are PROLATE spheroids -- the 0.3333x and')
+      call add_note('#   0.4x in their names are the axis ratios -- and their Q tables are')
+      call add_note('#   already averaged over orientation, so they enter this scalar model')
+      call add_note('#   exactly as a sphere table does.')
+      call header_dustem_common(F_GRAIN_G18D, D_G18D)
+      if (.not. m%gsca_complete) then
+         call add_note('#')
+         call add_note('# NO SCATTERING ASYMMETRY FOR THIS MODEL.  The <cos> column is 0 at')
+         call add_note('#   every wavelength, and that 0 is not a measurement: the DustEM')
+         call add_note('#   distribution ships no G_<gtype>.DAT for')
+         call add_note('#     ' // trim(gmiss))
+         call add_note('#   which carry 90% of the dust mass, so <cos theta> is not defined')
+         call add_note('#   for this model.  Averaging the one population that does have a g')
+         call add_note('#   over the scattering of all of them would give a small number that')
+         call add_note('#   is the asymmetry of nothing, so it is not written.  C_ext, C_abs,')
+         call add_note('#   C_sca and the albedo are unaffected.')
+      end if
+      if (euv) then
+         call header_wavelength_range('The range is the DustEM wavelength grid itself, ' // &
+              '0.04 um to 1e5 um.')
+      else
+         call header_wavelength_range('The DustEM wavelength grid cut at the Lyman limit.')
+         call add_note('#   The grid reaches 0.04 um; the wavelengths shortward of 0.0912 um')
+         call add_note('#   are dropped, table row by table row, because an interstellar')
+         call add_note('#   radiation field carries no photon there.  Nothing is recomputed.')
+      end if
+      call header_common_format_and_scope('Densities: the rho field of each ' // &
+           'population line of ' // F_GRAIN_G18D // '.')
+      call add_note('#')
+   end subroutine header_g18d
 
 
    subroutine header_from_files()

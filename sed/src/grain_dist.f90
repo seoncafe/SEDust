@@ -4,7 +4,7 @@ module grain_dist_mod
    ! distributions for silicate, graphite, and PAH grains.
    !
    ! Ported from Qext_new/grain_dist.f90 (GRAIN_DIST_DL07), originally
-   ! from B.T. Draine's web distribution (http://physics.gmu.edu/~joe/),
+   ! from J.C. Weingartner's web distribution (http://physics.gmu.edu/~joe/),
    ! with the Draine & Li (2007) VSG update and the LMC/SMC parameter
    ! sets added by K.-I. Seon. Converted here to a free-form F90 module
    ! using the project working precision `wp`.

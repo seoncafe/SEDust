@@ -1,0 +1,69 @@
+G18 Model D dust model (DustEM distribution)
+============================================
+
+Source: DustEM, https://www.ias.u-psud.fr/DUSTEM/
+        Compiegne et al. (2011), A&A 525, A103 -- the code
+        Guillet et al. (2018), A&A 610, A16    -- the model (their Model D)
+
+Files are taken verbatim from the DustEM distribution and are NOT modified:
+
+  GRAIN_G17_ModelD.DAT     DustEM data/    -- model definition (3 populations)
+  ALIGN_G17_ModelD.DAT     DustEM data/    -- alignment function (polarization)
+  oprop/LAMBDA.DAT         DustEM oprop/   -- the 800-point wavelength grid
+  oprop/Q_<type>.DAT       DustEM oprop/   -- Qabs, Qsca per radius
+  oprop/G_PAH0_MC10.DAT    DustEM oprop/   -- g = <cos theta>, PAH only
+  hcap/C_<type>.DAT        DustEM hcap/    -- heat capacity, erg K^-1 cm^-3
+
+NO g FOR THE TWO LARGE POPULATIONS.  The DustEM distribution ships no
+G_amCBE_0.3333x.DAT and no G_aSil2001BE6pctG_0.4x.DAT, so the scattering
+asymmetry parameter cannot be formed for the amorphous-carbon and silicate
+spheroids, which carry 90% of the dust mass.  DustEM itself reads a G_ file
+only under its `pdr` run keyword, which this model does not set, so its own
+EXT_G17_ModelD run needs none.  This model therefore yields tau_ext, tau_sca
+and the albedo, but not <cos theta>.
+
+The two large populations are PROLATE spheroids (the 0.3333x and 0.4x in their
+names are the axis ratios).  Their Q_<type>.DAT tables are already averaged
+over orientation, so they enter the scalar model exactly as a sphere table
+does.  The polarized tables Q1_/Q2_<type>.DAT and ALIGN_G17_ModelD.DAT are the
+input the polarized branch would need; ALIGN_G17_ModelD.DAT is kept here for
+that, and its keyword line carries no ANIS, so the unpolarized extinction is
+the plain orientation average with no alignment correction -- which is what
+DustEM computes for this model.
+
+HD23 (Hensley & Draine 2023, ApJ 948, 55, Sec. 6.2.2 and Fig. 16) compare
+against this model, running DustEM on GRAIN_G17_ModelD.DAT and adopting a
+dust-to-gas mass ratio 0.0081 (Guillet et al. 2018, Table 3).  The three
+populations of GRAIN_G17_ModelD.DAT themselves sum to Mdust/MH = 7.271e-3.
+
+NOT from DustEM, generated here:
+
+  kext_g18d[_euv].dat       sed/calc_kext.x -- the size-integrated extinction
+  sedust_g18d.h5            sed/calc_qtable.x -- /grid (LAMBDA.DAT) and
+                            /qtable/<population> (the Q_/G_ tables above, put
+                            on each population's own model radii), plus /kext
+                            from sed/calc_kext.x.  The two large populations
+                            carry no g dataset, for the reason above.
+                            Regenerate with
+                              ./calc_qtable.x g18d && ./calc_kext.x g18d euv
+                            in that order: the first replaces the file.
+
+reference/ -- DustEM's own output for GRAIN_G17_ModelD.DAT
+==========================================================
+
+The DustEM distribution ships no published result for this model, so the two
+files here were produced by building DustEM 4.3 from the sources in the same
+distribution and running it on these very input files, with
+ALIGN_G17_ModelD.DAT copied to data/ALIGN.DAT as the model requires:
+
+  reference/EXT_G17_ModelD.RES   extinction, DustEM out/EXT.RES
+  reference/SED_G17_ModelD.RES   emission,   DustEM out/SED.RES
+
+The build was checked first on THEMIS, where the distribution does publish a
+result: it reproduces the distributed EXT_J13.RES exactly and SED_J13.RES to
+1.6e-5 over 1-3000 um.  Longward of 3000 um the distributed SED_J13.RES is
+larger than this build gives, by a factor that grows to 230 at 2.5 cm, where
+the emission is six orders of magnitude below its peak; the distributed
+data/GRAIN.DAT of that release sets run keywords this model file does not
+(zdistf, and charge on the nano-carbon population), which is the likely
+reason.  Nothing in the 1-3000 um band used for comparison is affected.

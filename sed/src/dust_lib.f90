@@ -101,7 +101,8 @@ module dust_lib
    ! independent; evaluate it once. The densities are the astrodust model's
    ! rho_Ad = 2.74 and rho_PAH = 2.0 g/cm^3, the DL07 model's astrosilicate 3.5
    ! and graphitic carbon 2.2 g/cm^3 (both Draine & Li 2007 sec. 2), and, for
-   ! the Zubko and file-defined models, the density each optics file declares.
+   ! the Zubko, DustEM-defined and file-defined models, the density each model
+   ! file declares -- for THEMIS and G18D, the rho column of each GRAIN line.
    ! The same number normalizes the K_abs column of every /kext product.
    !
    ! WHICH TABLE. build_dust and each builder take an optional kext_path naming
@@ -111,6 +112,8 @@ module dust_lib
    !   dl07       ../data/dl07/sedust_dl07.h5
    !   mrn        ../data/mrn/sedust_mrn.h5
    !   zubko      ../data/zubko/sedust_zubko.h5
+   !   themis     ../data/themis/sedust_themis.h5
+   !   g18d       ../data/g18d/sedust_g18d.h5
    !   from_files (none -- a file-defined model's product is named after the
    !               model, so a host wanting extinction must name the file)
    ! Behind each sits that model's EUV text table, for a tree built without
@@ -127,8 +130,8 @@ module dust_lib
    ! COVERS the Lyman limit whatever model it named.  lam_min states the
    ! shortest wavelength the model must COVER, and never truncates: astrodust,
    ! DL07 and MRN meet it by extending on the dielectric function their optics
-   ! come from, zubko and from_files meet it when their own tables already reach and
-   ! refuse it (status 4 out of build_dust) when they do not.
+   ! come from, zubko, themis, g18d and from_files meet it when their own tables
+   ! already reach and refuse it (status 4 out of build_dust) when they do not.
    !
    ! Both were previously model-dependent, and a host with one call and one
    ! floor met the difference: include_euv was an index cut for two models and
@@ -280,9 +283,10 @@ module dust_lib
    !   92  zubko_optics not one of 'zda' | 'mie_d03'
    ! The builders below keep their OWN numbering, which is not the same
    ! one -- an unreadable extinction table is 10 for astrodust, 5 for DL07, 3
-   ! for MRN, 6 for zubko and 9 for from_files. A host calling them directly reads the
-   ! list below; a host on build_dust reads the list above and does not branch
-   ! on the model name. Codes for each builder:
+   ! for MRN, 6 for zubko, 8 for a DustEM-defined model and 9 for from_files. A
+   ! host calling them directly reads the list below; a host on build_dust reads
+   ! the list above and does not branch on the model name. Codes for each
+   ! builder:
    !   build_astrodust / build_dl07:  1 Q-table load failed
    !                                  (2 is retired: the size distributions
    !                                    are analytic, nothing is read)
@@ -324,6 +328,18 @@ module dust_lib
    !                  5 a component's calorimetry read failed
    !                  6 an explicitly named kext_path failed to load
    !                  7 lam_min shorter than this model's own optics table
+   !   build_dustem:  1 GRAIN_*.DAT unreadable, or it names a size-distribution
+   !                    keyword this code does not implement
+   !                  2 oprop/LAMBDA.DAT read failed
+   !                  3 a population's oprop/Q_<gtype>.DAT read failed
+   !                  4 a population's size distribution could not be formed
+   !                  5 a population's model radii fall outside its optics
+   !                  6 a population's hcap/C_<gtype>.DAT read failed, or does
+   !                    not cover that population's model radii
+   !                  7 a population's oprop/G_<gtype>.DAT exists but could
+   !                    not be read
+   !                  8 an explicitly named kext_path failed to load
+   !                  9 lam_min shorter than the DustEM wavelength grid
    !   build_from_files: 1 descriptor open   2 too many pop: lines
    !                     3 invalid channel   4 no pop: lines
    !                     5 optics read       6 grid inconsistent
@@ -433,7 +449,7 @@ module dust_lib
    use sed_mathlib,           only: locate
    use sed_astrodust_mod, only: dust_model_t, build_dust, &
                                 build_astrodust, build_dl07, build_mrn, &
-                                build_zubko, build_from_files, &
+                                build_zubko, build_dustem, build_from_files, &
                                 dust_emission, dust_emission_single_teq, &
                                 dust_extinction, size_integrated_extinction, &
                                 dust_mass_per_H, &
@@ -466,6 +482,29 @@ module dust_lib
    ! data directory, and include_euv decides whether the grid carries the
    ! ionizing band.  The builders below it stay exported so that a host
    ! naming its own files keeps working unchanged.
+   !
+   ! THE MODELS, and the builder behind each:
+   !   'astrodust'  build_astrodust  Hensley & Draine (2023) astrodust + PAH
+   !   'dl07'       build_dl07       Draine & Li (2007) on the WD01 sizes
+   !   'mrn'        build_mrn        Mathis, Rumpl & Nordsieck (1977)
+   !   'zubko'      build_zubko      Zubko, Dwek & Arendt (2004) BARE-GR-S
+   !   'themis'     build_dustem     THEMIS: Jones et al. (2013) for the carbon
+   !                                 grains, Koehler et al. (2014) for the
+   !                                 silicates, Ysard et al. (2015) for the
+   !                                 densities and mass ratios
+   !   'g18d'       build_dustem     Guillet et al. (2018) Model D
+   !   'from_files' build_from_files whatever a descriptor names
+   !
+   ! The two DustEM-defined models are the ones Hensley & Draine (2023), Sec.
+   ! 6.2.2 and Fig. 16, compare their astrodust model against.  Each is a
+   ! GRAIN_*.DAT plus the optics and calorimetry tables under its own oprop/
+   ! and hcap/.  BOTH ARE SCALAR, and that matters in this version: what the
+   ! DustEM distribution publishes for them is orientation-averaged, so they
+   ! carry no polarized optics and none can be formed from what ships.
+   ! dust_has_polarized_optics(m) is .false. for both, the extinction matrix
+   ! reduces to the scalar C_ext, and the aligned-grain scattering matrix has
+   ! nothing to be built from -- an RT host that wants dichroic extinction or
+   ! aligned scattering must run the astrodust model.
    public :: dust_model_t, build_dust
    ! Where the library looks for the data it was not handed a path to.
    ! build_dust sets this from its own data_dir and restores it, so a host on
@@ -473,7 +512,8 @@ module dust_lib
    ! directly, and keeps its data somewhere other than <workdir>/../data, sets
    ! the root once before the first build.
    public :: sed_set_data_root, sed_get_data_root
-   public :: build_astrodust, build_dl07, build_mrn, build_zubko, build_from_files
+   public :: build_astrodust, build_dl07, build_mrn, build_zubko, build_dustem, &
+             build_from_files
    public :: dust_emission, dust_emission_single_teq, dust_extinction
    public :: size_integrated_extinction
    public :: dust_mass_per_H

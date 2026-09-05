@@ -14,9 +14,11 @@ quantities per H atom.
 
 SEDust is **model-agnostic**. The HD23 astrodust+PAH model, the Draine & Li
 (2007) carbonaceous+silicate model, the Mathis, Rumpl & Nordsieck (1977)
-graphite+silicate model, and the Zubko et al. (2004) BARE-GR-S model are handled
-as peers through one derived type (`dust_model_t`) and one emission call
-(`dust_emission`). The solver core does not know which model it is running.
+graphite+silicate model, the Zubko et al. (2004) BARE-GR-S model, the THEMIS
+model (Jones et al. 2013 / Koehler et al. 2014) and Model D of Guillet et al.
+(2018) are handled as peers through one derived type (`dust_model_t`) and one
+emission call (`dust_emission`). The solver core does not know which model it
+is running.
 
 The whole package can also be linked into a Fortran 3D radiative-transfer code
 as a static library, `libsedust.a`, with a two-step API: initialize once, then
@@ -75,9 +77,9 @@ SEDust/
     astrodust/  everything that model owns: `sedust_astrodust.h5` (the
     dl07/       primary form -- its wavelength axis, cross-section tables
     mrn/        and extinction curve in one file), the same as text
-    zubko/
-                (`q_*.dat`, `kext_*.dat`), and, where the model IS a set of
-                files, its definition (the ZDA config, optics, calorimetry)
+    zubko/      (`q_*.dat`, `kext_*.dat`), and, where the model IS a set of
+    themis/     files, its definition -- the ZDA config for zubko, the
+    g18d/       DustEM GRAIN/oprop/hcap files for themis and g18d
     dielectric/ shared material data: the D03 / DH21 / D16 optical
                 constants and the PAH cross sections.  A dielectric function
                 is not one model's -- DL07, MRN and Zubko read the same D03
@@ -94,11 +96,21 @@ paths outside this directory.
 
 ## What it computes
 
-- **Four grain models as peers** — HD23 astrodust+PAH, Draine & Li (2007)
+- **Six grain models as peers** — HD23 astrodust+PAH, Draine & Li (2007)
   carbonaceous+silicate, Mathis, Rumpl & Nordsieck (1977) graphite+silicate,
-  Zubko et al. (2004) BARE-GR-S — behind one `dust_model_t` and one
-  `dust_emission` call, plus a fifth builder that takes a model defined by a
-  descriptor file.
+  Zubko et al. (2004) BARE-GR-S, THEMIS (Jones et al. 2013 / Koehler et al.
+  2014) and Model D of Guillet et al. (2018) — behind one `dust_model_t` and
+  one `dust_emission` call, plus a builder that takes a model defined by a
+  descriptor file. The last two are the models Hensley & Draine (2023),
+  Sec. 6.2.2, compare the astrodust model against; both are read from the
+  DustEM input files that define them. Peers means peers: every one of the six
+  is reached by name through the single `build_dust` entry point, ships a
+  `data/<model>/sedust_<model>.h5` product that `calc_qtable.x` writes and
+  `calc_kext.x` puts `/kext` into, and serves its extinction through
+  `dust_extinction` without the host naming a file. THEMIS and G18D are
+  **scalar**, though: what the DustEM distribution publishes for them is
+  orientation-averaged, so they carry no polarized optics — the polarized
+  branch of this version is the astrodust model.
 - **Optics from first principles** — dielectric functions through Mie and the
   Mishchenko T-matrix (spheroids) to stored `Q` tables, and the size-integrated
   `C_ext` / `C_abs` / `C_sca` / `<cos>` per H that a transfer code takes as its
@@ -154,6 +166,10 @@ paths outside this directory.
 - [Weingartner & Draine 2001, ApJ, 548, 296](https://ui.adsabs.harvard.edu/abs/2001ApJ...548..296W/abstract) — the Milky Way size distributions the DL07 model is built on.
 - [Zubko, Dwek & Arendt 2004, ApJS, 152, 211](https://ui.adsabs.harvard.edu/abs/2004ApJS..152..211Z/abstract) — the ZDA BARE-GR-S composition, size distributions, and calorimetry.
 - [Draine & Li 2007, ApJ, 657, 810](https://ui.adsabs.harvard.edu/abs/2007ApJ...657..810D/abstract) — the DL07 PAH cross sections and emission model.
+- [Compiegne et al. 2011, A&A, 525, A103](https://ui.adsabs.harvard.edu/abs/2011A%26A...525A.103C/abstract) — DustEM, whose input files define the THEMIS and G18D models carried here.
+- [Jones et al. 2013, A&A, 558, A62](https://ui.adsabs.harvard.edu/abs/2013A%26A...558A..62J/abstract) — the THEMIS amorphous-hydrocarbon grains.
+- [Koehler, Jones & Ysard 2014, A&A, 565, L9](https://ui.adsabs.harvard.edu/abs/2014A%26A...565L...9K/abstract) — the THEMIS amorphous silicates.
+- [Guillet et al. 2018, A&A, 610, A16](https://ui.adsabs.harvard.edu/abs/2018A%26A...610A..16G/abstract) — the dust models fitted to Planck intensity and polarization; Model D is the one carried here.
 - [Mishchenko & Travis 1998, JQSRT, 60, 309](https://ui.adsabs.harvard.edu/abs/1998JQSRT..60..309M/abstract) — the T-matrix method used for the spheroidal astrodust optics.
 - [Draine & Hensley 2021, ApJ, 909, 94](https://ui.adsabs.harvard.edu/abs/2021ApJ...909...94D/abstract) — the astrodust dielectric function.
 - [Hensley & Draine 2023, ApJ, 948, 55](https://ui.adsabs.harvard.edu/abs/2023ApJ...948...55H/abstract) — the astrodust+PAH model this package reproduces.
@@ -164,4 +180,4 @@ Kwang-il Seon (KASI/UST)
 
 ---
 
-Last updated: 2026-08-25 05:04 KST
+Last updated: 2026-09-05 20:22 KST

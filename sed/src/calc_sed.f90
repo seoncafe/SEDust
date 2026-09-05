@@ -7,6 +7,8 @@ program calc_sed
    !   ./calc_sed.x dl07 [submodel] [settings ...]
    !   ./calc_sed.x mrn [settings ...]
    !   ./calc_sed.x zubko [settings ...]
+   !   ./calc_sed.x themis [settings ...]
+   !   ./calc_sed.x g18d [settings ...]
    !
    ! The model name is required; without one, or with one this program does
    ! not know, it prints the usage and stops.  Everything after it is the
@@ -26,6 +28,8 @@ program calc_sed
    !     lambda[um]  total  graphite  silicate
    !   sed_zubko[_<tag>].dat
    !     lambda[um]  total  PAH  graphite  silicate
+   !   sed_themis[_<tag>].dat, sed_g18d[_<tag>].dat
+   !     lambda[um]  total  <one column per DustEM grain population>
    ! all in erg s^-1 cm^-2 sr^-1 H^-1 (the HD23 / DL07 convention).
    !
    ! This is the emission counterpart of calc_kext.x, which does the size
@@ -36,7 +40,8 @@ program calc_sed
    use sed_astrodust_mod, only: sed_init, sed_solve, sed_solve_pah, &
                                 sed_solve_qm_batch, stoch_method, NLAM, lam, &
                                 sed_init_dl07, sed_solve_dl07, &
-                                dust_model_t, build_zubko, build_mrn, dust_emission
+                                dust_model_t, build_zubko, build_mrn, build_dustem, &
+                                dust_emission
    ! Which graphite optics the carbonaceous xi blend takes; each model sets its
    ! own before the arguments are applied on top.
    use qpah,              only: qpah_graphite_source, nc_coeff, nc_integer
@@ -65,6 +70,13 @@ program calc_sed
    character(len=*), parameter :: F_QT_ZU = '../data/zubko/sedust_zubko.h5'
    character(len=*), parameter :: F_ZDA_CFG = '../data/zubko/ZDA_BARE_GR_S_Config.dat'
    character(len=*), parameter :: D_ZUBKO   = '../data/zubko/'
+   ! The two models defined by DustEM input files: THEMIS (Jones et al. 2013,
+   ! Koehler et al. 2014) and Guillet et al. (2018) Model D, which Hensley &
+   ! Draine (2023) Sec. 6.2.2 compare the astrodust model against.
+   character(len=*), parameter :: F_GRAIN_THEMIS = '../data/themis/GRAIN_J13.DAT'
+   character(len=*), parameter :: D_THEMIS       = '../data/themis/'
+   character(len=*), parameter :: F_GRAIN_G18D   = '../data/g18d/GRAIN_G17_ModelD.DAT'
+   character(len=*), parameter :: D_G18D         = '../data/g18d/'
 
    character(len=8), parameter :: STAGES(2) = ['S1      ', 'S2      ']
    real(wp),         parameter :: T_LO  = 2.7_wp
@@ -86,7 +98,8 @@ program calc_sed
    ! Stage-1 enthalpy exist only for the models that compute them, and are
    ! added below once the model is known.
    call declare_run_options(opt, program='calc_sed', &
-        subjects=[character(len=16):: 'astrodust', 'dl07', 'mrn', 'zubko'], &
+        subjects=[character(len=16):: 'astrodust', 'dl07', 'mrn', 'zubko', &
+                                      'themis', 'g18d'], &
         solver=.true., grid=.true., field=.true., emission=.true., qm_size=.true.)
 
    narg = command_argument_count()
@@ -110,6 +123,10 @@ program calc_sed
       U_field = 1.0_wp                  ! the Mathis ISRF at its nominal strength
    case ('zubko')
       U_field = 1.0_wp                  ! the reference intensity of its published SED
+   case ('themis', 'g18d')
+      ! DustEM's own reference run for both is the Mathis ISRF at G0 = 1, the
+      ! scaling their GRAIN files state.
+      U_field = 1.0_wp
    end select
 
    ! ---- settings, in any order ------------------------------------------
@@ -150,6 +167,10 @@ program calc_sed
    case ('dl07');       call solve_dl07()
    case ('mrn');        call solve_mrn()
    case ('zubko');      call solve_zubko()
+   case ('themis');     call solve_dustem(F_GRAIN_THEMIS, D_THEMIS, 'themis', &
+                             'THEMIS (Jones et al. 2013 / Koehler et al. 2014)')
+   case ('g18d');       call solve_dustem(F_GRAIN_G18D, D_G18D, 'g18d', &
+                             'Guillet et al. (2018) Model D')
    end select
 
 contains
@@ -161,6 +182,8 @@ contains
       write(*,'(a)') '   ./calc_sed.x dl07 [submodel] [settings ...]'
       write(*,'(a)') '   ./calc_sed.x mrn [settings ...]'
       write(*,'(a)') '   ./calc_sed.x zubko [settings ...]'
+      write(*,'(a)') '   ./calc_sed.x themis [settings ...]'
+      write(*,'(a)') '   ./calc_sed.x g18d [settings ...]'
       write(*,'(a)') ''
       write(*,'(a)') '   dl07 submodel : mw31_00..mw31_60 (default mw31_60),'// &
                      ' lmc2_00, lmc2_05, lmc2_10, smc'
@@ -585,6 +608,101 @@ contains
 
       deallocate(J_lam, lamI_tot, lamI_chan)
    end subroutine solve_zubko
+
+
+   ! ===================================================================
+   subroutine solve_dustem(grain_path, data_dir, stem, title)
+      ! A model defined by DustEM input files: THEMIS, or Guillet et al. (2018)
+      ! Model D.  Both are built from the GRAIN_*.DAT that defines them plus the
+      ! optics and calorimetry tables under their own oprop/ and hcap/, all read
+      ! unchanged, so the emission solved here rests on the same numbers the
+      ! transport curve calc_kext.x writes for them does.
+      !
+      ! Like the Zubko model, their optics grid starts far shortward of the band
+      ! a transported radiation field occupies (0.04 um against 0.0912 um), so
+      ! `euv` builds them on the whole grid and its absence cuts it at the Lyman
+      ! limit.
+      !
+      ! One output column per grain population, in the order of the GRAIN file,
+      ! which is the layout of DustEM's own SED_*.RES.
+      character(len=*), intent(in) :: grain_path, data_dir, stem, title
+      type(dust_model_t)    :: m
+      real(wp), allocatable :: J_lam(:), lamI_tot(:), lamI_chan(:,:)
+      integer  :: k, ic, u, status
+      character(len=192) :: fname
+      character(len=256) :: gmiss, cols
+
+      fname = trim(tagged('sed_'//trim(stem)))//'.dat'
+
+      call report_header(trim(title)//' dust emission')
+      write(*,'(a,f8.3)') ' U (Mathis)    : ', U_field
+      call apply_run_options(opt)
+      call report_run_options(opt)
+      write(*,'(a,a)')    ' output file   : ', trim(fname)
+
+      ! The optics come from the model's own product, as they do for zubko, so
+      ! that this SED and the transport curve in the same file are the same
+      ! numbers.  A tree that has not run ./calc_qtable.x for this model yet
+      ! has no product, and build_dustem reads the DustEM text tables instead;
+      ! the two routes agree bit for bit.
+      call build_dustem(m, grain_path, data_dir, NT_IN, T_LO, T_HI, status, &
+                        include_euv=opt%euv, gsca_missing=gmiss, &
+                        qtable_path=trim(data_dir)//'sedust_'//trim(stem)//'.h5')
+      if (status /= 0) then
+         write(*,'(a,i0)') ' calc_sed: build_dustem failed, status = ', status
+         stop 1
+      end if
+      m%verbose = .true.
+      if (.not. m%gsca_complete) then
+         write(*,'(a,a)') ' *** no scattering asymmetry for: ', trim(gmiss)
+         write(*,'(a)')   ' *** (the emission below does not use it; the transport' // &
+                          ' curve does)'
+      end if
+      write(*,'(a,i0,a,es11.4,a,es11.4,a)') ' build_dustem done. NLAM=', m%NLAM, &
+           ',  grid = ', m%lam(1), ' to ', m%lam(m%NLAM), ' um'
+
+      allocate(J_lam(m%NLAM), lamI_tot(m%NLAM), lamI_chan(m%NLAM, m%n_channel))
+      call J_Mathis(U_field, m%lam, J_lam)
+      if (opt%hard_euv_field) call add_hard_euv_component(m%lam, J_lam)
+      call report_field_extent(m%lam, J_lam)
+
+      write(*,'(a,i0,a)') ' solving the SED over ', m%n_channel, ' grain populations ...'
+      call dust_emission(m, J_lam, lamI_tot, lamI_chan, status)
+      if (status /= 0) then
+         write(*,'(a,i0)') ' calc_sed: dust_emission failed, status = ', status
+         stop 1
+      end if
+
+      open(newunit=u, file=trim(fname), status='replace', action='write')
+      if (U_field < 1000.0_wp) then
+         write(u,'(a,a,f5.2)') '# ', trim(title)//' model SED (this work),'// &
+              ' Mathis ISRF U = ', U_field
+      else
+         write(u,'(a,a,es10.3)') '# ', trim(title)//' model SED (this work),'// &
+              ' Mathis ISRF U = ', U_field
+      end if
+      write(u,'(a,a)')    '# solver = ', trim(m%stoch_method)
+      if (opt%hard_euv_field) write(u,'(a,es10.3,a,es10.3)') &
+           '# artificial hard component below the Lyman limit: W*B_lambda(T), T = ', &
+           T_HARD_EUV, ' K, W = ', W_HARD_EUV
+      cols = '# columns: lambda[um]  lamI_total/NH'
+      do ic = 1, m%n_channel
+         cols = trim(cols)//'  lamI_'//trim(m%channel_name(ic))//'/NH'
+      end do
+      write(u,'(a)') trim(cols)
+      write(u,'(a)') '#          [erg s^-1 cm^-2 sr^-1 H^-1]'
+      ! e3 on the intensities: this grid starts at 0.04 um, where lambda*I_lambda
+      ! underflows to subnormals and a two-digit exponent field drops the E.
+      do k = 1, m%NLAM
+         write(u,'(es14.6,100(1x,es16.8e3))') m%lam(k), lamI_tot(k), &
+              (lamI_chan(k, ic), ic = 1, m%n_channel)
+      end do
+      close(u)
+      write(*,'(a,a)') ' wrote ', trim(fname)
+      write(*,'(a)') ' calc_sed: done.'
+
+      deallocate(J_lam, lamI_tot, lamI_chan)
+   end subroutine solve_dustem
 
 
    subroutine report_field_extent(lam_m, J_lam)

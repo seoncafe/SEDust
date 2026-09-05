@@ -82,6 +82,16 @@ module dust_model_mod
       integer               :: n_channel = 0
       character(len=16), allocatable :: channel_name(:)   ! (n_channel)
       logical               :: use_induced_emission = .false.
+      ! Does every population that scatters also carry a scattering asymmetry
+      ! <cos theta>?  .true. for every model whose optics come from a Mie or
+      ! T-matrix calculation, which yields g alongside Q_sca and is therefore
+      ! the default here.  A model defined by published tables can fail it: the
+      ! DustEM distribution of Guillet et al. (2018) Model D ships no G_ file
+      ! for its two large populations, which carry 90% of the dust mass.  Those
+      ! populations then leave gsca unallocated, and
+      ! size_integrated_extinction returns <cos theta> = 0 for the whole model
+      ! rather than the asymmetry of the minority that does carry g.
+      logical               :: gsca_complete = .true.
       character(len=16)     :: stoch_method = 'heuristic'
       ! Grain-alignment state currently loaded into the populations' falign.
       ! The defaults are the Hensley & Draine (2023) Table 1 fit, which is

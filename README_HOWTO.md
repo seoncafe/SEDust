@@ -26,6 +26,8 @@ make                        # calc_enthalpy.x calc_sed.x calc_kext.x
 ./calc_sed.x dl07           # Draine & Li (2007) SED at U = 1   -> output/
 ./calc_sed.x mrn            # MRN (1977) SED at U = 1           -> output/
 ./calc_sed.x zubko          # Zubko/ZDA SED at U = 1            -> output/
+./calc_sed.x themis         # THEMIS SED at U = 1               -> output/
+./calc_sed.x g18d           # Guillet+18 Model D SED at U = 1   -> output/
 ./calc_enthalpy.x           # astrodust enthalpy tables (add c2 for the
                             #   Stage-1 density-corrected prefactor)
 
@@ -79,6 +81,10 @@ make use_dustlib_scatmat.x  # reference consumer of the aligned-scattering API
 ./calc_kext.x mrn euv       # -> ../data/mrn/kext_mrn_euv.dat
 ./calc_kext.x zubko         # -> ../data/zubko/kext_zubko_BARE_GR_S.dat (cut at the Lyman limit)
 ./calc_kext.x zubko euv     # -> ../data/zubko/kext_zubko_BARE_GR_S_euv.dat (the whole ZDA range)
+./calc_kext.x zubko table   # -> ../data/zubko/kext_zubko_BARE_GR_S_table.dat (tabulated size dist)
+./calc_kext.x themis        # -> ../data/themis/kext_themis.dat (cut at the Lyman limit)
+./calc_kext.x themis euv    # -> ../data/themis/kext_themis_euv.dat (the whole DustEM grid)
+./calc_kext.x g18d euv      # -> ../data/g18d/kext_g18d_euv.dat
 ./calc_kext.x from_files ../data/zubko/zubko_descriptor.txt
 
 # the optics products.  ORDER MATTERS: calc_qtable.x lays down the wavelength
@@ -86,7 +92,9 @@ make use_dustlib_scatmat.x  # reference consumer of the aligned-scattering API
 # puts /kext back.  Both also write the text products beside them.
 ./calc_qtable.x             # every model -> ../data/<model>/q_*.dat
                             #             -> ../data/<model>/sedust_<model>.h5
+./calc_qtable.x themis      # one model on its own
 ./calc_kext.x astrodust euv # ... then /kext into each of those files
+./calc_kext.x themis euv    #     (the euv run is the one that writes /kext)
 ./calc_polarized_optics.x          # -> /polarized in ../data/astrodust/sedust_astrodust.h5
 
 # polarized extinction alone, checked against the HD23 release
@@ -148,7 +156,8 @@ crosses the Lyman limit, so `include_euv` picks the view rather than the file:
 `.false.` (the default) returns `lambda(i_lyman:)` and the same rows of every
 wavelength-indexed array.  For astrodust that is 1129 wavelengths
 (0.0912--39810 um) out of 1762 (1.0e-4--39810 um), for DL07 and MRN 1129 out of
-1823, for Zubko 866 out of 1201.
+1823, for Zubko 866 out of 1201, and for THEMIS and G18D 750 out of the 800 of
+the DustEM wavelength grid.
 
 The scalar T-matrix text pair behind it, `q_astrodust_P0.20_Fe0.00_1.400.dat`
 and `..._euv.dat`, is the same split as two files: the EUV one is the whole
@@ -196,6 +205,10 @@ and needs no T-matrix.
 | `data/mrn/kext_mrn_euv.dat` | 1823 | 6.205e-5 - 39810 | the D03 dielectric functions |
 | `data/zubko/kext_zubko_BARE_GR_S.dat` | 866 | 0.08998 - 1e4 | the ZDA optics table, cut at the Lyman limit |
 | `data/zubko/kext_zubko_BARE_GR_S_euv.dat` | 1201 | 1e-3 - 1e4 | the ZDA optics table itself |
+| `data/themis/kext_themis.dat` | 750 | 0.090333 - 1e5 | the DustEM grid, cut at the Lyman limit |
+| `data/themis/kext_themis_euv.dat` | 800 | 0.04 - 1e5 | the DustEM wavelength grid itself |
+| `data/g18d/kext_g18d.dat` | 750 | 0.090333 - 1e5 | the DustEM grid, cut at the Lyman limit |
+| `data/g18d/kext_g18d_euv.dat` | 800 | 0.04 - 1e5 | the DustEM wavelength grid itself |
 
 ### Stored Q tables
 
@@ -210,6 +223,8 @@ they are not tracked:
 | DL07 | `data/dl07/q_dl07_{sil,gra,pah_neu,pah_ion}.dat` (1129) | `..._euv.dat` (1823) | 84, Draine's analytic grid, 3.548e-4 - 5.012 um |
 | MRN | `data/mrn/q_mrn_{sil,gra}.dat` (1129) | `..._euv.dat` (1823) | 70, log-spaced 0.005 - 0.25 um, the power law's own cutoffs on its ends |
 | Zubko | `data/zubko/q_zubko_{sil,gra,pah}.dat` (866) | `..._euv.dat` (1201) | 121 (sil, gra) / 28 (PAH), the ZDA tables' own |
+| THEMIS | none -- the DustEM `oprop/Q_*.DAT` are the text form | `/qtable` of `data/themis/sedust_themis.h5` (800) | 25 per population, from `GRAIN_J13.DAT` |
+| G18D | none -- the DustEM `oprop/Q_*.DAT` are the text form | `/qtable` of `data/g18d/sedust_g18d.h5` (800) | 10 (PAH) / 25 (the two large populations), from `GRAIN_G17_ModelD.DAT` |
 
 `sed/calc_qtable.x` writes all of these, and the HDF5 product of each model
 with them; the astrodust scalar pair is the exception, computed by
@@ -234,6 +249,25 @@ shipped tables were computed on D03 as well, whatever their header says. Both se
 in the HDF5 product: `/qtable/{sil,gra,pah}` is the distributed one, which the
 model is built on unless `build_zubko`'s `optics` argument asks otherwise, and
 `/qtable/{sil,gra,pah}_mie_d03` is this recomputation.
+
+THEMIS and G18D are the exception to "our own tables", and are so by
+definition: those models ARE their published DustEM `Q_`/`G_` tables, and there
+is no dielectric function behind them to solve anything from. What their
+products hold is those tables put on each population's own model radii -- the
+`nsize` points the `GRAIN_*.DAT` line spaces evenly in ln *a* between its
+`amin` and `amax` -- interpolated linearly in radius, which is what DustEM does
+with the same tables. That is the one step between the distribution's files and
+the numbers the size integral uses, so a model built from the product and one
+built from the text tables agree to rounding; `./test_dustem_product.x`
+measures it and requires 1e-10. One group per population, named by its grain
+type, except that `GRAIN_J13.DAT` names `CM20` twice with different radius
+ranges, so those two are `CM20_plaw-ed` (the large a-C:H/a-C grains) and
+`CM20_logn` (the small a-C grains). The two large G18D populations carry **no
+`g` dataset at all**: the distribution publishes no `G_` file for them, and an
+absent dataset is the record of that -- a zero there would be a measurement.
+Neither model has polarized optics: `/polarized` belongs to the astrodust
+product alone, because what DustEM publishes for these two is orientation-
+averaged.
 
 The one text table anything still opens is the astrodust scalar pair. It is the
 INPUT `calc_qtable.x` reads to write the HDF5 product, so that program cannot

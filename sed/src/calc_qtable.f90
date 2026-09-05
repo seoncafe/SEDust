@@ -5,13 +5,15 @@ program calc_qtable
    !
    !   data/astrodust/sedust_astrodust.h5   data/dl07/sedust_dl07.h5
    !   data/mrn/sedust_mrn.h5               data/zubko/sedust_zubko.h5
+   !   data/themis/sedust_themis.h5         data/g18d/sedust_g18d.h5
    !
    ! which holds the WIDER of the two wavelength axes once, together with the
    ! index at which the non-ionizing part of it begins (see sedust_h5.f90).
    ! The narrow product is then a slice rather than a second copy, so the pair
    ! cannot disagree.  A build without HDF5 writes the text alone.
    !
-   !   ./calc_qtable.x [astrodust | dl07 | mrn | zubko | all]   (default: all)
+   !   ./calc_qtable.x [astrodust | dl07 | mrn | zubko | themis | g18d | all]
+   !                                                            (default: all)
    !
    ! The optics are computed HERE, from the dielectric functions and the PAH
    ! cross sections, by the same routines the SED solver calls -- these are our
@@ -24,6 +26,14 @@ program calc_qtable
    ! revision of those constants (the one this tree carries and DL07 uses).
    ! The two are NOT identical -- docs/SEDust_user_manual, "The ZDA optics are
    ! a homogeneous-sphere Mie calculation", measures the difference.
+   !
+   ! THEMIS and G18 Model D are the exception, and are so by definition: those
+   ! models ARE their published DustEM Q_/G_ tables, and there is no dielectric
+   ! function behind them to solve anything from.  What their products hold is
+   ! those tables interpolated onto each population's own model radii, which is
+   ! the one step between the distribution's files and the numbers the size
+   ! integral uses.  No text form is written beside them: the distribution's
+   ! own tables are text already.
    !
    ! Grids.  Each model keeps its own, because they are the grids its optics
    ! are defined on:
@@ -41,6 +51,11 @@ program calc_qtable
    !                    865 (non-EUV, cut at the Lyman limit)
    !           a_eff  = the ZDA tables' own, 121 radii for silicate and
    !                    graphite, 28 for the PAHs
+   !   THEMIS  lambda = oprop/LAMBDA.DAT, the 800-point DustEM grid, from
+   !   G18D             0.04 um (non-EUV: 750, cut at the Lyman limit)
+   !           a_eff  = the MODEL's own radii, the nsize points the GRAIN line
+   !                    spaces evenly in ln a between its amin and amax:
+   !                    4 x 25 for THEMIS, 10 + 25 + 25 for G18D
    !
    ! Layout follows the astrodust Q table: lambda-major, a_eff inner, one row
    ! per cell.  There is no regime flag column -- that belongs to the T-matrix,
@@ -60,8 +75,12 @@ program calc_qtable
    use sedust_h5
    use sed_astrodust_mod, only: sed_init_dl07, build_mrn, dust_model_t, &
                                 NLAM, NA, lam, aeff, &
-                                RHO_ASTROSIL, RHO_GRAPHITE, &
+                                RHO_ASTROSIL, RHO_GRAPHITE, UM2CM, &
                                 d03_euv_lambda_floor
+   use dustem_io,         only: dustem_pop_t, DUSTEM_MAXPOP, read_dustem_grain, &
+                                dustem_size_distribution, read_dustem_wavelengths, &
+                                read_dustem_qtable, read_dustem_gtable, &
+                                optics_at_radii, dustem_population_name
    use sedust_product_mod, only: lyman_index
    use enthalpy_astrodust_mod, only: RHO_AD, RHO_PAH
    use sed_run_options, only: run_options_t, declare_run_options, &
@@ -85,6 +104,14 @@ program calc_qtable
    character(len=*), parameter :: D_ASTRODUST = '../data/astrodust/'
    character(len=*), parameter :: D_DL07      = '../data/dl07/'
    character(len=*), parameter :: D_MRN       = '../data/mrn/'
+   ! The two models defined by DustEM input files.  Each is its GRAIN_*.DAT
+   ! plus the optics and calorimetry tables under its own oprop/ and hcap/,
+   ! and the GRAIN file is the only one of them that belongs to one model
+   ! alone -- the oprop tables are shared by every model naming the same gtype.
+   character(len=*), parameter :: D_THEMIS       = '../data/themis/'
+   character(len=*), parameter :: F_GRAIN_THEMIS = D_THEMIS//'GRAIN_J13.DAT'
+   character(len=*), parameter :: D_G18D         = '../data/g18d/'
+   character(len=*), parameter :: F_GRAIN_G18D   = D_G18D//'GRAIN_G17_ModelD.DAT'
    ! DL07 reference model, as calc_sed.x dl07 runs it.
    integer,  parameter :: SD_INDEX = 7
    real(wp), parameter :: U_ISRF = 1.0_wp
@@ -109,7 +136,8 @@ program calc_qtable
    ! vintage, the size distribution are all fixed by which model this is -- so
    ! no other axis has a referent, and a word naming one is refused by name.
    call declare_run_options(o, program='calc_qtable', &
-        subjects=[character(len=16):: 'astrodust', 'dl07', 'mrn', 'zubko', 'all'])
+        subjects=[character(len=16):: 'astrodust', 'dl07', 'mrn', 'zubko', &
+                                      'themis', 'g18d', 'all'])
    narg = command_argument_count()
    which = 'all'
    if (narg >= 1) then
@@ -117,7 +145,8 @@ program calc_qtable
       call read_run_subject(o, trim(which), taken)
       if (.not. taken) then
          write(*,'(a,a)') ' calc_qtable: unknown model ', trim(which)
-         write(*,'(a)')   ' usage: ./calc_qtable.x [astrodust | dl07 | mrn | zubko | all]'
+         write(*,'(a)')   ' usage: ./calc_qtable.x [astrodust | dl07 | mrn |' // &
+                          ' zubko | themis | g18d | all]'
          stop 1
       end if
    end if
@@ -126,7 +155,8 @@ program calc_qtable
       call read_run_option(trim(arg), o, taken)
       if (.not. taken) then
          write(*,'(a,a)') ' calc_qtable: unknown argument ', trim(arg)
-         write(*,'(a)')   ' usage: ./calc_qtable.x [astrodust | dl07 | mrn | zubko | all]'
+         write(*,'(a)')   ' usage: ./calc_qtable.x [astrodust | dl07 | mrn |' // &
+                          ' zubko | themis | g18d | all]'
          stop 1
       end if
    end do
@@ -136,9 +166,12 @@ program calc_qtable
    case ('dl07');       call write_dl07_tables()
    case ('mrn');        call write_mrn_tables()
    case ('zubko');      call write_zubko_tables()
+   case ('themis');     call write_themis_tables()
+   case ('g18d');       call write_g18d_tables()
    case ('all');        call write_astrodust_tables()
                         call write_dl07_tables();  call write_mrn_tables()
                         call write_zubko_tables()
+                        call write_themis_tables();  call write_g18d_tables()
    end select
 
 contains
@@ -597,6 +630,154 @@ contains
 
 
    ! ===================================================================
+   subroutine write_themis_tables()
+      ! THEMIS -- Jones et al. (2013) for the carbon grains, Koehler et al.
+      ! (2014) for the silicates, Ysard et al. (2015) for the densities and
+      ! mass ratios -- as the DustEM distribution carries it.
+      !
+      ! WHAT GOES INTO THE PRODUCT.  /grid is oprop/LAMBDA.DAT, the 800-point
+      ! DustEM wavelength grid every population shares.  /qtable/<population>
+      ! is Q_abs and Q_sca from oprop/Q_<gtype>.DAT and <cos theta> from
+      ! oprop/G_<gtype>.DAT, put on the MODEL's own radii -- the nsize points
+      ! GRAIN_J13.DAT spaces evenly in ln a between its amin and amax --
+      ! linearly in radius, which is what DustEM does with the same tables and
+      ! what build_dustem does when it reads them itself.  Q_ext is the sum of
+      ! the two, the tables carrying absorption and scattering and not
+      ! extinction.  Nothing is recomputed from a dielectric function: this
+      ! model IS those tables.
+      !
+      ! GRAIN_J13.DAT names CM20 TWICE -- the large a-C:H/a-C grains as a power
+      ! law with exponential decay, the small a-C grains as a log-normal -- and
+      ! the two have different radius ranges, so their stored optics are
+      ! different arrays and are named apart; see dustem_population_name.
+      call write_dustem_product('themis', D_THEMIS, F_GRAIN_THEMIS, &
+           'THEMIS (Jones et al. 2013, Koehler et al. 2014, Ysard et al. 2015)')
+   end subroutine write_themis_tables
+
+
+   ! ===================================================================
+   subroutine write_g18d_tables()
+      ! Guillet et al. (2018) Model D, as the DustEM distribution carries it.
+      ! Three populations: PAHs, and amorphous-carbon and silicate PROLATE
+      ! spheroids whose Q tables are already averaged over orientation, so
+      ! they enter this scalar product exactly as a sphere table would.
+      !
+      ! NO g FOR THE TWO LARGE POPULATIONS.  The distribution ships no
+      ! G_amCBE_0.3333x.DAT and no G_aSil2001BE6pctG_0.4x.DAT, so those two
+      ! groups get Q_ext, Q_abs and Q_sca and NO g dataset.  The absence is the
+      ! record: a zero written there would be indistinguishable from a measured
+      ! zero, and a model built from this product would report an asymmetry
+      ! parameter the model does not have.  build_dustem reads the absence back
+      ! and comes to the same gsca_complete = .false. it reaches from the text
+      ! tables.
+      call write_dustem_product('g18d', D_G18D, F_GRAIN_G18D, &
+           'Guillet et al. (2018) Model D')
+   end subroutine write_g18d_tables
+
+
+   subroutine write_dustem_product(model, ddir, grain_file, what)
+      ! The two routines above, once.  What differs between the models is the
+      ! GRAIN_*.DAT and where its files hang, both of which are arguments; the
+      ! steps from those files to the stored arrays are the model's definition
+      ! and are the same for any DustEM model.
+      character(len=*), intent(in) :: model, ddir, grain_file, what
+      type(dustem_pop_t) :: pops(DUSTEM_MAXPOP)
+      real(wp) :: G0
+      integer  :: npop, ip, nwave, ntab, nsize, k0
+      logical  :: rok, has_g
+      real(wp), allocatable :: lamd(:), a_tab(:), qa_tab(:,:), qs_tab(:,:), gg_tab(:,:)
+      real(wp), allocatable :: ac_tab(:)
+      real(wp), allocatable :: a_cm(:), lna(:), dnda(:), a_um(:)
+      real(wp), allocatable :: qa(:,:), qs(:,:), qe(:,:), gfac(:,:)
+      character(len=512) :: qpath, gpath
+      character(len=140) :: pname
+
+      call read_dustem_grain(grain_file, G0, npop, pops, ok=rok)
+      if (.not. rok) then
+         write(*,'(a,a)') ' calc_qtable: cannot use ', grain_file;  stop 1
+      end if
+      call read_dustem_wavelengths(ddir//'oprop/LAMBDA.DAT', nwave, lamd, ok=rok)
+      if (.not. rok) then
+         write(*,'(a,a)') ' calc_qtable: cannot read ', ddir//'oprop/LAMBDA.DAT'
+         stop 1
+      end if
+
+      ! The whole DustEM grid goes in, with the index where its non-ionizing
+      ! part begins; the narrow view is a slice of it, as it is for every other
+      ! model.
+      k0 = lyman_index(lamd)
+      call h5_model_file(model, lamd, k0)
+
+      do ip = 1, npop
+         nsize = pops(ip)%nsize
+         call dustem_size_distribution(pops(ip), a_cm, lna, dnda, ok=rok)
+         if (.not. rok) then
+            write(*,'(a,a)') ' calc_qtable: bad size distribution for ', &
+                 trim(pops(ip)%gtype)
+            stop 1
+         end if
+         allocate(a_um(nsize))
+         a_um = a_cm / UM2CM
+
+         qpath = ddir//'oprop/Q_'//trim(pops(ip)%gtype)//'.DAT'
+         call read_dustem_qtable(trim(qpath), nwave, ntab, a_tab, qa_tab, qs_tab, ok=rok)
+         if (.not. rok) then
+            write(*,'(a,a)') ' calc_qtable: cannot read ', trim(qpath);  stop 1
+         end if
+         allocate(qa(nwave, nsize), qs(nwave, nsize), qe(nwave, nsize))
+         call optics_at_radii(a_tab, qa_tab, a_um, qa, ok=rok, what='Q_abs')
+         if (rok) call optics_at_radii(a_tab, qs_tab, a_um, qs, ok=rok, what='Q_sca')
+         if (.not. rok) then
+            write(*,'(a,a)') ' calc_qtable: optics do not cover the sizes of ', &
+                 trim(pops(ip)%gtype)
+            stop 1
+         end if
+         qe = qa + qs
+
+         gpath = ddir//'oprop/G_'//trim(pops(ip)%gtype)//'.DAT'
+         inquire(file=trim(gpath), exist=has_g)
+         if (has_g) then
+            call read_dustem_gtable(trim(gpath), nwave, ntab, ac_tab, gg_tab, ok=rok)
+            if (.not. rok) then
+               write(*,'(a,a)') ' calc_qtable: cannot read ', trim(gpath);  stop 1
+            end if
+            allocate(gfac(nwave, nsize))
+            call optics_at_radii(ac_tab, gg_tab, a_um, gfac, ok=rok, what='<cos theta>')
+            if (.not. rok) then
+               write(*,'(a,a)') ' calc_qtable: the g table does not cover the sizes of ', &
+                    trim(pops(ip)%gtype)
+               stop 1
+            end if
+            deallocate(ac_tab, gg_tab)
+         end if
+
+         pname = dustem_population_name(pops, npop, ip)
+         if (has_g) then
+            call h5_add_component(model, trim(pname), a_um, qe, qa, qs, gfac, &
+                 pops(ip)%rho, &
+                 trim(what)//': the DustEM Q_ and G_ tables as distributed, ' // &
+                 'interpolated onto this population''s model radii linearly in radius', &
+                 trim(qpath)//' + '//trim(gpath)//'; radii from '//grain_file)
+         else
+            call h5_add_component(model, trim(pname), a_um, qe, qa, qs, &
+                 rho = pops(ip)%rho, &
+                 method = trim(what)//': the DustEM Q_ table as distributed, ' // &
+                 'interpolated onto this population''s model radii linearly in radius; ' // &
+                 'the distribution ships no G_ file, so this population has no <cos theta>', &
+                 source = trim(qpath)//'; radii from '//grain_file)
+         end if
+         write(*,'(a,a,a,i0,a,i0,a)') ' ', trim(model)//' '//trim(pname), ': ', &
+              nwave, ' x ', nsize, ' cells written'
+
+         deallocate(a_cm, lna, dnda, a_um, a_tab, qa_tab, qs_tab, qa, qs, qe)
+         if (allocated(gfac)) deallocate(gfac)
+      end do
+      deallocate(lamd)
+   end subroutine write_dustem_product
+
+
+
+   ! ===================================================================
    ! HDF5 side.  One file per model, opened once by h5_model_file (which lays
    ! down the wavelength axis and the Lyman index) and then extended one
    ! component at a time.  The text products above are written unchanged; this
@@ -655,7 +836,9 @@ contains
       ! One grain population.  A population that only absorbs -- the PAHs, whose
       ! cross sections are a prescription and not a Mie solution -- is given
       ! through absonly and gets Q_abs alone, so a reader cannot mistake an
-      ! absent scattering term for a computed zero.
+      ! absent scattering term for a computed zero.  A population that
+      ! scatters but has no PUBLISHED asymmetry parameter omits gg and gets no
+      ! g dataset, for the same reason.
       character(len=*), intent(in) :: model, comp
       real(real64),     intent(in) :: aeff(:)
       real(real64),     intent(in), optional :: qe(:,:), qa(:,:), qs(:,:), gg(:,:)
@@ -680,8 +863,18 @@ contains
          call h5_write_2d(gid, 'Q_ext', qe, units='1', long_name='extinction efficiency')
          call h5_write_2d(gid, 'Q_abs', qa, units='1', long_name='absorption efficiency')
          call h5_write_2d(gid, 'Q_sca', qs, units='1', long_name='scattering efficiency')
-         call h5_write_2d(gid, 'g',     gg, units='1', long_name='scattering asymmetry <cos>')
-         call h5_put_attr_s(gid, 'scatters', 'yes')
+         if (present(gg)) then
+            call h5_write_2d(gid, 'g',  gg, units='1', &
+                             long_name='scattering asymmetry <cos>')
+            call h5_put_attr_s(gid, 'scatters', 'yes')
+         else
+            ! Scattering with no asymmetry parameter: the two large G18D
+            ! populations, for which the DustEM distribution ships no G_ file.
+            ! No g dataset is written, because a zero here would be a
+            ! measurement and this is the absence of one.
+            call h5_put_attr_s(gid, 'scatters', &
+                 'yes -- but no asymmetry parameter is published for it, so no g')
+         end if
       end if
       if (present(flag_in)) then
          allocate(rflag(size(flag_in,1), size(flag_in,2)))
