@@ -61,7 +61,7 @@ SED_PIPELINE = $(SED_DIR)/sedust_h5.f90 $(SED_DIR)/sedust_product.f90 \
                $(SED_DIR)/q_silicate.f90 $(SED_DIR)/pah_ld01.f90 \
                $(SED_DIR)/dust_model_mod.f90 $(SED_DIR)/kext_table.f90 \
                $(SED_DIR)/zubko_io.f90 $(SED_DIR)/q_component.f90 \
-               $(SED_DIR)/sed_astrodust.f90
+               $(SED_DIR)/dustem_io.f90 $(SED_DIR)/sed_astrodust.f90
 
 # MC engine + RNG + grain type (shared by all executables)
 SRC_ENGINE = src/mc_heatcap.f90 \
@@ -105,7 +105,7 @@ clean:
 cleanall: clean
 	rm -f main_mc.x main_mc_sed.x main_pT_compare.x
 	rm -f output/Tt_*.dat output/PT_*.dat output/sed_*.dat \
-	      output/mc_sed_*.dat output/pT_compare_*.dat
+	      output/pT_compare_*.dat
 
 .PHONY: all clean cleanall
 

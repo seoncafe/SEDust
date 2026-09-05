@@ -46,6 +46,7 @@
 #   ./calc_kext.x g18d   euv           # Guillet et al. (2018) Model D
 #   ./calc_kext.x from_files <descriptor> [data_dir]
 #   ./check_build_dust.x               # build_dust on HDF5 vs the text builders
+#   ./test_h5_storage_policy.x         # HDF5 storage precision policy
 
 FC      = gfortran
 
@@ -221,6 +222,13 @@ test_size_distribution.x: src/size_dist.f90 src/test_size_distribution.f90
 	$(FC) $(FFLAGS) $^ -o $@
 	@echo 'Built: ./test_size_distribution.x'
 
+# The storage-precision policy of the HDF5 products themselves: every
+# coordinate axis 64-bit, every regime code 8-bit integer, every computed
+# quantity 32-bit.  It reads the FILE types of every product in the tree.
+test_h5_storage_policy.x: src/sedust_h5.f90 src/test_h5_storage_policy.f90
+	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
+	@echo 'Built: ./test_h5_storage_policy.x'
+
 # build_dustem on each DustEM-defined model against DustEM's own extinction
 # for it, ../data/{themis,g18d}/reference/EXT_*.RES.
 test_dustem_extinction.x: $(SRC_PIPE) src/test_dustem_extinction.f90
@@ -289,7 +297,7 @@ clean:
 cleanall: clean
 	rm -f *.a calc_enthalpy.x calc_sed.x calc_kext.x
 	rm -f calc_qtable.x check_build_dust.x use_dustlib.x test_size_distribution.x
-	rm -f test_dustem_extinction.x
+	rm -f test_dustem_extinction.x test_h5_storage_policy.x
 	rm -f output/sed_astrodust_*.dat output/enthalpy_*.dat
 
 .PHONY: all clean cleanall

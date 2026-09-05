@@ -29,7 +29,10 @@ does.  The polarized tables Q1_/Q2_<type>.DAT and ALIGN_G17_ModelD.DAT are the
 input the polarized branch would need; ALIGN_G17_ModelD.DAT is kept here for
 that, and its keyword line carries no ANIS, so the unpolarized extinction is
 the plain orientation average with no alignment correction -- which is what
-DustEM computes for this model.
+DustEM computes for this model.  The polarized tables themselves and the two
+polarized DustEM references, EXT_POL_G17_ModelD.RES and SED_POL_G17_ModelD.RES,
+belong to the v1.20 tree, which reads them; v1.00 is the scalar branch and uses
+none of them.
 
 HD23 (Hensley & Draine 2023, ApJ 948, 55, Sec. 6.2.2 and Fig. 16) compare
 against this model, running DustEM on GRAIN_G17_ModelD.DAT and adopting a

@@ -1,5 +1,5 @@
 # DL07 model SED (this work), mw31_60, Mathis ISRF U =  1.00
-# silicate (D03) + carbonaceous (DL07 PAH Nc=470 + D03 graphite blend)
+# silicate (D03) + carbonaceous (DL07 PAH Nc=470 + d16_sphere graphite blend)
 # PAH ionization computed via WD01b grain charging (pah_ionfrac)
 # columns: lambda[um]  lamI_total/NH  lamI_sil/NH  lamI_carb/NH
 #          [erg s^-1 cm^-2 sr^-1 H^-1]

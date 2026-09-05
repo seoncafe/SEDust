@@ -630,7 +630,11 @@ contains
       real(wp), allocatable :: J_lam(:), lamI_tot(:), lamI_chan(:,:)
       integer  :: k, ic, u, status
       character(len=192) :: fname
-      character(len=256) :: gmiss, cols
+      character(len=256) :: gmiss
+      ! Deferred length: the header carries one channel name per
+      ! population, and a model naming long populations would overrun a
+      ! fixed buffer silently.
+      character(len=:), allocatable :: cols
 
       fname = trim(tagged('sed_'//trim(stem)))//'.dat'
 

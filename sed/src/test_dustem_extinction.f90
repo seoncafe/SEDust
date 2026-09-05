@@ -190,10 +190,10 @@ contains
          ! The reference is zero everywhere; ours has to be as well.
          scale_mine = maxval(abs(mine))
          if (scale_mine == 0.0_wp) then
-            write(*,'(a,a5,1x,a20,a)') '     ', what, adjustr(name), &
+            write(*,'(a,a5,1x,a,a)') '     ', what, padded(name), &
                  '   zero in both, as the table has no scattering'
          else
-            write(*,'(a,a5,1x,a20,a,es10.2)') '     ', what, adjustr(name), &
+            write(*,'(a,a5,1x,a,a,es10.2)') '     ', what, padded(name), &
                  '   reference is zero but ours reaches ', scale_mine
             ok = .false.
          end if
@@ -202,15 +202,28 @@ contains
 
       ! NaN fails: it compares false against every bound, so test it directly.
       if (dev /= dev) then
-         write(*,'(a,a5,1x,a20,a)') '     ', what, adjustr(name), &
+         write(*,'(a,a5,1x,a,a)') '     ', what, padded(name), &
               '        NaN in the comparison'
          ok = .false.
          return
       end if
 
-      write(*,'(a,a5,1x,a20,a,es10.2,a,i0,a)') '     ', what, adjustr(name), &
+      write(*,'(a,a5,1x,a,a,es10.2,a,i0,a)') '     ', what, padded(name), &
            '  ', dev, '   (', ncmp, ' wavelengths)'
       if (dev > TOL) ok = .false.
    end subroutine report_column
+
+
+   pure function padded(name) result(s)
+      ! The name right-justified in a fixed field, except that a name longer
+      ! than the field widens it instead of losing characters.  An `a20` edit
+      ! descriptor on a name declared longer than 20 prints the first twenty
+      ! columns, which for a right-justified name are all blanks.
+      character(len=*), intent(in) :: name
+      integer, parameter :: NAMEW = 20
+      character(len=max(NAMEW, len_trim(name))) :: s
+      s = ''
+      s(len(s)-len_trim(name)+1:) = trim(name)
+   end function padded
 
 end program test_dustem_extinction

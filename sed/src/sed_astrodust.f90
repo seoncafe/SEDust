@@ -59,7 +59,8 @@ module sed_astrodust_mod
                                     get_astrodust_index_path, &
                                     astrodust_index_lambda_range
    use pah_ioniz_mod,         only: pah_ionfrac
-   use dust_model_mod,        only: dust_model_t, grain_pop_t, free_dust_model
+   use dust_model_mod,        only: dust_model_t, grain_pop_t, free_dust_model, &
+                                    CHANNEL_NAME_LEN
    use kext_table_mod,        only: load_kext_table
    use q_component_mod, only: load_q_component
    use sed_paths,             only: sed_set_data_root, sed_get_data_root, sed_data_path, &
@@ -2624,7 +2625,7 @@ contains
       ! avoid double-counting the astrodust silicate in the total SED.
       m%n_channel = 2
       allocate(m%channel_name(2))
-      m%channel_name = [character(len=16):: 'AD', 'PAH']
+      m%channel_name = [character(len=CHANNEL_NAME_LEN):: 'AD', 'PAH']
 
       allocate(m%pops(3))
       ! The astrodust grains and the PAHs both scatter.  What scatters in a
@@ -2745,7 +2746,7 @@ contains
       m%stoch_method = stoch_method
       m%n_channel = 2
       allocate(m%channel_name(2))
-      m%channel_name = [character(len=16):: 'SIL', 'CARB']
+      m%channel_name = [character(len=CHANNEL_NAME_LEN):: 'SIL', 'CARB']
 
       ! sed_init_dl07 stores silicate in dn_ad/Cabs/H_first(:,:,1) and the
       ! carbonaceous charge states in dn_cneu/cion / Cabs_cneu/cion, but it
@@ -3065,7 +3066,7 @@ contains
       m%stoch_method = stoch_method
       m%n_channel = 2
       allocate(m%channel_name(2))
-      m%channel_name = [character(len=16):: 'GRA', 'SIL']
+      m%channel_name = [character(len=CHANNEL_NAME_LEN):: 'GRA', 'SIL']
 
       allocate(m%pops(2))
       ! Both materials scatter, so both carry their scattering optics into
@@ -3199,7 +3200,7 @@ contains
       character(len=512)    :: kpath, q_h5
       character(len=16)     :: qset
       character(len=32)     :: h5comp
-      character(len=16)     :: cn(3)
+      character(len=CHANNEL_NAME_LEN) :: cn(3)
       character(len=8)      :: gt(3)
       character(len=64)     :: optf
 
@@ -3217,7 +3218,7 @@ contains
          end if
       end if
 
-      cn = [character(len=16):: 'PAH', 'GRA', 'SIL']
+      cn = [character(len=CHANNEL_NAME_LEN):: 'PAH', 'GRA', 'SIL']
       gt = [character(len=8) :: 'pah', 'gra', 'sil']
 
       if (present(status)) then
@@ -3934,7 +3935,7 @@ contains
       integer  :: k0, k1, k_h5
       real(wp) :: rho_h5
       character(len=512) :: kpath, qpath, gpath, cpath, q_h5, mname
-      character(len=140) :: pname
+      character(len=CHANNEL_NAME_LEN) :: pname
       real(wp), allocatable :: lam_full(:), a_tab(:), qa_tab(:,:), qs_tab(:,:), gg_tab(:,:)
       real(wp), allocatable :: a_cm(:), lna(:), dnda(:), a_um(:)
       real(wp), allocatable :: ac_tab(:), logT_c(:), logC_c(:,:)
@@ -4047,7 +4048,11 @@ contains
       m%n_channel = nchan
       allocate(m%channel_name(nchan))
       do ip = 1, npop
-         m%channel_name(ip) = pops(ip)%gtype
+         ! The population name, not the bare gtype: THEMIS carries CM20 twice,
+         ! as the power law with exponential decay and as the log-normal, and
+         ! the bare gtype would give those two channels one name.  This is the
+         ! same name the product's /qtable group is written under.
+         m%channel_name(ip) = dustem_population_name(pops, npop, ip)
       end do
       allocate(m%pops(npop))
       m%gsca_complete = .true.

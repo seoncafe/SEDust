@@ -10,7 +10,7 @@ program main_mc_sed
    !     ad_stage     = 'S2'            ! 'S1_C1' | 'S1_C2' | 'S2'
    !     N_events     = 20000
    !     base_seed    = 12345
-   !     out_prefix   = 'output/mc_sed_default'
+   !     out_prefix   = 'output/sed_default'
    !     NT_init      = 250
    !     T_lo         = 1.0
    !     T_hi         = 3000.0
@@ -43,7 +43,7 @@ program main_mc_sed
    ad_stage      = 'S2'
    N_events      = 20000
    base_seed     = 12345
-   out_prefix    = 'output/mc_sed_default'
+   out_prefix    = 'output/sed_default'
    NT_init       = 250
    T_lo          = 1.0_wp
    T_hi          = 3000.0_wp

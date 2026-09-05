@@ -117,7 +117,8 @@ WITH_TMATRIX=1 make libsedust.a
 #   the one in the field always agree.
 
 # the Monte Carlo cross-check
-cd ../mc && make && ./main_mc_sed.x run_sed.nml
+cd ../mc && make && ./main_mc_sed.x run_sed_default.nml
+#                                   -> output/sed_default_S2_U1.585_irem_mc.dat
 
 # regenerating the T-matrix Q tables (optional; both tables ship with SEDust)
 cd ../tmatrix && make && ./run_tmatrix.x test   # smoke test -> output/..._euv.test.dat
@@ -127,6 +128,43 @@ make lyman_cut                                  # -> the 1129-wavelength compani
 
 Outputs are plain ASCII `.dat` files written to each subdirectory's `output/`;
 `calc_kext.x` writes into `data/` instead.
+
+## What the products store, and in what precision
+
+The HDF5 products store their numbers in three precisions, chosen by what a
+dataset *is* rather than by how large it is:
+
+| class | datasets | file type |
+|---|---|---|
+| computed quantities | `Q_ext`, `Q_abs`, `Q_sca`, `g`, `albedo`, `C_ext`, `C_abs`, `C_sca`, `K_abs` | 32-bit float |
+| coordinate axes | `lambda`, `a_eff` | 64-bit float |
+| codes | `regime` (0 T-matrix, 10 Rayleigh, 20 geometric optics) | 8-bit integer |
+
+**Why 32-bit for the quantities.** They carry their own uncertainty far above
+float32's 1.2e-7 relative resolution: the dielectric functions behind them are
+good to three figures, the 1/3-2/3 graphite orientation average is 40% wrong at
+10 um, and the radiative transfer that consumes them has Monte Carlo noise of
+1e-2 to 1e-3. Sixty-four bits on disk buy nothing and cost half the file. The
+six shipped products drop from 45.0 MB to 18.7 MB on disk, and
+`data/astrodust/sedust_astrodust.h5` from 9.31 MB to 3.75 MB.
+
+**Why the axes are the exception.** Their problem is not accuracy but
+*distinctness* and monotonicity. The astrodust wavelength grid resolves each
+X-ray absorption edge with a pair of points 6.7e-7 apart in relative wavelength
+— six to eleven representable float32 values, depending on where in its
+binade the value sits — and a grid that stopped being strictly ascending has broken
+this code once already. The axes are 0.06% of the payload, so keeping them
+lossless costs nothing measurable.
+
+**The reader interface is unchanged.** Only the *file* type moved. The memory
+type on both write and read is still `H5T_NATIVE_DOUBLE`, HDF5 converts, and a
+caller keeps passing and receiving `real(real64)`. Nothing in a host has to
+change.
+
+`./test_h5_storage_policy.x` checks every product in the tree against this
+table, so an axis cannot silently become single later. Products written before
+the policy are brought onto it in place, without recomputing anything, by
+`python3 pyutil/migrate_h5_float32.py`.
 
 ## The ionizing band
 

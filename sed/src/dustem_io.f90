@@ -41,6 +41,7 @@ module dustem_io
    ! (which asks for a tabulated SIZE_*.DAT file), is refused by name rather
    ! than silently approximated.
    use constants, only: wp, pi
+   use dust_model_mod, only: CHANNEL_NAME_LEN
    implicit none
    private
    public :: dustem_pop_t, DUSTEM_MAXPOP, DUSTEM_MAXPAR, DUSTEM_PROTON_MASS
@@ -101,7 +102,7 @@ contains
    pure function dustem_population_name(pops, npop, ip) result(nm)
       type(dustem_pop_t), intent(in) :: pops(:)
       integer,            intent(in) :: npop, ip
-      character(len=140) :: nm
+      character(len=CHANNEL_NAME_LEN) :: nm
       integer :: j, nsame
       nsame = 0
       do j = 1, npop

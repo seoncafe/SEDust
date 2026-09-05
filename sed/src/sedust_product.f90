@@ -180,7 +180,6 @@ contains
       logical, optional,     intent(out) :: has_g
 
       integer(h5id_k) :: fid, gid
-      real(wp), allocatable :: rflag(:,:)
       logical :: got
       integer :: i_lyman, i0
 
@@ -233,12 +232,12 @@ contains
 
       if (present(flag)) then
          if (h5_has(gid, 'regime')) then
-            call h5_read_2d(gid, 'regime', rflag, got, i0 = i0)
-            if (got) then
-               allocate(flag(size(rflag,1), size(rflag,2)))
-               flag = nint(rflag)
+            ! Read as integers whatever the file holds: one-byte codes in a
+            ! product written now, doubles in one written before that.
+            call h5_read_2d_int(gid, 'regime', flag, got, i0 = i0)
+            if (.not. got) then
+               if (allocated(flag)) deallocate(flag)
             end if
-            if (allocated(rflag)) deallocate(rflag)
          end if
       end if
 
