@@ -11,16 +11,20 @@ module dustem_io
    ! Fig. 16 compare their astrodust model against.  DustEM itself is
    ! Compiegne et al. (2011), A&A 525, A103.
    !
-   ! Four file formats, one reader each:
+   ! Five file formats, one reader each:
    !
    !   GRAIN_*.DAT   the model definition: run keywords, the radiation-field
    !                 scaling G0, then one line per grain population giving its
    !                 size-distribution shape, mass per H, bulk density and
    !                 radius range.  read_dustem_grain.
+   !   ALIGN_*.DAT   the grain-alignment law of a model whose GRAIN_*.DAT
+   !                 declares aligned (POL) populations.  read_dustem_alignment.
    !   LAMBDA.DAT    the common wavelength grid every Q_/G_ table is written
    !                 against.  read_dustem_wavelengths.
-   !   Q_*.DAT       Qabs and Qsca on (wavelength, radius).
-   !                 read_dustem_qtable.
+   !   Q_*.DAT       Qabs and Qsca on (wavelength, radius).  Q1_*.DAT and
+   !                 Q2_*.DAT, the same two blocks for E parallel and
+   !                 perpendicular to the projected magnetic field, share the
+   !                 layout and the reader.  read_dustem_qtable.
    !   G_*.DAT       the scattering asymmetry <cos theta> on the same grid.
    !                 read_dustem_gtable.
    !   C_*.DAT       the heat capacity per unit volume of grain material,
@@ -30,10 +34,11 @@ module dustem_io
    ! Every one of them may carry '#' comment lines anywhere before a data
    ! block, so each reader steps over them and then reads free-format.
    !
-   ! Two more entry points turn the tables into what a model needs on ITS own
-   ! radius grid, both reproducing what DustEM does with the same tables:
-   ! optics_at_radii (linear interpolation in radius) and
-   ! grain_enthalpy_from_heat_capacity (the primitive of C dT).
+   ! Three more entry points turn the tables into what a model needs on ITS own
+   ! radius grid, all three reproducing what DustEM does with the same tables:
+   ! optics_at_radii (linear interpolation in radius),
+   ! grain_enthalpy_from_heat_capacity (the primitive of C dT) and
+   ! falign_tanh_rolloff (the parametric alignment law).
    !
    ! The size-distribution shapes implemented here are the two DustEM writes
    ! analytically -- LOGN and PLAW, with the optional -ED exponential decay and
@@ -41,12 +46,14 @@ module dustem_io
    ! (which asks for a tabulated SIZE_*.DAT file), is refused by name rather
    ! than silently approximated.
    use constants, only: wp, pi
+   use dust_model_mod, only: CHANNEL_NAME_LEN
    implicit none
    private
    public :: dustem_pop_t, DUSTEM_MAXPOP, DUSTEM_MAXPAR, DUSTEM_PROTON_MASS
    public :: read_dustem_grain, dustem_size_distribution, dustem_population_name
    public :: read_dustem_wavelengths, read_dustem_qtable, read_dustem_gtable
    public :: read_dustem_heat_capacity
+   public :: read_dustem_alignment, falign_tanh_rolloff
    public :: optics_at_radii, grain_enthalpy_from_heat_capacity
 
    integer, parameter :: DUSTEM_MAXPOP = 16
@@ -101,7 +108,7 @@ contains
    pure function dustem_population_name(pops, npop, ip) result(nm)
       type(dustem_pop_t), intent(in) :: pops(:)
       integer,            intent(in) :: npop, ip
-      character(len=140) :: nm
+      character(len=CHANNEL_NAME_LEN) :: nm
       integer :: j, nsame
       nsame = 0
       do j = 1, npop
@@ -379,6 +386,205 @@ contains
       if (p%npar > DUSTEM_MAXPAR) return
       kok = .true.
    end subroutine parse_size_keyword
+
+
+   ! ------------------------------------------------------------------
+   ! ALIGN_*.DAT -- the grain-alignment law of a model whose GRAIN_*.DAT
+   ! declares POL populations.  DustEM opens it as data/ALIGN.DAT, and reads
+   ! it only when at least one population carries the keyword.
+   !
+   ! After the '#' comment lines:
+   !
+   !   <run keywords>                     lin | circ | anis, and univ
+   !   <anisotropy degree of the field>   one real
+   !   par  a_align  p_stiff  f_max       one line per POL population, or a
+   !                                      single line for all of them if the
+   !                                      keyword line said univ
+   !
+   ! with a_align in MICRONS.  What is implemented here, and what is not:
+   !
+   !   lin    linear polarization.  Required: it is the law the aligned
+   !          cross sections Q1_/Q2_ describe.
+   !   univ   one law for every POL population.  Accepted either way; the
+   !          caller is told which through `universal`.
+   !   circ   circular polarization.  REFUSED: it is a different optic
+   !          (DustEM's EXTINCTION_CIRC over its own Qcirc_ table), and this
+   !          tree computes no circular polarization.
+   !   anis   an anisotropic radiation field.  REFUSED: DustEM's own
+   !          EXTINCTION then replaces the orientation-averaged Q_abs of the
+   !          UNPOLARIZED extinction by f_pol*(Q1+Q2)/2 + (1-f_pol)*Q_abs, so
+   !          accepting the keyword silently would change what the scalar
+   !          model means.  The same holds for a nonzero anisotropy degree,
+   !          which weights the heating cross section by anisG0.
+   !   par    the parametric law falign_tanh_rolloff below.  Required.
+   !   idg    imperfect Davis-Greenstein, and
+   !   rat    radiative torques.  Both REFUSED: DustEM declares each keyword
+   !          and then leaves its branch empty, so a file naming one of them
+   !          gets f_pol = 0 and no polarization at all.  A model asking for
+   !          one is refused by name rather than run as though it had asked
+   !          for nothing.
+   !
+   ! nlaw is how many `par` lines the file carries; with universal = .true.
+   ! only the first is meaningful and DustEM applies it to every POL
+   ! population, otherwise the k-th line belongs to the k-th POL population in
+   ! GRAIN_*.DAT order.
+   !
+   ! ok present -> a bad or unimplemented file is reported through it;
+   ! absent -> stop.
+   ! ------------------------------------------------------------------
+   subroutine read_dustem_alignment(path, universal, nlaw, a_align, p_stiff, f_max, ok)
+      character(len=*),  intent(in)  :: path
+      logical,           intent(out) :: universal
+      integer,           intent(out) :: nlaw
+      real(wp),          intent(out) :: a_align(DUSTEM_MAXPOP)   ! [um]
+      real(wp),          intent(out) :: p_stiff(DUSTEM_MAXPOP)
+      real(wp),          intent(out) :: f_max(DUSTEM_MAXPOP)
+      logical, optional, intent(out) :: ok
+      integer, parameter :: MAXW = 16
+      character(len=64)  :: words(MAXW), law
+      character(len=1024) :: line, keys
+      integer  :: u, ios, nw
+      real(wp) :: anis_degree
+
+      if (present(ok)) ok = .true.
+      universal = .false.;  nlaw = 0
+      a_align = 0.0_wp;  p_stiff = 0.0_wp;  f_max = 0.0_wp
+
+      open(newunit=u, file=trim(path), status='old', action='read', iostat=ios)
+      if (ios /= 0) then
+         call complain(' read_dustem_alignment: cannot open '//trim(path), ok);  return
+      end if
+
+      ! --- the run-keyword line ---
+      call skip_comment_lines(u, ios)
+      if (ios == 0) read(u, '(a)', iostat=ios) line
+      if (ios /= 0) then
+         close(u)
+         call complain(' read_dustem_alignment: no run-keyword line in '//trim(path), ok)
+         return
+      end if
+      keys = lowercase(adjustl(line))
+      if (index(keys, 'anis') > 0) then
+         close(u)
+         call complain(' read_dustem_alignment: '//trim(path)//' asks for the anis' &
+                       //' alignment model, which changes what the UNPOLARIZED' &
+                       //' extinction of this model means and is not implemented here.', ok)
+         return
+      end if
+      if (index(keys, 'circ') > 0) then
+         close(u)
+         call complain(' read_dustem_alignment: '//trim(path)//' asks for circ' &
+                       //' (circular polarization), which needs a Qcirc_ table and' &
+                       //' is not implemented here.', ok)
+         return
+      end if
+      if (index(keys, 'lin') == 0) then
+         close(u)
+         call complain(' read_dustem_alignment: '//trim(path)//' names no lin' &
+                       //' keyword, so it asks for no linear-polarization law.', ok)
+         return
+      end if
+      universal = index(keys, 'univ') > 0
+
+      ! --- the anisotropy degree of the radiation field ---
+      call skip_comment_lines(u, ios)
+      if (ios == 0) read(u, *, iostat=ios) anis_degree
+      if (ios /= 0) then
+         close(u)
+         call complain(' read_dustem_alignment: cannot read the anisotropy degree from ' &
+                       //trim(path), ok)
+         return
+      end if
+      if (anis_degree /= 0.0_wp) then
+         close(u)
+         call complain(' read_dustem_alignment: '//trim(path)//' states a nonzero' &
+                       //' radiation-field anisotropy degree, which weights the' &
+                       //' HEATING cross section and is not implemented here.', ok)
+         return
+      end if
+
+      ! --- the alignment-law lines ---
+      do
+         call skip_comment_lines(u, ios)
+         if (ios /= 0) exit
+         read(u, '(a)', iostat=ios) line
+         if (ios /= 0) exit
+         call split_words(line, MAXW, nw, words)
+         if (nw == 0) cycle
+         law = lowercase(trim(words(1)))
+         if (index(law, 'idg') > 0 .or. index(law, 'rat') > 0) then
+            close(u)
+            call complain(' read_dustem_alignment: '//trim(path)//' names the "' &
+                          //trim(law)//'" alignment function, which DustEM declares' &
+                          //' and leaves empty, so it defines no efficiency.  Only' &
+                          //' "par" is implemented here.', ok)
+            return
+         end if
+         if (index(law, 'par') == 0) then
+            close(u)
+            call complain(' read_dustem_alignment: '//trim(path)//' names the "' &
+                          //trim(law)//'" alignment function, which is not' &
+                          //' implemented here.  Only "par" is.', ok)
+            return
+         end if
+         if (nw < 4) then
+            close(u)
+            call complain(' read_dustem_alignment: a par line of '//trim(path) &
+                          //' carries fewer than the three parameters a_align,' &
+                          //' p_stiff and f_max.', ok)
+            return
+         end if
+         if (nlaw >= DUSTEM_MAXPOP) then
+            close(u)
+            call complain(' read_dustem_alignment: more par lines than DUSTEM_MAXPOP in ' &
+                          //trim(path), ok)
+            return
+         end if
+         nlaw = nlaw + 1
+         read(words(2), *, iostat=ios) a_align(nlaw)
+         if (ios == 0) read(words(3), *, iostat=ios) p_stiff(nlaw)
+         if (ios == 0) read(words(4), *, iostat=ios) f_max(nlaw)
+         if (ios /= 0) then
+            close(u)
+            call complain(' read_dustem_alignment: bad numeric field on a par line of ' &
+                          //trim(path), ok)
+            return
+         end if
+         if (a_align(nlaw) <= 0.0_wp .or. p_stiff(nlaw) == 0.0_wp) then
+            close(u)
+            call complain(' read_dustem_alignment: a par line of '//trim(path) &
+                          //' states a_align <= 0 or p_stiff = 0, which the' &
+                          //' alignment law cannot be evaluated with.', ok)
+            return
+         end if
+      end do
+      close(u)
+
+      if (nlaw == 0) &
+         call complain(' read_dustem_alignment: no par line in '//trim(path), ok)
+   end subroutine read_dustem_alignment
+
+
+   ! ------------------------------------------------------------------
+   ! The parametric alignment efficiency of Guillet et al. (2018), A&A 610,
+   ! A16 -- DustEM's `par` law, its f_pol:
+   !
+   !   f_align(a) = 0.5 * f_max * [ 1 + tanh( ln(a/a_align) / p_stiff ) ]
+   !
+   ! a smooth step from 0 at radii far below a_align to f_max far above it,
+   ! with p_stiff the width of the transition in ln a.  Radii in MICRONS, as
+   ! a_align is.  It is a different function from the Hensley & Draine (2023)
+   ! power-law rolloff falign_powerlaw of size_dist_mod, not a reparametrized
+   ! form of it, and the two are not interchangeable.
+   !
+   ! The efficiency is a size WEIGHT on the polarized cross sections and
+   ! enters nowhere else; see the alignment note in dust_model_mod.
+   ! ------------------------------------------------------------------
+   pure function falign_tanh_rolloff(a_um, a_align_um, p_stiff, f_max) result(f)
+      real(wp), intent(in) :: a_um, a_align_um, p_stiff, f_max
+      real(wp)             :: f
+      f = 0.5_wp * f_max * (1.0_wp + tanh(log(a_um/a_align_um) / p_stiff))
+   end function falign_tanh_rolloff
 
 
    ! ------------------------------------------------------------------

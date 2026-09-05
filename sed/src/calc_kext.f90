@@ -468,10 +468,15 @@ program calc_kext
    ! optical. The tracked ../data/astrodust/kext_astrodust_MW.dat is a regression
    ! reference, so it alone keeps the original narrow-field format; every other
    ! product uses the wider default fields. The dichroic C_polext column goes on
-   ! BOTH astrodust products, because astrodust is the only model with polarized
-   ! optics and the quantity is defined over its whole grid -- where the
-   ! orientation-resolved table does not reach, the header states the deficit
-   ! rather than leaving the reader to infer it from a missing column.
+   ! BOTH astrodust products, the quantity being defined over that model's whole
+   ! grid -- where the orientation-resolved table does not reach, the header
+   ! states the deficit rather than leaving the reader to infer it from a
+   ! missing column. G18 Model D also carries polarized optics, built from the
+   ! aligned Q1_/Q2_ tables of its DustEM definition, and its curves keep the
+   ! scalar columns: the polarized extinction of any model is served live by
+   ! dust_extinction, which recomputes it under whatever alignment the model
+   ! currently holds, so a tabulated column would freeze one alignment into a
+   ! file a host reads for its scalar opacity.
    if (Mdust_H > 0.0_wp) then
       call write_kext_curve(trim(fout), kabs_norm=Mdust_H, &
                             legacy_format=(trim(model) == 'astrodust' .and. .not. euv), &
@@ -775,15 +780,15 @@ contains
          call h5_close_file(fid);  call h5_end();  return
       end if
       call h5_write_1d(gid, 'albedo', alb,  units='1', &
-                       long_name='scattering albedo C_sca/C_ext')
+                       long_name='scattering albedo C_sca/C_ext', single=.true.)
       call h5_write_1d(gid, 'g',      gbar, units='1', &
-                       long_name='scattering asymmetry <cos>')
+                       long_name='scattering asymmetry <cos>', single=.true.)
       call h5_write_1d(gid, 'C_ext',  Cext, units='cm^2/H', &
-                       long_name='extinction cross section per H nucleon')
+                       long_name='extinction cross section per H nucleon', single=.true.)
       call h5_write_1d(gid, 'C_abs',  Cabs, units='cm^2/H', &
-                       long_name='absorption cross section per H nucleon')
+                       long_name='absorption cross section per H nucleon', single=.true.)
       call h5_write_1d(gid, 'C_sca',  Csca, units='cm^2/H', &
-                       long_name='scattering cross section per H nucleon')
+                       long_name='scattering cross section per H nucleon', single=.true.)
       ! The dichroic term, which only the astrodust model has: the extinction
       ! difference an aligned grain presents to the two linear polarizations.
       ! It is written for that model alone rather than as a column of zeros,
@@ -791,14 +796,16 @@ contains
       ! whose polarization happens to vanish.
       if (model == 'astrodust') then
          call h5_write_1d(gid, 'C_polext', Cpolext, units='cm^2/H', &
-              long_name='polarized (dichroic) extinction cross section per H nucleon')
+              long_name='polarized (dichroic) extinction cross section per H nucleon', &
+              single=.true.)
          call h5_put_attr_d(gid, 'pol_valid_from', pol_valid_from())
       end if
       if (Mdust_H > 0.0_wp) then
          allocate(kabs(nlam_out))
          kabs = Cabs / Mdust_H
          call h5_write_1d(gid, 'K_abs', kabs, units='cm^2/g', &
-                          long_name='absorption mass opacity, C_abs/H / (M_dust/N_H)')
+                          long_name='absorption mass opacity, C_abs/H / (M_dust/N_H)', &
+                          single=.true.)
          deallocate(kabs)
          call h5_put_attr_d(gid, 'M_dust_per_H', Mdust_H)
       end if

@@ -1,0 +1,18 @@
+Reference emission spectrum of the stochastic heating of grains (SHG)
+benchmark, Camps et al. (2015), A&A 580, A87.
+
+File: DustEM_SHG_Mathis_U_1e+00.dat
+      (DustEM solution for the Zubko et al. 2004 ZDA BARE-GR-S mixture
+       heated by the Mathis 1983 ISRF at U = 1; column 1 is lambda in
+       um, column 6 is lambda*j_lambda in W sr^-1 H^-1)
+
+The benchmark data are distributed at
+  http://www.shg.ugent.be
+as given in footnote 2 of Camps et al. (2015).
+
+Copy of Results_FullSolution/DustEM_SHG_Mathis_U_1e+00.dat from the
+benchmark package unpacked at the root of this working tree. It is read
+by the figure scripts of the JKAS paper; the code itself does not use it.
+The ZDA BARE-GR-S optics, size distributions, and calorimetry tables in
+this directory come from the DustModel/ part of the same package
+(GrainInputs/ and SizeInputs/; see zubko_descriptor.txt).

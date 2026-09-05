@@ -79,7 +79,8 @@ SEDust/
     mrn/        and extinction curve in one file), the same as text
     zubko/      (`q_*.dat`, `kext_*.dat`), and, where the model IS a set of
     themis/     files, its definition -- the ZDA config for zubko, the
-    g18d/       DustEM GRAIN/oprop/hcap files for themis and g18d
+    g18d/       DustEM GRAIN/oprop/hcap files for themis and g18d, plus
+                g18d's ALIGN file and its aligned Q1_/Q2_ tables
     dielectric/ shared material data: the D03 / DH21 / D16 optical
                 constants and the PAH cross sections.  A dielectric function
                 is not one model's -- DL07, MRN and Zubko read the same D03
@@ -107,10 +108,15 @@ paths outside this directory.
   is reached by name through the single `build_dust` entry point, ships a
   `data/<model>/sedust_<model>.h5` product that `calc_qtable.x` writes and
   `calc_kext.x` puts `/kext` into, and serves its extinction through
-  `dust_extinction` without the host naming a file. THEMIS and G18D are
-  **scalar**, though: what the DustEM distribution publishes for them is
-  orientation-averaged, so they carry no polarized optics — the polarized
-  branch of this version is the astrodust model.
+  `dust_extinction` without the host naming a file. THEMIS is **scalar**: its
+  GRAIN file declares no aligned population, so it carries no polarized optics.
+  G18D is **polarized**: its two large populations carry the `pol` keyword, and
+  their `Q1_`/`Q2_` tables and the model's `ALIGN_G17_ModelD.DAT` give them a
+  polarized absorption `Cpol`, a dichroic extinction `Cpol_ext` and an
+  alignment efficiency, so `dust_emission` returns its `lamI_pol` and
+  `dust_extinction` its `Cpol_ext` exactly as they do for astrodust. The DustEM
+  files carry no forward-amplitude real part, so G18D has no birefringent
+  extinction and `Cbir_ext` comes back zero.
 - **Optics from first principles** — dielectric functions through Mie and the
   Mishchenko T-matrix (spheroids) to stored `Q` tables, and the size-integrated
   `C_ext` / `C_abs` / `C_sca` / `<cos>` per H that a transfer code takes as its
@@ -134,7 +140,10 @@ paths outside this directory.
   content as text beside it.
 - **Polarized optics of spheroidal grains** — dichroic and birefringent
   extinction, polarized emission, and the scattering matrix of aligned grains,
-  with a runtime-settable alignment efficiency.
+  with a runtime-settable alignment efficiency. Two models carry them: the
+  astrodust model, from the orientation-resolved DH21 table computed here, and
+  G18 Model D, from the aligned `Q1_`/`Q2_` tables its DustEM definition
+  publishes.
   See [README_HOWTO.md](README_HOWTO.md#polarization).
 
 ## Documentation
@@ -180,4 +189,4 @@ Kwang-il Seon (KASI/UST)
 
 ---
 
-Last updated: 2026-09-05 20:22 KST
+Last updated: 2026-09-06 00:35 KST

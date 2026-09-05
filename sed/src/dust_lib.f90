@@ -445,6 +445,7 @@ module dust_lib
    ! is untouched; this module only re-exports the model API and adds the
    ! table/interpolation layer.
    use constants,         only: wp
+   use dust_model_mod,    only: CHANNEL_NAME_LEN
    use sed_paths,         only: sed_set_data_root, sed_get_data_root
    use sed_mathlib,           only: locate
    use sed_astrodust_mod, only: dust_model_t, build_dust, &
@@ -572,7 +573,7 @@ contains
    function dust_channel_name(m, ic) result(name)
       type(dust_model_t), intent(in) :: m
       integer,            intent(in) :: ic
-      character(len=16) :: name
+      character(len=CHANNEL_NAME_LEN) :: name
       name = m%channel_name(ic)
    end function dust_channel_name
 

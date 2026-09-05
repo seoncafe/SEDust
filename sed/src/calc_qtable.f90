@@ -63,6 +63,7 @@ program calc_qtable
    ! here is one method over the whole table.
    use, intrinsic :: iso_fortran_env, only: real64
    use constants,         only: wp, PI
+   use dust_model_mod,    only: CHANNEL_NAME_LEN
    use q_silicate_mod,    only: q_silicate_full
    use q_graphite_mod,    only: q_graphite_full
    use qpah,              only: qpah_dl07, qpah_graphite_source, nc_coeff, nc_integer
@@ -690,7 +691,7 @@ contains
       real(wp), allocatable :: a_cm(:), lna(:), dnda(:), a_um(:)
       real(wp), allocatable :: qa(:,:), qs(:,:), qe(:,:), gfac(:,:)
       character(len=512) :: qpath, gpath
-      character(len=140) :: pname
+      character(len=CHANNEL_NAME_LEN) :: pname
 
       call read_dustem_grain(grain_file, G0, npop, pops, ok=rok)
       if (.not. rok) then
@@ -828,6 +829,13 @@ contains
       ! it, and calc_kext.x has to run again -- which is also the only order in
       ! which the two can be consistent.
       write(*,'(a,a,a)') '   /kext is gone with it; run  ./calc_kext.x ', model, ' euv'
+      ! /polarized goes the same way and for the same reason, but it is not
+      ! rebuilt in seconds: the aligned scattering matrix behind it is the most
+      ! expensive product in the tree.  Naming it here is the difference
+      ! between a rerun and a silent loss, since nothing else in this program
+      ! mentions it.
+      if (trim(model) == 'astrodust') &
+         write(*,'(a)') '   /polarized is gone too; run  ./calc_polarized_optics.x all'
    end subroutine h5_model_file
 
 
@@ -848,7 +856,6 @@ contains
       real(real64),     intent(in), optional :: absonly(:,:)
       integer(h5id_k) :: fid, gid
       logical :: ok
-      real(real64), allocatable :: rflag(:,:)
       if (.not. sedust_has_hdf5) return
       call h5_begin(ok);  if (.not. ok) return
       call h5fopen_or_skip(h5_path(model), fid, ok)
@@ -857,15 +864,18 @@ contains
       call h5_write_1d(gid, 'a_eff', aeff, units='um', long_name='grain effective radius')
       if (present(absonly)) then
          call h5_write_2d(gid, 'Q_abs', absonly, units='1', &
-                          long_name='absorption efficiency')
+                          long_name='absorption efficiency', single=.true.)
          call h5_put_attr_s(gid, 'scatters', 'no -- absorption prescription only')
       else
-         call h5_write_2d(gid, 'Q_ext', qe, units='1', long_name='extinction efficiency')
-         call h5_write_2d(gid, 'Q_abs', qa, units='1', long_name='absorption efficiency')
-         call h5_write_2d(gid, 'Q_sca', qs, units='1', long_name='scattering efficiency')
+         call h5_write_2d(gid, 'Q_ext', qe, units='1', &
+                          long_name='extinction efficiency', single=.true.)
+         call h5_write_2d(gid, 'Q_abs', qa, units='1', &
+                          long_name='absorption efficiency', single=.true.)
+         call h5_write_2d(gid, 'Q_sca', qs, units='1', &
+                          long_name='scattering efficiency', single=.true.)
          if (present(gg)) then
             call h5_write_2d(gid, 'g',  gg, units='1', &
-                             long_name='scattering asymmetry <cos>')
+                             long_name='scattering asymmetry <cos>', single=.true.)
             call h5_put_attr_s(gid, 'scatters', 'yes')
          else
             ! Scattering with no asymmetry parameter: the two large G18D
@@ -877,11 +887,11 @@ contains
          end if
       end if
       if (present(flag_in)) then
-         allocate(rflag(size(flag_in,1), size(flag_in,2)))
-         rflag = real(flag_in, real64)
-         call h5_write_2d(gid, 'regime', rflag, units='1', &
+         ! Three distinct codes, so one byte each in the file rather than the
+         ! eight a double would take.  h5_read_2d_int reads it back, and reads
+         ! a product written before this the same way.
+         call h5_write_2d_i8(gid, 'regime', flag_in, units='1', &
               long_name='0 T-matrix, 10 Rayleigh dipole (x<0.1), 20 geometric optics (x>50)')
-         deallocate(rflag)
       end if
       call h5_put_attr_d(gid, 'rho_bulk_g_cm3', rho)
       call h5_put_attr_s(gid, 'method', method)

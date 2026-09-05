@@ -8,11 +8,22 @@ Source: DustEM, https://www.ias.u-psud.fr/DUSTEM/
 Files are taken verbatim from the DustEM distribution and are NOT modified:
 
   GRAIN_G17_ModelD.DAT     DustEM data/    -- model definition (3 populations)
-  ALIGN_G17_ModelD.DAT     DustEM data/    -- alignment function (polarization)
+  ALIGN_G17_ModelD.DAT     DustEM data/    -- alignment law (polarization)
   oprop/LAMBDA.DAT         DustEM oprop/   -- the 800-point wavelength grid
-  oprop/Q_<type>.DAT       DustEM oprop/   -- Qabs, Qsca per radius
+  oprop/Q_<type>.DAT       DustEM oprop/   -- Qabs, Qsca per radius, averaged
+                                              over orientation
+  oprop/Q1_<type>.DAT      DustEM oprop/   -- Qabs, Qsca for E parallel to the
+                                              projected magnetic field
+  oprop/Q2_<type>.DAT      DustEM oprop/   -- ... and for E perpendicular to it
   oprop/G_PAH0_MC10.DAT    DustEM oprop/   -- g = <cos theta>, PAH only
   hcap/C_<type>.DAT        DustEM hcap/    -- heat capacity, erg K^-1 cm^-3
+
+Q1_ and Q2_ exist for the two populations whose GRAIN line carries the `pol`
+keyword, amCBE_0.3333x and aSil2001BE6pctG_0.4x, and for those two only.  They
+have the layout of Q_ -- nsize, the radii, a QABS block and a QSCA block -- and
+are what the polarized cross sections of this model are formed from,
+Cpol = pi a^2 (Q2_abs - Q1_abs)/2 and its extinction twin.  PAH0_MC10 carries
+no `pol` keyword and has neither file.
 
 NO g FOR THE TWO LARGE POPULATIONS.  The DustEM distribution ships no
 G_amCBE_0.3333x.DAT and no G_aSil2001BE6pctG_0.4x.DAT, so the scattering
@@ -24,12 +35,19 @@ and the albedo, but not <cos theta>.
 
 The two large populations are PROLATE spheroids (the 0.3333x and 0.4x in their
 names are the axis ratios).  Their Q_<type>.DAT tables are already averaged
-over orientation, so they enter the scalar model exactly as a sphere table
-does.  The polarized tables Q1_/Q2_<type>.DAT and ALIGN_G17_ModelD.DAT are the
-input the polarized branch would need; ALIGN_G17_ModelD.DAT is kept here for
-that, and its keyword line carries no ANIS, so the unpolarized extinction is
-the plain orientation average with no alignment correction -- which is what
-DustEM computes for this model.
+over orientation, so they enter the SCALAR model exactly as a sphere table
+does.  The POLARIZED model reads Q1_/Q2_<type>.DAT and ALIGN_G17_ModelD.DAT in
+addition, and the ALIGN keyword line carries no ANIS, so the unpolarized
+extinction stays the plain orientation average with no alignment correction --
+which is what DustEM computes for this model.  The alignment law that file
+states is the parametric one of Guillet et al. (2018),
+
+  f_align(a) = 0.5 f_max [1 + tanh( ln(a/a_align) / p_stiff )]
+
+with a_align = 8.8647328317E-02 um, p_stiff = 2.7000692487E-01 and
+f_max = 6.6593271494E-01, applied to every `pol` population (the keyword line
+says `univ`).  It is applied as a size weight inside the size integral, not
+folded into the cross sections, which is where DustEM applies it too.
 
 HD23 (Hensley & Draine 2023, ApJ 948, 55, Sec. 6.2.2 and Fig. 16) compare
 against this model, running DustEM on GRAIN_G17_ModelD.DAT and adopting a
@@ -43,7 +61,11 @@ NOT from DustEM, generated here:
                             /qtable/<population> (the Q_/G_ tables above, put
                             on each population's own model radii), plus /kext
                             from sed/calc_kext.x.  The two large populations
-                            carry no g dataset, for the reason above.
+                            carry no g dataset, for the reason above.  The
+                            product holds SCALAR optics only: the polarized
+                            cross sections are formed at build time from the
+                            Q1_/Q2_ text tables, whichever source the scalar
+                            optics came from.
                             Regenerate with
                               ./calc_qtable.x g18d && ./calc_kext.x g18d euv
                             in that order: the first replaces the file.
@@ -51,13 +73,29 @@ NOT from DustEM, generated here:
 reference/ -- DustEM's own output for GRAIN_G17_ModelD.DAT
 ==========================================================
 
-The DustEM distribution ships no published result for this model, so the two
+The DustEM distribution ships no published result for this model, so the four
 files here were produced by building DustEM 4.3 from the sources in the same
 distribution and running it on these very input files, with
 ALIGN_G17_ModelD.DAT copied to data/ALIGN.DAT as the model requires:
 
-  reference/EXT_G17_ModelD.RES   extinction, DustEM out/EXT.RES
-  reference/SED_G17_ModelD.RES   emission,   DustEM out/SED.RES
+  reference/EXT_G17_ModelD.RES       extinction, DustEM out/EXT.RES
+  reference/SED_G17_ModelD.RES       emission,   DustEM out/SED.RES
+  reference/EXT_POL_G17_ModelD.RES   polarized extinction, DustEM out/EXT_POL.RES
+  reference/SED_POL_G17_ModelD.RES   polarized emission,   DustEM out/SED_POL.RES
+
+The two _POL_ files come from the same run: DustEM writes them whenever the
+GRAIN file declares a `pol` population and ALIGN.DAT names a `lin` law, which
+this model does.  EXT_POL_G17_ModelD.RES has the shape of EXT_G17_ModelD.RES --
+'#' header, a "ntype nwave" line, then rows of lambda[um], ABS(1..ntype),
+SCA(1..ntype) and the total, all in cm^2 per H times 1e21 -- and its ABS and
+SCA columns are DustEM's size integrals of 0.5*(Q2-Q1)*f_pol for absorption and
+for scattering.  sed/test_dustem_polarized_extinction.x checks this tree
+against it, column by column, and reaches 5e-7 relative.  SED_POL_G17_ModelD.RES
+is DustEM's polarized SED, 4*pi*nu*I_nu/NH; no driver here writes a polarized
+SED, so it is kept as the record of what DustEM computes rather than as a
+comparison this tree runs -- the emission side reaches through the lamI_pol
+argument of dust_emission, and comparing against this file would be a
+comparison of two stochastic-heating solvers.
 
 The build was checked first on THEMIS, where the distribution does publish a
 result: it reproduces the distributed EXT_J13.RES exactly and SED_J13.RES to

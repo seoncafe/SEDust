@@ -122,7 +122,8 @@ make calc_polext.x         && ./calc_polext.x
 #   the one in the field always agree.
 
 # the Monte Carlo cross-check
-cd ../mc && make && ./main_mc_sed.x run_sed.nml
+cd ../mc && make && ./main_mc_sed.x run_sed_default.nml
+#                                   -> output/sed_default_S2_U1.585_irem_mc.dat
 
 # regenerating the scalar T-matrix Q tables (optional; both tables ship with SEDust)
 cd ../tmatrix && make && ./run_tmatrix.x test   # smoke test -> output/..._euv.test.dat
@@ -148,6 +149,43 @@ make lyman_cut                                  # -> the 1129-wavelength compani
 
 Outputs are plain ASCII `.dat` files written to each subdirectory's `output/`;
 `calc_kext.x` writes into `data/` instead.
+
+## What the products store, and in what precision
+
+The HDF5 products store their numbers in three precisions, chosen by what a
+dataset *is* rather than by how large it is:
+
+| class | datasets | file type |
+|---|---|---|
+| computed quantities | `Q_ext`, `Q_abs`, `Q_sca`, `g`, `albedo`, `C_ext`, `C_abs`, `C_sca`, `K_abs`, `Q_re`, `Z`, `F_tot`, `F_ref`, `C_polext`, `C_ext_al`, `C_pol_al`, `C_bir_al`, `C_sca_al`, `C_sca_pol_al`, `C_ext_tot`, `C_ext_ref`, `C_sca_tot`, `C_sca_ref` | 32-bit float |
+| coordinate axes | `lambda`, `a_eff`, `theta`, `theta_i`, `theta_s`, `phi`, `band_lambda` | 64-bit float |
+| codes | `regime` (0 T-matrix, 10 Rayleigh, 20 geometric optics) | 8-bit integer |
+
+**Why 32-bit for the quantities.** They carry their own uncertainty far above
+float32's 1.2e-7 relative resolution: the dielectric functions behind them are
+good to three figures, the 1/3-2/3 graphite orientation average is 40% wrong at
+10 um, and the radiative transfer that consumes them has Monte Carlo noise of
+1e-2 to 1e-3. Sixty-four bits on disk buy nothing and cost half the file. The
+six shipped products drop from 122 MB to 54 MB on disk, and
+`data/astrodust/sedust_astrodust.h5` from 86.8 MB to 39.2 MB.
+
+**Why the axes are the exception.** Their problem is not accuracy but
+*distinctness* and monotonicity. The astrodust wavelength grid resolves each
+X-ray absorption edge with a pair of points 6.7e-7 apart in relative wavelength
+— six to eleven representable float32 values, depending on where in its
+binade the value sits — and a grid that stopped being strictly ascending has broken
+this code once already. The axes are 0.06% of the payload, so keeping them
+lossless costs nothing measurable.
+
+**The reader interface is unchanged.** Only the *file* type moved. The memory
+type on both write and read is still `H5T_NATIVE_DOUBLE`, HDF5 converts, and a
+caller keeps passing and receiving `real(real64)`. Nothing in a host has to
+change.
+
+`./test_h5_storage_policy.x` checks every product in the tree against this
+table, so an axis cannot silently become single later. Products written before
+the policy are brought onto it in place, without recomputing anything, by
+`python3 pyutil/migrate_h5_float32.py`.
 
 ## The ionizing band
 
@@ -265,9 +303,15 @@ ranges, so those two are `CM20_plaw-ed` (the large a-C:H/a-C grains) and
 `CM20_logn` (the small a-C grains). The two large G18D populations carry **no
 `g` dataset at all**: the distribution publishes no `G_` file for them, and an
 absent dataset is the record of that -- a zero there would be a measurement.
-Neither model has polarized optics: `/polarized` belongs to the astrodust
-product alone, because what DustEM publishes for these two is orientation-
-averaged.
+
+Neither product carries a `/polarized` group: that group holds the
+orientation-resolved DH21 table and the aligned scattering matrices, and it
+belongs to the astrodust product alone. G18D's polarized optics are nonetheless
+built, from the DustEM text tables the distribution publishes for it -- one
+`Q1_<gtype>.DAT` and one `Q2_<gtype>.DAT` for each of its two `pol`
+populations, read at build time and put on the model radii by the very
+interpolation their `Q_` counterparts get. THEMIS declares no `pol` population
+and stays scalar.
 
 The one text table anything still opens is the astrodust scalar pair. It is the
 INPUT `calc_qtable.x` reads to write the HDF5 product, so that program cannot
@@ -413,10 +457,12 @@ the stochastic solve; the gate propagates forward in grain size.
 
 ## Polarization
 
-For the astrodust model SEDust also computes the polarized cross sections of
-aligned spheroidal grains, from an orientation-resolved spheroid table. By
-default this is the Draine & Hensley (2021) table that ships in
-`data/dielectric/`. Two quantities are available:
+For the astrodust model and for G18 Model D, SEDust also computes the polarized
+cross sections of aligned spheroidal grains. For astrodust they come from an
+orientation-resolved spheroid table, by default the Draine & Hensley (2021)
+table that ships in `data/dielectric/`; for G18D from the aligned `Q1_`/`Q2_`
+tables of its own DustEM definition (see [G18 Model
+D](#g18-model-d-polarization) below). Two quantities are available:
 
 | Quantity | Where |
 |---|---|
@@ -465,6 +511,71 @@ with `dust_set_alignment` (the HD23 power law) or `dust_set_alignment_profile`
 (an arbitrary tabulated profile, for a RAT-derived reduction factor). Both are
 size weights applied outside the temperature solution, so neither re-solves
 `P(T)` and neither changes `lamI_total`.
+
+### G18 Model D polarization
+
+Guillet et al. (2018) Model D is fitted to Planck polarization, and its DustEM
+definition says so: the `GRAIN` lines of its two large populations,
+`amCBE_0.3333x` and `aSil2001BE6pctG_0.4x`, carry the `pol` keyword. Both are
+prolate spheroids (the `0.3333x` and `0.4x` in their names are the axis ratios),
+and these files in `data/g18d/` belong to them:
+
+| File | What |
+|---|---|
+| `oprop/Q1_<gtype>.DAT` | `Qabs`, `Qsca` for **E parallel** to the projected field, one per aligned population |
+| `oprop/Q2_<gtype>.DAT` | ... and for **E perpendicular** to it |
+| `ALIGN_G17_ModelD.DAT` | the alignment law, beside the `GRAIN` file and named after it |
+| `reference/EXT_POL_G17_ModelD.RES` | DustEM's own polarized extinction, the reference |
+| `reference/SED_POL_G17_ModelD.RES` | DustEM's own polarized emission |
+
+`Q1_`/`Q2_` have the layout of `Q_` and are read by the same reader and put on
+the model radii by the same linear-in-radius interpolation, so the polarized
+cross sections are formed from exactly the numbers the scalar ones are:
+
+    Cpol     = pi a^2 * 0.5 * ( Q2_abs - Q1_abs )
+    Cpol_ext = pi a^2 * 0.5 * ( (Q2_abs + Q2_sca) - (Q1_abs + Q1_sca) )
+
+The `ALIGN` file gives the parametric law of Guillet et al. (2018), DustEM's
+`par`,
+
+    f_align(a) = 0.5 * f_max * [ 1 + tanh( ln(a/a_align) / p_stiff ) ]
+
+with a_align = 0.0886 um, p_stiff = 0.270 and f_max = 0.666 for this model.
+This is a **different function** from the HD23 power-law rolloff that the
+astrodust model uses, so a G18D model comes back with `align_tabulated =
+.true.` and the three `align_*` scalars of `dust_model_t` — which describe the
+power law — left at their defaults and unused. `dust_set_alignment` and
+`dust_set_alignment_profile` still override the loaded efficiency on both
+aligned populations, exactly as they do for astrodust. `f_align` is applied as
+a size weight inside the size integral, never folded into the cross sections,
+which is where DustEM applies its own `f_pol`.
+
+The `PAH0_MC10` population carries no `pol` keyword, so it gets no polarized
+cross sections and `f_align = 0`; that is what DustEM does with it, and both
+its columns of the reference are identically zero. The DustEM files carry no
+real-part forward-amplitude block, so this model has **no birefringence**:
+`Cbir_ext` is left unallocated and comes back exactly zero.
+
+Only the alignment models this code implements are accepted. `ALIGN_*.DAT`
+naming `idg` or `rat` — which DustEM declares and leaves empty — or `anis`,
+which changes what the *unpolarized* extinction of the model means, or `circ`,
+which needs a table this tree does not read, is refused by name at build time
+rather than run as though it had asked for nothing.
+
+`./test_dustem_polarized_extinction.x` compares the size integral against
+`EXT_POL_G17_ModelD.RES`, population by population and for both the absorption
+and the scattering half. It agrees to 5e-7 relative — the print precision of
+the reference file, and the same level the scalar extinction reaches. The
+polarized *emission* is reachable through the `lamI_pol` argument of
+`dust_emission`, as it is for astrodust; no driver here writes a polarized SED
+for any model, so `reference/SED_POL_G17_ModelD.RES` is kept as the record of
+what DustEM computes rather than as a comparison this tree runs.
+
+`data/g18d/kext_g18d[_euv].dat` carry the scalar columns only. The dichroic
+`C_polext/H` column is on the astrodust products alone, and the polarized
+extinction of any model is served live by `dust_extinction`, which recomputes
+it under whatever alignment the model currently holds rather than reading it
+from a table.
 
 For randomly oriented grains the full scattering (Mueller) matrix is also
 computed, by `tmatrix/run_scatmat.x`, and stored for five optical bands
@@ -602,8 +713,10 @@ matrix form, and the MoCafe-side consumption (frame rotations, direction samplin
 peel-off, the `exp(-K tau)` step) remains future work. The random-orientation
 scatmat file above stays for unaligned use, and it does not limit far-infrared or
 submillimeter polarized emission, where scattering is negligible. The PAH
-component is treated as unaligned, and the DL07 and Zubko models have no polarized
-optics.
+component is treated as unaligned, and the DL07, MRN, Zubko and THEMIS models
+have no polarized optics. G18 Model D has the two polarized *cross sections*
+(`Cpol`, `Cpol_ext`) and no scattering matrix: its DustEM definition publishes
+`Q1_`/`Q2_` and nothing angle-resolved.
 
 A build can also skip the polarized optics entirely: `load_polarized_optics=.false.`
 on `build_astrodust` / `sed_init` never opens the orientation-resolved table, leaves

@@ -34,6 +34,16 @@ module dust_model_mod
    implicit none
    private
    public :: grain_pop_t, dust_model_t, free_dust_model
+   public :: CHANNEL_NAME_LEN
+
+   ! How long a channel name can be.  Wide enough for anything
+   ! dustem_population_name can build: it joins a gtype and a size-distribution
+   ! keyword, both character(len=64) in dustem_pop_t, with an underscore
+   ! between them, so 129 characters cannot be exceeded and nothing truncates.
+   ! The longest name any shipped model actually uses is 20 characters
+   ! (G18 Model D's aSil2001BE6pctG_0.4x).
+   integer, parameter :: CHANNEL_NAME_LEN = 129
+
    public :: dust_set_alignment, dust_set_alignment_profile
 
    ! One stochastically-heated population (= one species/charge state).
@@ -80,7 +90,7 @@ module dust_model_mod
       real(wp), allocatable :: log_T_first(:)  ! (NT)
       type(grain_pop_t), allocatable :: pops(:)
       integer               :: n_channel = 0
-      character(len=16), allocatable :: channel_name(:)   ! (n_channel)
+      character(len=CHANNEL_NAME_LEN), allocatable :: channel_name(:)   ! (n_channel)
       logical               :: use_induced_emission = .false.
       ! Does every population that scatters also carry a scattering asymmetry
       ! <cos theta>?  .true. for every model whose optics come from a Mie or

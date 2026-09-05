@@ -343,6 +343,13 @@ euv_polarized_optics.x: libtmatrix.a $(OBJ_ORIENTED) constants.o mie.o euv_polar
 	@echo 'Built: ./euv_polarized_optics.x'
 	@echo 'Run:   ./euv_polarized_optics.x NODEFILE OUTFILE [sca|nosca] [XTM_HI]'
 
+# The smallest possible external consumer of the public API: no SEDust module,
+# no input file, no workspace beyond the one it initializes itself.  It is what
+# a host code links against, so it is built the same way a host would.
+evaluate_one.x: libtmatrix.a examples/evaluate_one.f90
+	$(FC) $(MODERN_FFLAGS) -I. examples/evaluate_one.f90 -L. -ltmatrix $(LDFLAGS) -o $@
+example: evaluate_one.x
+
 clean:
 	rm -f *.o *.mod *.a
 	rm -rf build
@@ -351,9 +358,9 @@ cleanall: clean
 	rm -f run_tmatrix.x run_scatmat.x run_q_jori.x compare_rayleigh_jori.x \
 	      compare_tmatrix_jori.x compare_tmatrix_abs.x compare_go_jori.x \
 	      compare_birefringence.x compare_scatmat_aligned.x run_scatmat_aligned.x \
-	      euv_polarized_optics.x
+	      euv_polarized_optics.x evaluate_one.x
 
-.PHONY: all all-compare clean cleanall lyman_cut
+.PHONY: all all-compare example clean cleanall lyman_cut
 
 # Module files are emitted into this directory.  Serialize until the project
 # has a dedicated object/module build tree.

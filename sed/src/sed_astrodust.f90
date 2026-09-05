@@ -73,7 +73,8 @@ module sed_astrodust_mod
                                     astrodust_index_lambda_range
    use pah_ioniz_mod,         only: pah_ionfrac
    use dust_model_mod,        only: dust_model_t, grain_pop_t, free_dust_model, &
-                                    dust_set_alignment, dust_set_alignment_profile
+                                    dust_set_alignment, dust_set_alignment_profile, &
+                                    CHANNEL_NAME_LEN
    ! Size-integrated extinction tables (calc_kext.x products under data/),
    ! which the builders attach to the model and dust_extinction serves from.
    use kext_table_mod,        only: load_kext_table, tabulated_extinction_on_grid
@@ -94,7 +95,8 @@ module sed_astrodust_mod
                                     read_dustem_wavelengths, read_dustem_qtable, &
                                     read_dustem_gtable, read_dustem_heat_capacity, &
                                     optics_at_radii, grain_enthalpy_from_heat_capacity, &
-                                    dustem_population_name
+                                    dustem_population_name, &
+                                    read_dustem_alignment, falign_tanh_rolloff
    implicit none
    private
    public :: sed_init, sed_solve, sed_solve_pah, sed_solve_qm_batch
@@ -3209,7 +3211,7 @@ contains
       ! avoid double-counting the astrodust silicate in the total SED.
       m%n_channel = 2
       allocate(m%channel_name(2))
-      m%channel_name = [character(len=16):: 'AD', 'PAH']
+      m%channel_name = [character(len=CHANNEL_NAME_LEN):: 'AD', 'PAH']
 
       allocate(m%pops(3))
       ! Only the astrodust grains are aligned. HD23 take the PAHs to be
@@ -3353,7 +3355,7 @@ contains
       m%stoch_method = stoch_method
       m%n_channel = 2
       allocate(m%channel_name(2))
-      m%channel_name = [character(len=16):: 'SIL', 'CARB']
+      m%channel_name = [character(len=CHANNEL_NAME_LEN):: 'SIL', 'CARB']
 
       ! sed_init_dl07 stores silicate in dn_ad/Cabs/H_first(:,:,1) and the
       ! carbonaceous charge states in dn_cneu/cion / Cabs_cneu/cion, but it
@@ -3676,7 +3678,7 @@ contains
       m%stoch_method = stoch_method
       m%n_channel = 2
       allocate(m%channel_name(2))
-      m%channel_name = [character(len=16):: 'GRA', 'SIL']
+      m%channel_name = [character(len=CHANNEL_NAME_LEN):: 'GRA', 'SIL']
 
       allocate(m%pops(2))
       ! Both materials scatter, so both carry their scattering optics into
@@ -3812,7 +3814,7 @@ contains
       character(len=512)    :: q_h5
       character(len=16)     :: qset
       character(len=32)     :: h5comp
-      character(len=16)     :: cn(3)
+      character(len=CHANNEL_NAME_LEN) :: cn(3)
       character(len=8)      :: gt(3)
       character(len=64)     :: optf
 
@@ -3830,7 +3832,7 @@ contains
          end if
       end if
 
-      cn = [character(len=16):: 'PAH', 'GRA', 'SIL']
+      cn = [character(len=CHANNEL_NAME_LEN):: 'PAH', 'GRA', 'SIL']
       gt = [character(len=8) :: 'pah', 'gra', 'sil']
 
       if (present(status)) then
@@ -4485,6 +4487,32 @@ contains
    ! keeping the DustEM subdirectory names so that the paths a GRAIN_*.DAT
    ! implies resolve the way they do inside DustEM itself.
    !
+   ! A population whose GRAIN line carries the POL keyword is ALIGNED, and
+   ! three more files belong to it:
+   !
+   !   <data_dir>oprop/Q1_<gtype>.DAT       Qabs, Qsca for E parallel to the
+   !                                        projected magnetic field
+   !   <data_dir>oprop/Q2_<gtype>.DAT       ... and for E perpendicular to it
+   !   ALIGN_<model>.DAT                    the alignment law, beside the
+   !                                        GRAIN file and named after it
+   !
+   ! From them the population gets its polarized absorption and its dichroic
+   ! extinction, on the same model radius grid and by the same interpolation
+   ! as the scalar optics,
+   !
+   !   C_pol     = pi a^2 * 0.5 * ( Q2_abs - Q1_abs )
+   !   C_pol,ext = pi a^2 * 0.5 * ( (Q2_abs + Q2_sca) - (Q1_abs + Q1_sca) )
+   !
+   ! which is the pair DustEM's EXTINCTION_POL integrates, and an alignment
+   ! efficiency f_align(a) from the law.  f_align is NOT folded into the cross
+   ! sections: it is a size weight the size integral applies, exactly as
+   ! DustEM applies its f_pol inside its own integral, and folding it in here
+   ! would count it twice.  The BIREFRINGENT extinction has no counterpart in
+   ! the DustEM files -- they carry no real-part forward-amplitude block -- so
+   ! Cbir_ext is left unallocated, the state dust_model_mod documents as no
+   ! birefringence contribution.  A population without POL keeps f_align = 0
+   ! and gets no polarized cross sections, which is what DustEM does with it.
+   !
    ! Two things differ from a table-defined model such as build_from_files.
    ! First, the size grid is the MODEL's own -- nsize points spaced evenly in
    ! ln a between the amin and amax of the GRAIN line -- and the optics tables,
@@ -4516,6 +4544,10 @@ contains
       !   status = 7  a population's G_<gtype>.DAT exists but could not be read
       !   status = 8  the requested extinction table failed to load
       !   status = 9  lam_min is shorter than the DustEM wavelength grid
+      !   status = 10 a POL population's Q1_/Q2_<gtype>.DAT could not be read
+      !   status = 11 the ALIGN file of a model with POL populations could not
+      !               be read, names an alignment model not implemented here,
+      !               or carries too few laws for its POL populations
       integer, optional,  intent(out) :: status
       ! Optional precomputed size-integrated extinction curve for
       ! dust_extinction to serve; see build_astrodust.  Omitted, the model's
@@ -4556,13 +4588,22 @@ contains
       integer  :: k0, k1, k_h5
       real(wp) :: rho_h5
       character(len=512) :: qpath, gpath, cpath, q_h5, mname
-      character(len=140) :: pname
+      character(len=CHANNEL_NAME_LEN) :: pname
       real(wp), allocatable :: lam_full(:), a_tab(:), qa_tab(:,:), qs_tab(:,:), gg_tab(:,:)
       real(wp), allocatable :: a_cm(:), lna(:), dnda(:), a_um(:)
       real(wp), allocatable :: ac_tab(:), logT_c(:), logC_c(:,:)
       real(wp), allocatable :: qa(:,:), qs(:,:), gfac(:,:)
       real(wp), allocatable :: lam_h5(:), a_h5(:), qe_h5(:,:), qa_h5(:,:), qs_h5(:,:)
       real(wp), allocatable :: gg_h5(:,:)
+      ! --- the aligned (POL) populations ---
+      logical  :: any_pol, has_pol, align_universal
+      integer  :: npol, ipol, ilaw, ntab1, ntab2
+      real(wp) :: al_a(DUSTEM_MAXPOP), al_p(DUSTEM_MAXPOP), al_f(DUSTEM_MAXPOP)
+      integer  :: nlaw
+      character(len=512) :: q1path, q2path, align_path
+      real(wp), allocatable :: a1_tab(:), q1a_tab(:,:), q1s_tab(:,:)
+      real(wp), allocatable :: a2_tab(:), q2a_tab(:,:), q2s_tab(:,:)
+      real(wp), allocatable :: q1a(:,:), q1s(:,:), q2a(:,:), q2s(:,:)
 
       if (present(status)) status = 0
       if (present(gsca_missing)) gsca_missing = ''
@@ -4590,6 +4631,41 @@ contains
             status = 1;  return
          else
             write(*,'(a,a)') ' build_dustem: cannot use ', trim(grain_path);  stop 1
+         end if
+      end if
+
+      ! ---- the alignment law, when the model declares aligned populations --
+      ! The ALIGN file belongs to the model, not to a grain type: DustEM reads
+      ! it as data/ALIGN.DAT beside data/GRAIN.DAT, and this tree keeps the two
+      ! together under the same name, ALIGN_<model>.DAT beside
+      ! GRAIN_<model>.DAT.  It is read once here, before any population, so
+      ! that a model asking for polarization without a usable law fails at the
+      ! law rather than after building half its populations.
+      npol = 0
+      do ip = 1, npop
+         if (pops(ip)%polarized) npol = npol + 1
+      end do
+      any_pol = npol > 0
+      align_universal = .false.;  nlaw = 0
+      al_a = 0.0_wp;  al_p = 0.0_wp;  al_f = 0.0_wp
+      if (any_pol) then
+         align_path = dustem_alignment_path(trim(grain_path), trim(data_dir))
+         call read_dustem_alignment(trim(align_path), align_universal, nlaw, &
+                                    al_a, al_p, al_f, ok=rok)
+         if (rok .and. .not. align_universal .and. nlaw < npol) then
+            rok = .false.
+            write(*,'(a,i0,a,i0,a)') ' build_dustem: '//trim(align_path)// &
+               ' carries ', nlaw, ' alignment laws for ', npol, &
+               ' aligned populations, and does not say univ.'
+         end if
+         if (.not. rok) then
+            if (present(status)) then
+               status = 11;  return
+            else
+               write(*,'(a,a)') ' build_dustem: cannot use the alignment law of ', &
+                  trim(align_path)
+               stop 1
+            end if
          end if
       end if
 
@@ -4669,14 +4745,28 @@ contains
       m%n_channel = nchan
       allocate(m%channel_name(nchan))
       do ip = 1, npop
-         m%channel_name(ip) = pops(ip)%gtype
+         ! The population name, not the bare gtype: THEMIS carries CM20 twice,
+         ! as the power law with exponential decay and as the log-normal, and
+         ! the bare gtype would give those two channels one name.  This is the
+         ! same name the product's /qtable group is written under.
+         m%channel_name(ip) = dustem_population_name(pops, npop, ip)
       end do
       allocate(m%pops(npop))
       m%gsca_complete = .true.
+      ! The alignment efficiency below is the DustEM parametric law, not the
+      ! HD23 power-law rolloff the three align_* scalars of dust_model_t
+      ! describe, so the model is marked as carrying a tabulated profile and
+      ! those scalars keep their (unused) defaults.  A host calling
+      ! dust_set_alignment or dust_set_alignment_profile afterwards still
+      ! overrides both the efficiency and the flag, as it does for astrodust.
+      m%align_tabulated = any_pol
+      ipol = 0
 
       ! ---- population by population --------------------------------------
       do ip = 1, npop
          nsize = pops(ip)%nsize
+         has_pol = pops(ip)%polarized
+         if (has_pol) ipol = ipol + 1
 
          ! --- size distribution, the DustEM formula ---
          call dustem_size_distribution(pops(ip), a_cm, lna, dnda, ok=rok)
@@ -4800,6 +4890,80 @@ contains
             end if
          end if
 
+         ! --- the aligned optics of a POL population -------------------------
+         ! Q1_ and Q2_ have the layout of Q_ -- nsize, the radii, a Qabs block
+         ! and a Qsca block -- so they are read by the same reader and put on
+         ! the model radii by the same interpolation, and the polarized cross
+         ! sections are formed from exactly the numbers the scalar ones are.
+         ! They are read from the DustEM text tables even when the scalar
+         ! optics came from the HDF5 product: the product carries no polarized
+         ! group for a DustEM-defined model.
+         if (has_pol) then
+            q1path = trim(data_dir)//'oprop/Q1_'//trim(pops(ip)%gtype)//'.DAT'
+            q2path = trim(data_dir)//'oprop/Q2_'//trim(pops(ip)%gtype)//'.DAT'
+            call read_dustem_qtable(trim(q1path), nwave_full, ntab1, a1_tab, &
+                                    q1a_tab, q1s_tab, ok=rok)
+            if (rok) call read_dustem_qtable(trim(q2path), nwave_full, ntab2, a2_tab, &
+                                             q2a_tab, q2s_tab, ok=rok)
+            if (.not. rok) then
+               if (present(status)) then
+                  status = 10;  return
+               else
+                  write(*,'(a,a,a,a)') ' build_dustem: cannot read the aligned optics ', &
+                     trim(q1path), ' / ', trim(q2path)
+                  stop 1
+               end if
+            end if
+
+            allocate(q1a(nwave, nsize), q1s(nwave, nsize), &
+                     q2a(nwave, nsize), q2s(nwave, nsize))
+            call optics_at_radii(a1_tab, q1a_tab(k_lo:nwave_full,:), a_um, q1a, ok=rok, &
+                                 what='Q1_abs')
+            if (rok) call optics_at_radii(a1_tab, q1s_tab(k_lo:nwave_full,:), a_um, q1s, &
+                                          ok=rok, what='Q1_sca')
+            if (rok) call optics_at_radii(a2_tab, q2a_tab(k_lo:nwave_full,:), a_um, q2a, &
+                                          ok=rok, what='Q2_abs')
+            if (rok) call optics_at_radii(a2_tab, q2s_tab(k_lo:nwave_full,:), a_um, q2s, &
+                                          ok=rok, what='Q2_sca')
+            if (.not. rok) then
+               if (present(status)) then
+                  status = 5;  return
+               else
+                  write(*,'(a,a)') ' build_dustem: the aligned optics do not cover the '// &
+                     'sizes of ', trim(pops(ip)%gtype)
+                  stop 1
+               end if
+            end if
+
+            ! One law for every aligned population when the file said univ,
+            ! otherwise the k-th law for the k-th aligned population in
+            ! GRAIN_*.DAT order -- which is how DustEM reads the same file.
+            ilaw = ipol
+            if (align_universal) ilaw = 1
+
+            ! Cbir_ext is left unallocated: the DustEM files carry no real-part
+            ! forward-amplitude block, so this model has no birefringence.
+            allocate(m%pops(ip)%Cpol(NLAM, nsize), m%pops(ip)%Cpol_ext(NLAM, nsize), &
+                     m%pops(ip)%falign(nsize))
+            do ja = 1, nsize
+               do jw = 1, NLAM
+                  m%pops(ip)%Cpol(jw, ja) = PI * a_cm(ja)**2 &
+                       * 0.5_wp * (q2a(jw, ja) - q1a(jw, ja))
+                  m%pops(ip)%Cpol_ext(jw, ja) = PI * a_cm(ja)**2 * 0.5_wp &
+                       * ((q2a(jw, ja) + q2s(jw, ja)) - (q1a(jw, ja) + q1s(jw, ja)))
+               end do
+               m%pops(ip)%falign(ja) = falign_tanh_rolloff(a_um(ja), al_a(ilaw), &
+                                                           al_p(ilaw), al_f(ilaw))
+            end do
+            deallocate(a1_tab, q1a_tab, q1s_tab, a2_tab, q2a_tab, q2s_tab)
+            deallocate(q1a, q1s, q2a, q2s)
+         else
+            ! Unaligned by the model's own definition, so no polarized cross
+            ! sections and an efficiency of zero.
+            allocate(m%pops(ip)%falign(nsize))
+            m%pops(ip)%falign = 0.0_wp
+         end if
+
          ! --- cross sections and the Planck integrals -----------------------
          NA = nsize
          if (allocated(Cabs)) deallocate(Cabs, kappB_first, kappCMB)
@@ -4920,6 +5084,31 @@ contains
          end if
       end if
    end subroutine build_dustem
+
+
+   ! Where the alignment law of a DustEM-defined model lives.
+   !
+   ! DustEM itself opens data/ALIGN.DAT beside data/GRAIN.DAT, one fixed pair
+   ! of names for whichever model has been copied into place.  This tree keeps
+   ! every model's files under its own directory and under its own name, so the
+   ! two stay together: the ALIGN file is the GRAIN file with its leading
+   ! GRAIN swapped for ALIGN, in the same directory.  Naming the model
+   ! definition therefore names its alignment law, which is what makes
+   ! config_path carry both.  A GRAIN file whose name does not begin with
+   ! GRAIN gets DustEM's own fixed name in the model's directory.
+   pure function dustem_alignment_path(grain_path, data_dir) result(p)
+      character(len=*), intent(in) :: grain_path, data_dir
+      character(len=512) :: p
+      character(len=256) :: base
+      integer :: k
+      k = index(grain_path, '/', back=.true.)
+      base = grain_path(k+1:)
+      if (base(1:5) == 'GRAIN') then
+         p = grain_path(1:k)//'ALIGN'//trim(base(6:))
+      else
+         p = trim(data_dir)//'ALIGN.DAT'
+      end if
+   end function dustem_alignment_path
 
 
    ! Which of the solver's three grain materials a DustEM gtype is.  It is read
@@ -5187,10 +5376,12 @@ contains
       case ('themis', 'g18d')
          ! Two published models carried as DustEM input files -- THEMIS (Jones
          ! et al. 2013 for the carbon grains, Koehler et al. 2014 for the
-         ! silicates) and Guillet et al. (2018) Model D.  Both are SCALAR: the
-         ! distribution ships orientation-averaged Q tables, so these models
-         ! carry no polarized optics and none can be formed here; a host that
-         ! asks dust_has_polarized_optics about one gets .false.
+         ! silicates) and Guillet et al. (2018) Model D.  THEMIS declares no
+         ! aligned population, so it is SCALAR and dust_has_polarized_optics
+         ! reports .false. for it.  G18 Model D declares its two large
+         ! populations POL, and they get the polarized absorption, the dichroic
+         ! extinction and the alignment efficiency of the model's own
+         ! ALIGN_G17_ModelD.DAT; its PAHs stay unaligned, as DustEM leaves them.
          !
          ! The model definition is one file inside the model's own directory,
          ! and everything it implies -- oprop/, hcap/, the extinction curve,
@@ -5208,7 +5399,7 @@ contains
          call build_dustem(m, trim(cfg), trim(sedust_dir(trim(ddir), model)), &
                            nt, tlo, thi, status=st, kext_path=kext_path, &
                            lam_min=lam_min, include_euv=wide, qtable_path=trim(h5))
-         call report(st, [9, 1, 1, 2, 1, 6, 1, 5, 4])
+         call report(st, [9, 1, 1, 2, 1, 6, 1, 5, 4, 10, 10])
 
       case ('from_files')
          if (.not. present(config_path)) then

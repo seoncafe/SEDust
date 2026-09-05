@@ -1,0 +1,10 @@
+&mc_input
+  a_um       = 0.001
+  U_isrf     = 1.0
+  comp       = 'gra_dl01'
+  N_events   = 500000
+  t_max      = 0.0
+  lam_c_um   = 1000.0
+  seed       = 101
+  out_prefix = 'output/fig24_6/10A_U1'
+/

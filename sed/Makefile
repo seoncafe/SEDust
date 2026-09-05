@@ -12,8 +12,11 @@
 #   make test_scatmat_aligned.x  aligned-scattering reader/interface checks
 #   make test_scalar_mode.x      scalar-only build mode checks
 #   make test_euv_extension.x    EUV grid-extension (lam_min) checks
-#   make test_dustem_extinction.x    THEMIS vs DustEM's own EXT_J13.RES
+#   make test_dustem_extinction.x    themis/g18d vs DustEM's own EXT_*.RES
+#   make test_dustem_polarized_extinction.x
+#                            g18d vs DustEM's own EXT_POL_G17_ModelD.RES
 #   make test_dustem_product.x   themis/g18d: the HDF5 product vs the text tables
+#   make test_h5_storage_policy.x    axes 64-bit, codes 8-bit, quantities 32-bit
 #   make use_dustlib_scatmat.x   rt_example aligned-scattering consumer (vs libsedust.a)
 #   make clean / cleanall
 #
@@ -337,11 +340,24 @@ test_size_distribution.x: src/size_dist.f90 src/test_size_distribution.f90
 	$(FC) $(FFLAGS) $^ -o $@
 	@echo 'Built: ./test_size_distribution.x'
 
+# The storage-precision policy of the HDF5 products themselves: every
+# coordinate axis 64-bit, every regime code 8-bit integer, every computed
+# quantity 32-bit.  It reads the FILE types of every product in the tree.
+test_h5_storage_policy.x: src/sedust_h5.f90 src/test_h5_storage_policy.f90
+	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
+	@echo 'Built: ./test_h5_storage_policy.x'
+
 # build_dustem on each DustEM-defined model against DustEM's own extinction
 # for it, ../data/{themis,g18d}/reference/EXT_*.RES.
 test_dustem_extinction.x: $(SRC_PIPE) src/test_dustem_extinction.f90
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./test_dustem_extinction.x'
+
+# The polarized extinction of a DustEM-defined model against DustEM's own,
+# ../data/g18d/reference/EXT_POL_G17_ModelD.RES.
+test_dustem_polarized_extinction.x: $(SRC_PIPE) src/test_dustem_polarized_extinction.f90
+	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
+	@echo 'Built: ./test_dustem_polarized_extinction.x'
 
 # themis and g18d built from their HDF5 product against the same models built
 # from the DustEM text tables.  Run it after calc_qtable.x.
@@ -353,7 +369,8 @@ cleanall: clean
 	rm -f *.a calc_enthalpy.x calc_sed.x calc_qtable.x \
 	      calc_kext.x calc_polext.x calc_polarized_optics.x \
 	      test_scatmat_aligned.x test_scalar_mode.x test_euv_extension.x \
-	      test_dustem_extinction.x test_dustem_product.x \
+	      test_dustem_extinction.x test_dustem_polarized_extinction.x \
+	      test_dustem_product.x test_h5_storage_policy.x \
 	      use_dustlib_scatmat.x use_dustlib.x use_dustlib_pol.x \
 	     
 	rm -f output/sed_*.dat output/enthalpy_*.dat

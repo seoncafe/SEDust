@@ -1,0 +1,11 @@
+&mc_input
+  a_um       = 0.005
+  U_isrf     = 100.0
+  comp       = 'gra_dl01'
+  N_events   = 200000
+  t_max      = 1.0e5
+  lam_c_um   = 1000.0
+  seed       = 63
+  out_prefix = 'output/fig24_5/50A_U100'
+  record_trajectory = .true.
+/
