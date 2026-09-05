@@ -123,6 +123,13 @@ contains
       call h5_begin(got);  if (.not. got) return
       call h5_open_file(path, fid, got)
       if (.not. got) then;  call h5_end();  return;  end if
+      ! Ask whether the group is there before opening it: HDF5 answers a
+      ! missing one by printing its whole error stack, and a product that does
+      ! not carry what is asked for is the ordinary case here -- every reader
+      ! in this module reports it through ok and lets the caller fall back.
+      if (.not. h5_has(fid, 'grid')) then
+         call h5_close_file(fid);  call h5_end();  return
+      end if
       call h5_group_open(fid, 'grid', gid, got)
       if (.not. got) then
          call h5_close_file(fid);  call h5_end();  return
@@ -141,7 +148,7 @@ contains
 
 
    subroutine read_sedust_qtable(path, comp, include_euv, aeff, Qext, Qabs, Qsca, &
-                                 gpar, rho, ok, flag)
+                                 gpar, rho, ok, flag, has_g)
       ! One grain population's cross sections, (n_lam, n_a) on the cut axis.
       !
       ! A population that only absorbs -- the PAHs, whose cross sections are a
@@ -149,6 +156,14 @@ contains
       ! Qext, Qsca and gpar then come back as ZERO rather than absent, which is
       ! what the size integral must use for it, and the group's `scatters`
       ! attribute records that this is meant rather than missing.
+      !
+      ! A population that SCATTERS but has no asymmetry parameter is a third
+      ! case, and the two large G18D populations are it: the DustEM
+      ! distribution ships no G_ file for them, so their group carries Q_sca
+      ! and no g.  gpar then comes back as zero and has_g as .false., which is
+      ! how a caller tells "no measurement exists" from "the measurement is
+      ! zero".  Without has_g the two are indistinguishable, and a model built
+      ! from the product would report an asymmetry the model does not have.
       character(len=*),      intent(in)  :: path, comp
       logical,               intent(in)  :: include_euv
       real(wp), allocatable, intent(out) :: aeff(:)
@@ -159,6 +174,10 @@ contains
       ! The astrodust table's regime flag: 0 T-matrix, 10 Rayleigh dipole,
       ! 20 geometric optics.  Left unallocated for a group that has none.
       integer, allocatable, optional, intent(out) :: flag(:,:)
+      ! Whether the group carries a g dataset at all.  .false. for an
+      ! absorption-only group and for a scattering group the distribution
+      ! ships no asymmetry parameter for.
+      logical, optional,     intent(out) :: has_g
 
       integer(h5id_k) :: fid, gid
       real(wp), allocatable :: rflag(:,:)
@@ -166,6 +185,7 @@ contains
       integer :: i_lyman, i0
 
       ok = .false.;  rho = 0.0_wp
+      if (present(has_g)) has_g = .false.
       call h5_begin(got);  if (.not. got) return
       call h5_open_file(path, fid, got)
       if (.not. got) then;  call h5_end();  return;  end if
@@ -173,6 +193,11 @@ contains
       call read_lyman_index(fid, i_lyman)
       i0 = lyman_offset(include_euv, i_lyman)
 
+      got = h5_has(fid, 'qtable')
+      if (got) got = h5_has(fid, 'qtable/'//trim(comp))
+      if (.not. got) then
+         call h5_close_file(fid);  call h5_end();  return
+      end if
       call h5_group_open(fid, 'qtable/'//trim(comp), gid, got)
       if (.not. got) then
          call h5_close_file(fid);  call h5_end();  return
@@ -191,7 +216,14 @@ contains
       if (h5_has(gid, 'Q_sca')) then
          call h5_read_2d(gid, 'Q_ext', Qext, got, i0 = i0);  ok = ok .and. got
          call h5_read_2d(gid, 'Q_sca', Qsca, got, i0 = i0);  ok = ok .and. got
-         call h5_read_2d(gid, 'g',     gpar, got, i0 = i0);  ok = ok .and. got
+         if (h5_has(gid, 'g')) then
+            call h5_read_2d(gid, 'g',  gpar, got, i0 = i0);  ok = ok .and. got
+            if (present(has_g)) has_g = ok
+         else
+            ! Scattering without an asymmetry parameter; see above.
+            allocate(gpar(size(Qabs,1), size(Qabs,2)))
+            gpar = 0.0_wp
+         end if
       else
          allocate(Qext(size(Qabs,1), size(Qabs,2)))
          allocate(Qsca(size(Qabs,1), size(Qabs,2)))
@@ -216,7 +248,10 @@ contains
       call h5_group_close(gid)
       call h5_close_file(fid)
       call h5_end()
-      if (.not. ok) call drop_qtable()
+      if (.not. ok) then
+         call drop_qtable()
+         if (present(has_g)) has_g = .false.
+      end if
 
    contains
 
@@ -272,7 +307,8 @@ contains
       call read_lyman_index(fid, i_lyman)
       i0 = lyman_offset(include_euv, i_lyman)
 
-      call h5_group_open(fid, trim(grp), gid, got)
+      got = h5_has(fid, trim(grp))
+      if (got) call h5_group_open(fid, trim(grp), gid, got)
       if (.not. got) then
          ! The file exists but carries no curve: calc_qtable.x replaces the file
          ! and calc_kext.x has not run since.  Absence must be tellable from a
@@ -324,6 +360,7 @@ contains
       integer(h5id_k) :: gid
       logical :: got
       i_lyman = 1
+      if (.not. h5_has(fid, 'grid')) return
       call h5_group_open(fid, 'grid', gid, got);  if (.not. got) return
       call h5_get_attr_i(gid, 'i_lyman', i_lyman, got)
       if (.not. got) i_lyman = 1

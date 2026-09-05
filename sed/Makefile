@@ -18,6 +18,8 @@
 #   ./calc_sed.x dl07                  # Draine & Li (2007) SED
 #   ./calc_sed.x mrn                   # Mathis, Rumpl & Nordsieck (1977) SED
 #   ./calc_sed.x zubko                 # Zubko/ZDA SED
+#   ./calc_sed.x themis                # THEMIS (Jones+13 / Koehler+14) SED
+#   ./calc_sed.x g18d                  # Guillet et al. (2018) Model D SED
 #
 #   Every program here takes ONE vocabulary of run settings
 #   (src/sed_run_options.f90) and declares which axes it has a referent for;
@@ -40,6 +42,8 @@
 #   ./calc_kext.x mrn
 #   ./calc_kext.x mrn euv
 #   ./calc_kext.x zubko
+#   ./calc_kext.x themis euv           # THEMIS (Jones+13 / Koehler+14)
+#   ./calc_kext.x g18d   euv           # Guillet et al. (2018) Model D
 #   ./calc_kext.x from_files <descriptor> [data_dir]
 #   ./check_build_dust.x               # build_dust on HDF5 vs the text builders
 
@@ -149,6 +153,7 @@ SRC_PIPE    = $(SRC_BASE) $(SRC_H5) src/enthalpy_v2.f90 \
               src/radfield.f90 src/p_sub.f90 \
               src/stoch_qm.f90 $(SRC_DL07MOD) \
               src/dust_model_mod.f90 src/kext_table.f90 src/zubko_io.f90 \
+              src/dustem_io.f90 \
               src/q_component.f90 \
               src/sed_astrodust.f90
 
@@ -179,9 +184,11 @@ calc_enthalpy.x: $(SRC_ENTH)
 	$(FC) $(FFLAGS) $^ -o $@
 	@echo 'Built: ./calc_enthalpy.x'
 
-# Stored (lambda, a_eff) cross-section tables for the DL07 and Zubko models,
-# the counterpart of tmatrix/output/q_astrodust_*.dat.  Both grids of each
-# model, computed by this tree's own optics routines.
+# Stored (lambda, a_eff) cross-section tables for every model, the counterpart
+# of tmatrix/output/q_astrodust_*.dat.  Both grids of each model, computed by
+# this tree's own optics routines -- except the two DustEM-defined models,
+# whose published tables ARE the model and are stored on each population's own
+# model radii.
 calc_qtable.x: $(SRC_PIPE) $(SRC_CLIOPT) src/calc_qtable.f90
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./calc_qtable.x     (writes ../data/<model>/)'
@@ -202,8 +209,8 @@ calc_kext.x: $(SRC_PIPE) $(SRC_EUVTM) $(SRC_CLIOPT) src/calc_kext.f90 | $(TMARCH
 	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
 	@echo 'Built: ./calc_kext.x'
 
-# Does build_dust on the HDF5 products give the same model as the four
-# builders on the text products?  Run it after calc_qtable.x and calc_kext.x.
+# Does build_dust on the HDF5 products give the same model as the builders on
+# the text products?  Run it after calc_qtable.x and calc_kext.x.
 check_build_dust.x: $(SRC_PIPE) $(SRC_EUVTM) src/check_build_dust.f90 | $(TMARCH)
 	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
 	@echo 'Built: ./check_build_dust.x'
@@ -213,6 +220,12 @@ check_build_dust.x: $(SRC_PIPE) $(SRC_EUVTM) src/check_build_dust.f90 | $(TMARCH
 test_size_distribution.x: src/size_dist.f90 src/test_size_distribution.f90
 	$(FC) $(FFLAGS) $^ -o $@
 	@echo 'Built: ./test_size_distribution.x'
+
+# build_dustem on each DustEM-defined model against DustEM's own extinction
+# for it, ../data/{themis,g18d}/reference/EXT_*.RES.
+test_dustem_extinction.x: $(SRC_PIPE) src/test_dustem_extinction.f90
+	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
+	@echo 'Built: ./test_dustem_extinction.x'
 
 # Builds every model from a foreign working directory with an absolute
 # data_dir, and checks that a bad one comes back as a status instead of an
@@ -276,6 +289,7 @@ clean:
 cleanall: clean
 	rm -f *.a calc_enthalpy.x calc_sed.x calc_kext.x
 	rm -f calc_qtable.x check_build_dust.x use_dustlib.x test_size_distribution.x
+	rm -f test_dustem_extinction.x
 	rm -f output/sed_astrodust_*.dat output/enthalpy_*.dat
 
 .PHONY: all clean cleanall

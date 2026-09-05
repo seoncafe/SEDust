@@ -115,10 +115,19 @@ contains
    end subroutine h5_create_file
 
    subroutine h5_open_file(path, fid, ok)
+      ! Ask the filesystem before asking HDF5.  A product that is simply not
+      ! there is the ordinary case for a caller that falls back to the text
+      ! tables, and HDF5 answers it by printing its whole error stack to
+      ! stdout -- which turned every such fallback, documented as quiet, into
+      ! twenty lines of diagnostics.  A file that exists and cannot be opened
+      ! still reaches HDF5 and still reports.
       character(len=*), intent(in)  :: path
       integer(h5id_k),   intent(out) :: fid
       logical,          intent(out) :: ok
       integer :: e
+      logical :: there
+      inquire(file=trim(path), exist=there)
+      if (.not. there) then;  fid = 0;  ok = .false.;  return;  end if
       call h5fopen_f(trim(path), H5F_ACC_RDONLY_F, fid, e)
       ok = (e == 0)
    end subroutine h5_open_file
@@ -130,6 +139,9 @@ contains
       integer(h5id_k),  intent(out) :: fid
       logical,          intent(out) :: ok
       integer :: e
+      logical :: there
+      inquire(file=trim(path), exist=there)
+      if (.not. there) then;  fid = 0;  ok = .false.;  return;  end if
       call h5fopen_f(trim(path), H5F_ACC_RDWR_F, fid, e)
       ok = (e == 0)
    end subroutine h5_open_rw

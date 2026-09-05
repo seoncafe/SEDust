@@ -25,8 +25,8 @@ program check_data_root
    implicit none
 
    character(len=512) :: ddir
-   character(len=*), parameter :: MODELS(4) = &
-        [character(len=9) :: 'astrodust', 'dl07', 'mrn', 'zubko']
+   character(len=*), parameter :: MODELS(6) = &
+        [character(len=9) :: 'astrodust', 'dl07', 'mrn', 'zubko', 'themis', 'g18d']
    type(dust_model_t) :: m
    character(len=160) :: msg
    real(wp), allocatable :: Cext(:), Cabs(:), Csca(:)

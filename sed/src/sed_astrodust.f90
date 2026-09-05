@@ -70,6 +70,14 @@ module sed_astrodust_mod
    use zubko_io,              only: zda_comp_t, read_zda_config, zda_gofa, &
                                     read_zubko_optics, read_zubko_calor, &
                                     read_dnda_table, ZDA_MAXCOMP
+   ! The DustEM file formats and the DustEM size distribution, for the two
+   ! models this tree carries as DustEM definitions (THEMIS, G18 Model D).
+   use dustem_io,             only: dustem_pop_t, DUSTEM_MAXPOP, &
+                                    read_dustem_grain, dustem_size_distribution, &
+                                    read_dustem_wavelengths, read_dustem_qtable, &
+                                    read_dustem_gtable, read_dustem_heat_capacity, &
+                                    optics_at_radii, grain_enthalpy_from_heat_capacity, &
+                                    dustem_population_name
    !$ use omp_lib, only: omp_get_max_threads
    implicit none
    private
@@ -86,6 +94,10 @@ module sed_astrodust_mod
    public :: dust_model_t, build_astrodust, build_dl07, build_zubko, dust_emission
    public :: build_mrn
    public :: build_from_files, dust_emission_single_teq, dust_extinction
+   ! Models defined by DustEM input files: THEMIS and Guillet et al. (2018)
+   ! Model D.  grain_pop_t comes with it so that a driver can ask a population
+   ! whether it carries an asymmetry parameter.
+   public :: build_dustem, grain_pop_t
    ! The size integral itself, which is what writes the data/kext_*.dat tables
    ! that dust_extinction then serves; see its own header.
    public :: size_integrated_extinction
@@ -96,6 +108,9 @@ module sed_astrodust_mod
    ! writing the model's optics products records the density the model itself
    ! integrates with rather than a second copy of the number.
    public :: RHO_ASTROSIL, RHO_GRAPHITE
+   ! um -> cm, so that a program building a table on this module's grids uses
+   ! the same conversion the module does rather than writing its own.
+   public :: UM2CM
    ! Shortest wavelength each model's optics can be SOLVED at, and the stand-off
    ! factor behind them.  Every program that writes an EUV product of a model
    ! -- its Q tables, its extinction curve -- takes the floor from here, so
@@ -3459,10 +3474,18 @@ contains
             real(wp), allocatable :: dn(:)
             allocate(dn(nsize))
             do ja = 1, nsize
+               ! Trapezoid in ln a: the interior bins get the full central
+               ! difference and the two ENDPOINTS GET HALF, the same weights
+               ! sed_init_dl07's bin_da uses.  A full step at an endpoint
+               ! would place half a bin BEYOND the end of the grid, and where
+               ! the grid begins at the size distribution's own lower cutoff
+               ! -- which is where the ZDA tables begin -- that half bin lies
+               ! outside the distribution's support and the steeply rising
+               ! integrand there makes it count.
                if (ja == 1) then
-                  dlna = log(a_opt(2)/a_opt(1))
+                  dlna = 0.5_wp * log(a_opt(2)/a_opt(1))
                else if (ja == nsize) then
-                  dlna = log(a_opt(nsize)/a_opt(nsize-1))
+                  dlna = 0.5_wp * log(a_opt(nsize)/a_opt(nsize-1))
                else
                   dlna = 0.5_wp * log(a_opt(ja+1)/a_opt(ja-1))
                end if
@@ -3767,10 +3790,18 @@ contains
                else
                   call interp(la_dn, lf_dn, loga, fa);  fa = exp(fa)
                end if
+               ! Trapezoid in ln a: the interior bins get the full central
+               ! difference and the two ENDPOINTS GET HALF, the same weights
+               ! sed_init_dl07's bin_da uses.  A full step at an endpoint
+               ! would place half a bin BEYOND the end of the grid, and where
+               ! the grid begins at the size distribution's own lower cutoff
+               ! -- which is where the ZDA tables begin -- that half bin lies
+               ! outside the distribution's support and the steeply rising
+               ! integrand there makes it count.
                if (ja == 1) then
-                  dlna = log(a_opt(2)/a_opt(1))
+                  dlna = 0.5_wp * log(a_opt(2)/a_opt(1))
                else if (ja == nsize) then
-                  dlna = log(a_opt(nsize)/a_opt(nsize-1))
+                  dlna = 0.5_wp * log(a_opt(nsize)/a_opt(nsize-1))
                else
                   dlna = 0.5_wp * log(a_opt(ja+1)/a_opt(ja-1))
                end if
@@ -3815,6 +3846,486 @@ contains
       end if
    end subroutine build_from_files
 
+   ! =====================================================================
+   ! A model defined by DustEM input files -- THEMIS (Jones et al. 2013 for
+   ! the carbon grains, Koehler et al. 2014 for the silicates) and Guillet
+   ! et al. (2018) Model D, the two models Hensley & Draine (2023), ApJ 948,
+   ! 55, Sec. 6.2.2 and Fig. 16 compare their astrodust model against.
+   !
+   ! grain_path names the GRAIN_*.DAT that IS the model definition; data_dir
+   ! is the directory the files it implies hang under,
+   !
+   !   <data_dir>oprop/LAMBDA.DAT           the common wavelength grid
+   !   <data_dir>oprop/Q_<gtype>.DAT        Qabs, Qsca
+   !   <data_dir>oprop/G_<gtype>.DAT        <cos theta>, where one is shipped
+   !   <data_dir>hcap/C_<gtype>.DAT         heat capacity per unit volume
+   !
+   ! keeping the DustEM subdirectory names so that the paths a GRAIN_*.DAT
+   ! implies resolve the way they do inside DustEM itself.
+   !
+   ! Two things differ from a table-defined model such as build_from_files.
+   ! First, the size grid is the MODEL's own -- nsize points spaced evenly in
+   ! ln a between the amin and amax of the GRAIN line -- and the optics tables,
+   ! which have a radius grid of their own, are interpolated onto it.  Second,
+   ! the optics tables are shared by every model that names the same gtype, so
+   ! GRAIN_*.DAT is the only file here that belongs to one model alone.
+   !
+   ! Each population becomes one output channel, named by its gtype, which is
+   ! the layout of DustEM's own EXT_/SED_ products.  Channel names are 16
+   ! characters, so a longer gtype is carried truncated there; the population's
+   ! own optics and size distribution are unaffected.
+   subroutine build_dustem(m, grain_path, data_dir, NT_in, T_lo, T_hi, status, &
+                           kext_path, lam_min, include_euv, gsca_missing, qtable_path)
+      type(dust_model_t), intent(out) :: m
+      character(len=*),   intent(in)  :: grain_path, data_dir
+      integer,            intent(in)  :: NT_in
+      real(wp),           intent(in)  :: T_lo, T_hi
+      ! Optional status (0 = success, non-zero = model build failed). When
+      ! present, a bad input is reported through it instead of stopping; when
+      ! absent the build stops on error (CLI behavior).
+      !   status = 1  GRAIN_*.DAT could not be read, or names a size-distribution
+      !               keyword this code does not implement
+      !   status = 2  oprop/LAMBDA.DAT could not be read
+      !   status = 3  a population's Q_<gtype>.DAT could not be read
+      !   status = 4  a population's size distribution could not be formed
+      !   status = 5  a population's model radii fall outside its optics tables
+      !   status = 6  a population's hcap/C_<gtype>.DAT could not be read, or
+      !               does not cover that population's model radii
+      !   status = 7  a population's G_<gtype>.DAT exists but could not be read
+      !   status = 8  the requested extinction table failed to load
+      !   status = 9  lam_min is shorter than the DustEM wavelength grid
+      integer, optional,  intent(out) :: status
+      ! Optional precomputed size-integrated extinction curve for
+      ! dust_extinction to serve; see build_astrodust.  Omitted, the model's
+      ! own default: /kext of the product below, then <data_dir>kext_<model>.dat.
+      ! Neither being there leaves the model with no extinction to serve and
+      ! does NOT fail the build, which is what every other model does too.
+      character(len=*), optional, intent(in) :: kext_path
+      ! Shortest wavelength [um] the model must COVER.  This model IS its
+      ! tables, with no dielectric function behind them, so it meets the
+      ! requirement when they already reach and refuses it (status 9) when they
+      ! do not.  It never narrows the grid; build_zubko takes it the same way.
+      real(wp), optional, intent(in) :: lam_min
+      ! Whether to keep the ionizing part of the tables' own grid; default
+      ! .true.  .false. cuts at lyman_index, as it does for every other model.
+      logical, optional, intent(in) :: include_euv
+      ! The gtypes, comma separated, for which the distribution ships no
+      ! G_<gtype>.DAT, so that a caller can say which populations are the
+      ! reason m%gsca_complete came back .false.  Blank when every scattering
+      ! population carries an asymmetry parameter.
+      character(len=*), optional, intent(out) :: gsca_missing
+      ! The model's HDF5 product, when the caller has one.  It holds this
+      ! model's own wavelength axis and, for each population, the cross
+      ! sections ALREADY interpolated onto that population's model radii --
+      ! the very numbers the text route below computes, so the two routes must
+      ! agree, and check_build_dust.x measures that they do.  Blank or omitted
+      ! reads the DustEM text tables under data_dir, and so does a product
+      ! whose grids do not match this GRAIN_*.DAT.  It is an argument rather
+      ! than module state so that a program writing /kext into a product takes
+      ! its optics from the /qtable of that same product.
+      character(len=*), optional, intent(in) :: qtable_path
+
+      type(dustem_pop_t) :: pops(DUSTEM_MAXPOP)
+      real(wp) :: G0
+      integer  :: npop, ip, ja, jt, jw, nwave, nwave_full, nsize, ntab, k_lo, nchan
+      integer  :: nsize_c, ntemp_c
+      real(wp) :: t, dlna
+      logical  :: rok, kok, wide, has_g, use_h5, qfrom_h5, hg
+      integer  :: k0, k1, k_h5
+      real(wp) :: rho_h5
+      character(len=512) :: kpath, qpath, gpath, cpath, q_h5, mname
+      character(len=140) :: pname
+      real(wp), allocatable :: lam_full(:), a_tab(:), qa_tab(:,:), qs_tab(:,:), gg_tab(:,:)
+      real(wp), allocatable :: a_cm(:), lna(:), dnda(:), a_um(:)
+      real(wp), allocatable :: ac_tab(:), logT_c(:), logC_c(:,:)
+      real(wp), allocatable :: qa(:,:), qs(:,:), gfac(:,:)
+      real(wp), allocatable :: lam_h5(:), a_h5(:), qe_h5(:,:), qa_h5(:,:), qs_h5(:,:)
+      real(wp), allocatable :: gg_h5(:,:)
+
+      if (present(status)) status = 0
+      if (present(gsca_missing)) gsca_missing = ''
+      wide = .true.;  if (present(include_euv)) wide = include_euv
+      q_h5 = '';      if (present(qtable_path)) q_h5 = qtable_path
+
+      ! The model's own directory names it.  Every model in this tree lives in
+      ! data/<model>/, so the last component of data_dir IS <model>, and the
+      ! default extinction curve and the product are named from it the same way
+      ! every other model's are.  A blank data_dir leaves the generic name.
+      mname = 'dustem'
+      k1 = len_trim(data_dir)
+      if (k1 > 0) then
+         if (data_dir(k1:k1) == '/') k1 = k1 - 1
+         k0 = index(data_dir(1:max(k1,1)), '/', back=.true.) + 1
+         if (k1 >= k0) mname = data_dir(k0:k1)
+      end if
+      m%name = trim(mname)
+      active_build_id = active_build_id + 1;  m%build_id = active_build_id
+
+      ! ---- the model definition -----------------------------------------
+      call read_dustem_grain(trim(grain_path), G0, npop, pops, ok=rok)
+      if (.not. rok) then
+         if (present(status)) then
+            status = 1;  return
+         else
+            write(*,'(a,a)') ' build_dustem: cannot use ', trim(grain_path);  stop 1
+         end if
+      end if
+
+      ! ---- the common wavelength grid ------------------------------------
+      call read_dustem_wavelengths(trim(data_dir)//'oprop/LAMBDA.DAT', nwave_full, &
+                                   lam_full, ok=rok)
+      if (.not. rok) then
+         if (present(status)) then
+            status = 2;  return
+         else
+            write(*,'(a,a)') ' build_dustem: cannot read ', &
+               trim(data_dir)//'oprop/LAMBDA.DAT'
+            stop 1
+         end if
+      end if
+
+      ! ---- the stored optics, when the caller named the product -----------
+      ! Usable only if the product is THIS model's: it carries one wavelength
+      ! axis, and a set of cross sections filed against a different one is not
+      ! this model's optics whatever the group is called.  A mismatch here
+      ! reads the DustEM text tables instead, which is what a tree without the
+      ! product does anyway.
+      use_h5 = .false.
+      if (len_trim(q_h5) > 0) then
+         call read_sedust_grid(trim(q_h5), .true., lam_h5, k_h5, rok)
+         if (rok) then
+            if (size(lam_h5) == nwave_full) &
+               use_h5 = maxval(abs(lam_h5/lam_full - 1.0_wp)) <= 1.0e-12_wp
+            deallocate(lam_h5)
+         end if
+         if (use_h5 .and. sed_verbose) write(*,'(a,a)') &
+            ' build_dustem: optics read from ', trim(q_h5)
+      end if
+
+      ! lam_min is a COVERAGE requirement, not a cut; see build_zubko.
+      if (present(lam_min)) then
+         if (lam_min > 0.0_wp .and. lam_min < lam_full(1)) then
+            if (present(status)) then
+               status = 9;  return
+            else
+               write(*,'(a,es12.5,a,es12.5)') ' build_dustem: lam_min ', lam_min, &
+                  ' um is shorter than the DustEM grid, which starts at ', lam_full(1)
+               stop 1
+            end if
+         end if
+      end if
+
+      ! Narrow the grid to the requested coverage before anything downstream
+      ! sees it.  Pure row selection on the tables: no value is recomputed.
+      k_lo = 1
+      if (.not. wide) k_lo = lyman_index(lam_full)
+
+      NLAM = nwave_full - k_lo + 1
+      nwave = NLAM
+      NT    = NT_in
+      ! This model's grid is its own wavelength table, narrowed by include_euv
+      ! if one was asked for.  Nothing is ever prepended below it.
+      n_lam_euv = 0
+      if (allocated(lam)) deallocate(lam, T_first, log_T_first)
+      allocate(lam(NLAM), T_first(NT), log_T_first(NT))
+      lam = lam_full(k_lo:nwave_full)
+      do jt = 1, NT
+         t = log(T_lo) + (log(T_hi)-log(T_lo))*real(jt-1,wp)/real(NT-1,wp)
+         T_first(jt) = exp(t)
+      end do
+      log_T_first = log(T_first)
+      call p_sub_setup(lam)
+
+      m%use_induced_emission = use_induced_emission
+      m%stoch_method = stoch_method
+      m%NLAM = NLAM;  m%NT = NT;  m%NA = 0
+      m%lam = lam;  m%T_first = T_first;  m%log_T_first = log_T_first
+      allocate(m%aeff(0))
+
+      ! One channel per population, as DustEM's own products are laid out.
+      nchan = npop
+      m%n_channel = nchan
+      allocate(m%channel_name(nchan))
+      do ip = 1, npop
+         m%channel_name(ip) = pops(ip)%gtype
+      end do
+      allocate(m%pops(npop))
+      m%gsca_complete = .true.
+
+      ! ---- population by population --------------------------------------
+      do ip = 1, npop
+         nsize = pops(ip)%nsize
+
+         ! --- size distribution, the DustEM formula ---
+         call dustem_size_distribution(pops(ip), a_cm, lna, dnda, ok=rok)
+         if (.not. rok) then
+            if (present(status)) then
+               status = 4;  return
+            else
+               write(*,'(a,a)') ' build_dustem: bad size distribution for ', &
+                  trim(pops(ip)%gtype)
+               stop 1
+            end if
+         end if
+         allocate(a_um(nsize))
+         a_um = a_cm / UM2CM
+
+         ! --- optics, from the product when it carries this population -------
+         ! The stored table is already on THIS population's model radii, so
+         ! there is nothing to interpolate: the interpolation happened once,
+         ! in calc_qtable.x, by the same optics_at_radii the text route below
+         ! calls.  That interpolation is in radius alone, so cutting the
+         ! wavelength axis and interpolating commute and the two routes give
+         ! the same numbers bit for bit.  A group whose radii are not this
+         ! model's is not this population's optics, and takes only itself down
+         ! to the text tables.
+         qfrom_h5 = .false.;  has_g = .false.
+         if (use_h5) then
+            pname = dustem_population_name(pops, npop, ip)
+            call read_sedust_qtable(trim(q_h5), trim(pname), wide, a_h5, qe_h5, &
+                                    qa_h5, qs_h5, gg_h5, rho_h5, rok, has_g=hg)
+            if (rok) then
+               if (size(a_h5) == nsize .and. size(qa_h5,1) == nwave) &
+                  qfrom_h5 = maxval(abs(a_h5/a_um - 1.0_wp)) <= 1.0e-12_wp
+            end if
+            if (.not. qfrom_h5) then
+               if (allocated(a_h5))  deallocate(a_h5)
+               if (allocated(qe_h5)) deallocate(qe_h5)
+               if (allocated(qa_h5)) deallocate(qa_h5)
+               if (allocated(qs_h5)) deallocate(qs_h5)
+               if (allocated(gg_h5)) deallocate(gg_h5)
+            end if
+         end if
+
+         if (qfrom_h5) then
+            allocate(qa(nwave, nsize), qs(nwave, nsize))
+            qa = qa_h5;  qs = qs_h5
+            has_g = hg
+            if (has_g) then
+               allocate(gfac(nwave, nsize));  gfac = gg_h5
+            end if
+            deallocate(a_h5, qe_h5, qa_h5, qs_h5, gg_h5)
+         else
+            ! --- optics on the table's own radius grid ---
+            qpath = trim(data_dir)//'oprop/Q_'//trim(pops(ip)%gtype)//'.DAT'
+            call read_dustem_qtable(trim(qpath), nwave_full, ntab, a_tab, qa_tab, qs_tab, ok=rok)
+            if (.not. rok) then
+               if (present(status)) then
+                  status = 3;  return
+               else
+                  write(*,'(a,a)') ' build_dustem: cannot read ', trim(qpath);  stop 1
+               end if
+            end if
+
+            ! --- onto the model's radius grid, linearly in radius as DustEM does ---
+            allocate(qa(nwave, nsize), qs(nwave, nsize))
+            call optics_at_radii(a_tab, qa_tab(k_lo:nwave_full,:), a_um, qa, ok=rok, &
+                                 what='Q_abs')
+            if (rok) call optics_at_radii(a_tab, qs_tab(k_lo:nwave_full,:), a_um, qs, ok=rok, &
+                                          what='Q_sca')
+            if (.not. rok) then
+               if (present(status)) then
+                  status = 5;  return
+               else
+                  write(*,'(a,a)') ' build_dustem: optics do not cover the sizes of ', &
+                     trim(pops(ip)%gtype)
+                  stop 1
+               end if
+            end if
+
+            ! --- the asymmetry parameter, where the distribution ships one ---
+            gpath = trim(data_dir)//'oprop/G_'//trim(pops(ip)%gtype)//'.DAT'
+            inquire(file=trim(gpath), exist=has_g)
+            if (has_g) then
+               call read_dustem_gtable(trim(gpath), nwave_full, ntab, ac_tab, gg_tab, ok=rok)
+               if (.not. rok) then
+                  if (present(status)) then
+                     status = 7;  return
+                  else
+                     write(*,'(a,a)') ' build_dustem: cannot read ', trim(gpath);  stop 1
+                  end if
+               end if
+               allocate(gfac(nwave, nsize))
+               call optics_at_radii(ac_tab, gg_tab(k_lo:nwave_full,:), a_um, gfac, ok=rok, &
+                                    what='<cos theta>')
+               if (.not. rok) then
+                  if (present(status)) then
+                     status = 5;  return
+                  else
+                     write(*,'(a,a)') ' build_dustem: the g table does not cover the sizes of ', &
+                        trim(pops(ip)%gtype)
+                     stop 1
+                  end if
+               end if
+               deallocate(ac_tab, gg_tab)
+            end if
+         end if
+
+         if (.not. has_g) then
+            ! No G_ file in the distribution, and so no g dataset in the
+            ! product either.  The population's gsca is left UNALLOCATED,
+            ! which is the honest state: this model has no asymmetry parameter
+            ! for it.  size_integrated_extinction reads m%gsca_complete and
+            ! returns <cos theta> = 0 for the whole model rather than averaging
+            ! over the populations that do carry g.
+            m%gsca_complete = .false.
+            if (present(gsca_missing)) then
+               if (len_trim(gsca_missing) == 0) then
+                  gsca_missing = trim(pops(ip)%gtype)
+               else
+                  gsca_missing = trim(gsca_missing)//', '//trim(pops(ip)%gtype)
+               end if
+            end if
+         end if
+
+         ! --- cross sections and the Planck integrals -----------------------
+         NA = nsize
+         if (allocated(Cabs)) deallocate(Cabs, kappB_first, kappCMB)
+         if (allocated(Csca)) deallocate(Csca, gsca_ad)
+         allocate(Cabs(NLAM, nsize), kappB_first(NT, nsize), kappCMB(nsize))
+         allocate(Csca(NLAM, nsize), gsca_ad(NLAM, nsize))
+         do ja = 1, nsize
+            do jw = 1, NLAM
+               Cabs(jw, ja) = qa(jw, ja) * PI * a_cm(ja)**2
+               Csca(jw, ja) = qs(jw, ja) * PI * a_cm(ja)**2
+            end do
+         end do
+         if (has_g) gsca_ad = gfac
+         call build_kappB();  call build_kappCMB()
+
+         ! --- enthalpy from the tabulated heat capacity --------------------
+         cpath = trim(data_dir)//'hcap/C_'//trim(pops(ip)%gtype)//'.DAT'
+         call read_dustem_heat_capacity(trim(cpath), nsize_c, ntemp_c, ac_tab, logT_c, logC_c, &
+                                        ok=rok)
+         if (.not. rok) then
+            if (present(status)) then
+               status = 6;  return
+            else
+               write(*,'(a,a)') ' build_dustem: cannot read ', trim(cpath);  stop 1
+            end if
+         end if
+
+         block
+            real(wp), allocatable :: dn(:), Hmat(:,:)
+            allocate(dn(nsize), Hmat(NT, nsize))
+            do ja = 1, nsize
+               ! Bin width in ln a: the interior bins get the full central
+               ! difference and the two ENDPOINTS GET HALF, which is the same
+               ! convention sed_init_dl07's bin_da uses.  That half weight is
+               ! what makes sum_a Cabs(a) dn(a) the very trapezoid in ln a that
+               ! DustEM's own XINTEG2 performs over this same grid, so a
+               ! comparison against a DustEM product is a comparison of the two
+               ! models and not of two quadrature rules.  It also makes
+               ! sum_a (4/3) pi a^3 rho dn(a) come out at m_p * (Mdust/MH)
+               ! exactly, the mass per H the GRAIN line states.
+               if (ja == 1) then
+                  dlna = 0.5_wp * (lna(2) - lna(1))
+               else if (ja == nsize) then
+                  dlna = 0.5_wp * (lna(nsize) - lna(nsize-1))
+               else
+                  dlna = 0.5_wp * (lna(ja+1) - lna(ja-1))
+               end if
+               ! dn[1/H] = (dn/da)[cm^-1 H^-1] * da[cm] = (dn/da) * a_cm * dln(a)
+               dn(ja) = dnda(ja) * a_cm(ja) * dlna
+               call grain_enthalpy_from_heat_capacity(a_um(ja), ac_tab, logT_c, logC_c, &
+                                                      T_first, Hmat(:, ja), ok=rok)
+               if (.not. rok) then
+                  deallocate(dn, Hmat)
+                  if (present(status)) then
+                     ! The CALORIMETRY does not cover this radius, which is a
+                     ! different failure from the optics not covering it, and
+                     ! is reported as one so that build_dust can name the
+                     ! stage.  It used to share the optics code.
+                     status = 6;  return
+                  else
+                     write(*,'(a,a)') ' build_dustem: the C table does not cover the ' // &
+                        'sizes of ', trim(pops(ip)%gtype)
+                     stop 1
+                  end if
+               end if
+            end do
+            ! The grain type the stochastic-heating solver's quantum branch
+            ! keys on, from the material each DustEM gtype names.  It selects
+            ! an atom count and a mode spectrum there and nothing else; the
+            ! model's own optics and enthalpy, which the default solver uses,
+            ! come from the tables above and do not consult it.
+            m%pops(ip)%grain_type  = solver_grain_type(pops(ip)%gtype)
+            m%pops(ip)%out_channel = ip
+            m%pops(ip)%rho_bulk    = pops(ip)%rho
+            m%pops(ip)%dn          = dn
+            m%pops(ip)%Cabs        = Cabs
+            m%pops(ip)%Csca        = Csca
+            if (has_g) m%pops(ip)%gsca = gsca_ad
+            m%pops(ip)%kappB     = kappB_first
+            m%pops(ip)%log_kappB = log(max(kappB_first, tiny(0.0_wp)))
+            m%pops(ip)%H         = Hmat
+            m%pops(ip)%log_H     = log(max(Hmat, tiny(0.0_wp)))
+            m%pops(ip)%kappCMB   = kappCMB
+            deallocate(dn, Hmat)
+         end block
+
+         m%pops(ip)%aeff = a_um          ! [um] radii of this population
+         ! Descriptive only: the populations of a DustEM model need not share a
+         ! size grid (G18D's PAHs have 10 nodes and its large grains 25), so
+         ! the model-level count is the largest of them.
+         m%NA = max(m%NA, nsize)
+
+         deallocate(a_cm, lna, dnda, a_um, qa, qs)
+         if (allocated(a_tab))  deallocate(a_tab)
+         if (allocated(qa_tab)) deallocate(qa_tab)
+         if (allocated(qs_tab)) deallocate(qs_tab)
+         if (allocated(gfac))   deallocate(gfac)
+         deallocate(ac_tab, logT_c, logC_c)
+      end do
+      deallocate(lam_full)
+
+      ! The model's own curve, in the model's own directory, with /kext of its
+      ! product ahead of the text file -- the same two defaults, in the same
+      ! order, that every other model has.  Neither being there is not a build
+      ! failure: the model is complete for emission, and dust_extinction
+      ! reports that it has nothing to serve.
+      call load_model_extinction_table(m, trim(data_dir)//'kext_'//trim(mname)//'.dat', &
+                                       kext_path, kok, kpath, &
+                                       default_h5=trim(data_dir)//'sedust_'// &
+                                                  trim(mname)//'.h5')
+      if (.not. kok) then
+         if (present(status)) then
+            status = 8;  return
+         else
+            write(*,'(a,a)') ' build_dustem: cannot read the extinction table ', trim(kpath)
+            stop 1
+         end if
+      end if
+   end subroutine build_dustem
+
+
+   ! Which of the solver's three grain materials a DustEM gtype is.  It is read
+   ! only by the quantum stochastic-heating branch, which needs an atom count
+   ! and a vibrational mode spectrum for the grain; the tabulated enthalpy that
+   ! the default solver integrates comes from the model's own C_ file.
+   !   CM20, amC*   amorphous carbon        -> 'gra'
+   !   PAH*         polycyclic aromatics    -> 'pah'
+   !   aPyM5, aOlM5, aSil*  amorphous silicates -> 'sil'
+   ! A gtype outside this list gets 'sil', the solver's silicate mode spectrum.
+   pure function solver_grain_type(gtype) result(gt)
+      character(len=*), intent(in) :: gtype
+      character(len=8) :: gt
+      character(len=len(gtype)) :: g
+      integer :: i, k
+      g = gtype
+      do i = 1, len(g)
+         k = iachar(g(i:i))
+         if (k >= iachar('A') .and. k <= iachar('Z')) g(i:i) = achar(k + 32)
+      end do
+      if (index(g, 'pah') == 1) then
+         gt = 'pah'
+      else if (index(g, 'cm20') == 1 .or. index(g, 'amc') == 1 .or. index(g, 'gra') == 1) then
+         gt = 'gra'
+      else
+         gt = 'sil'
+      end if
+   end function solver_grain_type
+
 
    ! =====================================================================
    subroutine build_dust(m, model, data_dir, NT_in, T_lo, T_hi, include_euv, status, &
@@ -3852,12 +4363,13 @@ contains
       !
       ! WHAT lam_min DECIDES.  The shortest wavelength the model must COVER,
       ! and nothing else.  astrodust and DL07 meet it by extending their grid
-      ! on the dielectric function their optics come from; zubko and a
-      ! file-defined model, which have no dielectric function behind their
-      ! tables, meet it when those tables already reach and REFUSE it when they
-      ! do not.  No model truncates for it.  It used to truncate for two of the
-      ! four, so one host with one physically motivated floor got a longer grid
-      ! from two models and a shorter one from the others.
+      ! on the dielectric function their optics come from; zubko, the two
+      ! DustEM-defined models and a file-defined one, which have no dielectric
+      ! function behind their tables, meet it when those tables already reach
+      ! and REFUSE it when they do not.  No model truncates for it.  It used to
+      ! truncate for two of them, so one host with one physically motivated
+      ! floor got a longer grid from two models and a shorter one from the
+      ! others.
       !
       ! WHERE THE DATA IS.  For the length of the build, data_dir is the data
       ! root: the dielectric functions, the default extinction curves and the
@@ -3871,7 +4383,7 @@ contains
       ! stdout which source it used.  Nothing here requires the library to have
       ! been compiled against HDF5.
       type(dust_model_t), intent(out) :: m
-      ! 'astrodust' | 'dl07' | 'mrn' | 'zubko' | 'from_files'
+      ! 'astrodust' | 'dl07' | 'mrn' | 'zubko' | 'themis' | 'g18d' | 'from_files'
       character(len=*),   intent(in)  :: model
       character(len=*),   intent(in)  :: data_dir
       ! The internal temperature grid: NT points, log-spaced over [T_lo, T_hi].
@@ -3888,9 +4400,10 @@ contains
       logical,  optional, intent(in)  :: include_euv
       ! 0 = success.  ONE vocabulary, whatever the model: the builders
       ! number their own stages differently (5 is an unreadable extinction
-      ! table for astrodust and DL07, 3 for MRN, 6 for zubko, 9 for from_files,
-      ! and 6 means something else again for astrodust), and a host using the single
-      ! entry point should not have to branch on the model name to read a code.
+      ! table for astrodust and DL07, 3 for MRN, 6 for zubko, 8 for a
+      ! DustEM-defined model, 9 for from_files, and 6 means something else
+      ! again for astrodust), and a host using the single entry point should
+      ! not have to branch on the model name to read a code.
       ! Each builder's code is mapped onto this list:
       !   status = 0   built
       !   status = 1   optics table (Q table, or a component's optics)
@@ -3902,7 +4415,7 @@ contains
       !   status = 7   grid inconsistent between components
       !   status = 8   EUV spheroid optics unavailable (no T-matrix registered)
       !   status = 9   model definition (the ZDA config, or the descriptor)
-      !   status = 90  model name not one of the four
+      !   status = 90  model name not one of the seven
       !   status = 92  zubko_optics not one of 'zda' | 'mie_d03'
       !   status = 91  'from_files' without config_path (the descriptor)
       integer,  optional, intent(out) :: status
@@ -3917,7 +4430,10 @@ contains
       ! reference MW R_V = 3.1, b_C = 6e-5 model at U = 1.
       integer,  optional, intent(in)  :: sd_index
       real(wp), optional, intent(in)  :: u_isrf
-      ! zubko: the ZDA config.  from_files: the descriptor, and then required.
+      ! The file that DEFINES the model, where the model is a set of files:
+      ! the ZDA config for zubko, the GRAIN_*.DAT for themis and g18d, the
+      ! descriptor for from_files -- and there it is required.  Omitted, each
+      ! of those models takes the file its own directory ships.
       character(len=*), optional, intent(in) :: config_path
       character(len=*), optional, intent(in) :: astrodust_index_path
       logical,  optional, intent(in)  :: euv_tmatrix
@@ -4025,6 +4541,31 @@ contains
                           optics=zubko_optics)
          call report(st, [9, 9, 1, 7, 6, 5, 4, 92])
 
+      case ('themis', 'g18d')
+         ! Two published models carried as DustEM input files -- THEMIS (Jones
+         ! et al. 2013 for the carbon grains, Koehler et al. 2014 for the
+         ! silicates) and Guillet et al. (2018) Model D.  Both are SCALAR: the
+         ! distribution ships orientation-averaged Q tables and nothing this
+         ! tree could build polarized optics from.
+         !
+         ! The model definition is one file inside the model's own directory,
+         ! and everything it implies -- oprop/, hcap/, the extinction curve,
+         ! the product -- hangs under that same directory, so naming the model
+         ! names all of it.  G18D ships no G_ file for its two large
+         ! populations, so that model carries no <cos theta>; the model object
+         ! says so through m%gsca_complete and the size integral returns zero
+         ! rather than the average of the populations that do carry one.
+         if (trim(model) == 'themis') then
+            cfg = trim(sedust_dir(trim(ddir), 'themis'))//'GRAIN_J13.DAT'
+         else
+            cfg = trim(sedust_dir(trim(ddir), 'g18d'))//'GRAIN_G17_ModelD.DAT'
+         end if
+         if (present(config_path)) cfg = config_path
+         call build_dustem(m, trim(cfg), trim(sedust_dir(trim(ddir), model)), &
+                           nt, tlo, thi, status=st, kext_path=kext_path, &
+                           lam_min=lam_min, include_euv=wide, qtable_path=trim(h5))
+         call report(st, [9, 1, 1, 2, 1, 6, 1, 5, 4])
+
       case ('from_files')
          if (.not. present(config_path)) then
             call finish(91, 'build_dust: from_files needs config_path (the descriptor)')
@@ -4037,7 +4578,7 @@ contains
 
       case default
          call finish(90, 'build_dust: unknown model '''//trim(model)// &
-                         ''' (astrodust | dl07 | mrn | zubko | from_files)')
+                         ''' (astrodust | dl07 | mrn | zubko | themis | g18d | from_files)')
          return
       end select
 
@@ -4395,7 +4936,7 @@ contains
       integer,  optional, intent(out) :: status
       real(wp), allocatable :: gnum(:)
       integer :: ip, ja, jw, na_p
-      logical :: bad
+      logical :: bad, g_complete
 
       if (present(status)) status = 0
 
@@ -4414,6 +4955,23 @@ contains
 
       allocate(gnum(m%NLAM))
       Cabs = 0.0_wp;  Csca = 0.0_wp;  gnum = 0.0_wp
+
+      ! Is <cos theta> defined for this model at all?  gnum sums over the
+      ! populations that carry an asymmetry parameter while Csca sums over
+      ! every population that scatters, so if one population scatters without
+      ! a g the ratio below is a partial numerator over a complete
+      ! denominator -- a number that is the asymmetry of nothing and that
+      ! reads as a small g rather than as a missing one.  The model then gets
+      ! <cos theta> = 0 everywhere, and the model object says why through
+      ! gsca_complete.  This is the state of Guillet et al. (2018) Model D,
+      ! whose DustEM distribution ships no G_ file for its two large
+      ! populations; every model built from a Mie or T-matrix calculation
+      ! carries g for each scattering population and is unaffected.
+      g_complete = .true.
+      do ip = 1, size(m%pops)
+         if (allocated(m%pops(ip)%Csca) .and. .not. allocated(m%pops(ip)%gsca)) &
+            g_complete = .false.
+      end do
 
       do ip = 1, size(m%pops)
          na_p = size(m%pops(ip)%dn)
@@ -4442,9 +5000,11 @@ contains
       Cext = Cabs + Csca
       if (present(gbar)) then
          gbar = 0.0_wp
-         do jw = 1, m%NLAM
-            if (Csca(jw) > 0.0_wp) gbar(jw) = gnum(jw) / Csca(jw)
-         end do
+         if (g_complete) then
+            do jw = 1, m%NLAM
+               if (Csca(jw) > 0.0_wp) gbar(jw) = gnum(jw) / Csca(jw)
+            end do
+         end if
       end if
       if (present(albedo)) then
          albedo = 0.0_wp

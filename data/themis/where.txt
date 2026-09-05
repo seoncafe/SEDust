@@ -1,0 +1,38 @@
+THEMIS dust model (DustEM distribution)
+=======================================
+
+Source: DustEM, https://www.ias.u-psud.fr/DUSTEM/
+        Compiegne et al. (2011), A&A 525, A103 -- the code
+        Jones et al. (2013), A&A 558, A62      -- carbon grains
+        Koehler et al. (2014), A&A 565, L9     -- silicates
+        Ysard et al. (2015)                    -- densities and mass ratios
+
+Files are taken verbatim from the DustEM distribution and are NOT modified:
+
+  GRAIN_J13.DAT            DustEM data/    -- model definition (4 populations)
+  oprop/LAMBDA.DAT         DustEM oprop/   -- the 800-point wavelength grid
+  oprop/Q_<type>.DAT       DustEM oprop/   -- Qabs, Qsca per radius
+  oprop/G_<type>.DAT       DustEM oprop/   -- g = <cos theta> per radius
+  hcap/C_<type>.DAT        DustEM hcap/    -- heat capacity, erg K^-1 cm^-3
+
+The DustEM subdirectory names (oprop/, hcap/) are kept so that the paths a
+GRAIN_*.DAT implies resolve the same way they do inside DustEM itself.
+
+HD23 (Hensley & Draine 2023, ApJ 948, 55, Sec. 6.2.2 and Fig. 16) compare
+against this model through the published extinction curve EXT_J13.RES, with a
+dust-to-gas mass ratio 0.0066 (Jones et al. 2017, Table 1).  The four
+populations of GRAIN_J13.DAT sum to Mdust/MH = 7.43e-3.
+
+reference/EXT_J13.RES and reference/SED_J13.RES are the DustEM outputs
+distributed with the code, kept as the regression reference for this model.
+EXT_J13.RES is the file HD23 cite for THEMIS.
+
+NOT from DustEM, generated here:
+
+  kext_themis[_euv].dat     sed/calc_kext.x -- the size-integrated extinction
+  sedust_themis.h5          sed/calc_qtable.x -- /grid (LAMBDA.DAT) and
+                            /qtable/<population> (the Q_/G_ tables above, put
+                            on each population's own model radii), plus /kext
+                            from sed/calc_kext.x.  Regenerate with
+                              ./calc_qtable.x themis && ./calc_kext.x themis euv
+                            in that order: the first replaces the file.
