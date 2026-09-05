@@ -780,15 +780,15 @@ contains
          call h5_close_file(fid);  call h5_end();  return
       end if
       call h5_write_1d(gid, 'albedo', alb,  units='1', &
-                       long_name='scattering albedo C_sca/C_ext', single=.true.)
+                       long_name='scattering albedo C_sca/C_ext')
       call h5_write_1d(gid, 'g',      gbar, units='1', &
-                       long_name='scattering asymmetry <cos>', single=.true.)
+                       long_name='scattering asymmetry <cos>')
       call h5_write_1d(gid, 'C_ext',  Cext, units='cm^2/H', &
-                       long_name='extinction cross section per H nucleon', single=.true.)
+                       long_name='extinction cross section per H nucleon')
       call h5_write_1d(gid, 'C_abs',  Cabs, units='cm^2/H', &
-                       long_name='absorption cross section per H nucleon', single=.true.)
+                       long_name='absorption cross section per H nucleon')
       call h5_write_1d(gid, 'C_sca',  Csca, units='cm^2/H', &
-                       long_name='scattering cross section per H nucleon', single=.true.)
+                       long_name='scattering cross section per H nucleon')
       ! The dichroic term, which only the astrodust model has: the extinction
       ! difference an aligned grain presents to the two linear polarizations.
       ! It is written for that model alone rather than as a column of zeros,
@@ -796,16 +796,14 @@ contains
       ! whose polarization happens to vanish.
       if (model == 'astrodust') then
          call h5_write_1d(gid, 'C_polext', Cpolext, units='cm^2/H', &
-              long_name='polarized (dichroic) extinction cross section per H nucleon', &
-              single=.true.)
+              long_name='polarized (dichroic) extinction cross section per H nucleon')
          call h5_put_attr_d(gid, 'pol_valid_from', pol_valid_from())
       end if
       if (Mdust_H > 0.0_wp) then
          allocate(kabs(nlam_out))
          kabs = Cabs / Mdust_H
          call h5_write_1d(gid, 'K_abs', kabs, units='cm^2/g', &
-                          long_name='absorption mass opacity, C_abs/H / (M_dust/N_H)', &
-                          single=.true.)
+                          long_name='absorption mass opacity, C_abs/H / (M_dust/N_H)')
          deallocate(kabs)
          call h5_put_attr_d(gid, 'M_dust_per_H', Mdust_H)
       end if

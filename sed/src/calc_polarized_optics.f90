@@ -132,10 +132,10 @@ contains
          call h5_close_file(fid);  call h5_end();  stop 1
       end if
 
-      call h5_write_3d_jori(gid, 'Q_ext', qe, single=.true.)
-      call h5_write_3d_jori(gid, 'Q_abs', qa, single=.true.)
-      call h5_write_3d_jori(gid, 'Q_sca', qs, single=.true.)
-      if (bir) call h5_write_3d_jori(gid, 'Q_re', qr, single=.true.)
+      call h5_write_3d_jori(gid, 'Q_ext', qe)
+      call h5_write_3d_jori(gid, 'Q_abs', qa)
+      call h5_write_3d_jori(gid, 'Q_sca', qs)
+      if (bir) call h5_write_3d_jori(gid, 'Q_re', qr)
       call h5_write_1d(gid, 'a_eff', aeff, units='um', &
                        long_name='grain effective radius')
       call h5_put_attr_s(gid, 'jori_convention', &
@@ -196,20 +196,17 @@ contains
                        long_name='scattering angle of the F matrix')
       call h5_write_3d(gid, 'F_tot', scm_F_tot, units='1', &
            long_name='random-orientation scattering matrix, total population '// &
-                     '(6 elements: 11, 22, 33, 44, 12, 34)', single=.true.)
+                     '(6 elements: 11, 22, 33, 44, 12, 34)')
       call h5_write_3d(gid, 'F_ref', scm_F_ref, units='1', &
-           long_name='the same for the reference (aligned-grain) population alone', &
-           single=.true.)
+           long_name='the same for the reference (aligned-grain) population alone')
       call h5_write_1d(gid, 'C_sca_tot', scm_csca_tot, units='um^2/H', &
-                       long_name='scattering cross section per H, total population', &
-                       single=.true.)
+                       long_name='scattering cross section per H, total population')
       call h5_write_1d(gid, 'C_sca_ref', scm_csca_ref, units='um^2/H', &
-                       long_name='the same for the reference population', single=.true.)
+                       long_name='the same for the reference population')
       call h5_write_1d(gid, 'C_ext_tot', scm_cext_tot, units='um^2/H', &
-                       long_name='extinction cross section per H, total population', &
-                       single=.true.)
+                       long_name='extinction cross section per H, total population')
       call h5_write_1d(gid, 'C_ext_ref', scm_cext_ref, units='um^2/H', &
-                       long_name='the same for the reference population', single=.true.)
+                       long_name='the same for the reference population')
       call h5_put_attr_s(gid, 'F_normalization', &
            'alpha1-normalized: (1/2) INT F11 dcos(theta) = 1, i.e. INT F11 dOmega = 4 pi. '// &
            'The absolute differential matrix [um^2 sr^-1 per H] is C_sca * F / (4 pi).')
@@ -228,23 +225,17 @@ contains
       call h5_write_1d(gid, 'phi', scm_phi, units='deg', &
                        long_name='scattering azimuth')
       call h5_write_6d(gid, 'Z', scm_Z, units='um^2 sr^-1 per H', &
-           long_name='aligned phase matrix at the reference alignment eta = 1', &
-           single=.true.)
+           long_name='aligned phase matrix at the reference alignment eta = 1')
       call h5_write_2d(gid, 'C_ext_al',     scm_cext_al,     units='um^2/H', &
-                       long_name='extinction cross section per H of the aligned population', &
-                       single=.true.)
+                       long_name='extinction cross section per H of the aligned population')
       call h5_write_2d(gid, 'C_pol_al',     scm_cpol_al,     units='um^2/H', &
-                       long_name='dichroic (polarized) extinction cross section per H', &
-                       single=.true.)
+                       long_name='dichroic (polarized) extinction cross section per H')
       call h5_write_2d(gid, 'C_bir_al',     scm_cbir_al,     units='um^2/H', &
-                       long_name='birefringent (circular) extinction cross section per H', &
-                       single=.true.)
+                       long_name='birefringent (circular) extinction cross section per H')
       call h5_write_2d(gid, 'C_sca_al',     scm_csca_al,     units='um^2/H', &
-                       long_name='scattering cross section per H, by grid closure over Z', &
-                       single=.true.)
+                       long_name='scattering cross section per H, by grid closure over Z')
       call h5_write_2d(gid, 'C_sca_pol_al', scm_csca_pol_al, units='um^2/H', &
-                       long_name='polarized part of the aligned scattering cross section', &
-                       single=.true.)
+                       long_name='polarized part of the aligned scattering cross section')
       ! The alignment profile this table was INTEGRATED under.  A model whose
       ! own profile differs is using a stale table, which is the check
       ! alignment_matches_scatmat makes at run time and which these attributes
@@ -312,16 +303,14 @@ contains
    end subroutine open_polarized
 
 
-   subroutine h5_write_3d_jori(gid, name, q, single)
+   subroutine h5_write_3d_jori(gid, name, q)
       ! (n_lam, n_a, 3) in Fortran, which h5py reads as (3, n_a, n_lam) --
       ! the shape section 2 of the migration note states.
       integer(h5id_k),  intent(in) :: gid
       character(len=*), intent(in) :: name
       real(wp),         intent(in) :: q(:,:,:)
-      logical,          intent(in), optional :: single
       call h5_write_3d(gid, name, q, units='1', &
-           long_name='efficiency factor, one block per orientation (see jori_convention)', &
-           single=single)
+           long_name='efficiency factor, one block per orientation (see jori_convention)')
    end subroutine h5_write_3d_jori
 
 

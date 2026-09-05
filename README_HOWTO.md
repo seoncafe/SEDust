@@ -152,40 +152,39 @@ Outputs are plain ASCII `.dat` files written to each subdirectory's `output/`;
 
 ## What the products store, and in what precision
 
-The HDF5 products store their numbers in three precisions, chosen by what a
-dataset *is* rather than by how large it is:
+The HDF5 products hold two classes of dataset, told apart by what a dataset
+*is* rather than by how large it is:
 
 | class | datasets | file type |
 |---|---|---|
-| computed quantities | `Q_ext`, `Q_abs`, `Q_sca`, `g`, `albedo`, `C_ext`, `C_abs`, `C_sca`, `K_abs`, `Q_re`, `Z`, `F_tot`, `F_ref`, `C_polext`, `C_ext_al`, `C_pol_al`, `C_bir_al`, `C_sca_al`, `C_sca_pol_al`, `C_ext_tot`, `C_ext_ref`, `C_sca_tot`, `C_sca_ref` | 32-bit float |
-| coordinate axes | `lambda`, `a_eff`, `theta`, `theta_i`, `theta_s`, `phi`, `band_lambda` | 64-bit float |
-| codes | `regime` (0 T-matrix, 10 Rayleigh, 20 geometric optics) | 8-bit integer |
+| values | the computed quantities `Q_ext`, `Q_abs`, `Q_sca`, `g`, `albedo`, `C_ext`, `C_abs`, `C_sca`, `K_abs`, `C_polext`, `Z`, `F_tot`, `F_ref`, `C_sca_tot`, `C_sca_ref`, `C_ext_tot`, `C_ext_ref` and the aligned `C_ext_al`, `C_pol_al`, `C_bir_al`, `C_sca_al`, `C_sca_pol_al`, and the coordinate axes `lambda`, `a_eff`, `theta`, `theta_i`, `theta_s`, `phi`, `band_lambda` they are tabulated on | 64-bit float |
+| codes | `regime` (0 T-matrix, 10 Rayleigh dipole, 20 geometric optics) | 8-bit signed integer |
 
-**Why 32-bit for the quantities.** They carry their own uncertainty far above
-float32's 1.2e-7 relative resolution: the dielectric functions behind them are
-good to three figures, the 1/3-2/3 graphite orientation average is 40% wrong at
-10 um, and the radiative transfer that consumes them has Monte Carlo noise of
-1e-2 to 1e-3. Sixty-four bits on disk buy nothing and cost half the file. The
-six shipped products drop from 122 MB to 54 MB on disk, and
-`data/astrodust/sedust_astrodust.h5` from 86.8 MB to 39.2 MB.
+**Why the values are 64-bit.** A number read back out of a product is the
+number that was computed. Nothing is lost to storage, so a comparison against a
+product never has to leave room for what the file type discarded, and the
+product side of a check is not the side that has to be given slack. An axis
+makes the same requirement sharper still: it has to stay strictly ascending
+however finely it is spaced. The astrodust wavelength grid resolves each X-ray
+absorption edge with a pair of points 6.7e-7 apart in relative wavelength, and a
+grid that stopped being strictly ascending has broken this code once already.
 
-**Why the axes are the exception.** Their problem is not accuracy but
-*distinctness* and monotonicity. The astrodust wavelength grid resolves each
-X-ray absorption edge with a pair of points 6.7e-7 apart in relative wavelength
-— six to eleven representable float32 values, depending on where in its
-binade the value sits — and a grid that stopped being strictly ascending has broken
-this code once already. The axes are 0.06% of the payload, so keeping them
-lossless costs nothing measurable.
+**Why `regime` is one byte.** It takes three distinct values and nothing
+between them. Eight bytes would carry them faithfully, but would also say the
+quantity is continuous when it is not.
 
-**The reader interface is unchanged.** Only the *file* type moved. The memory
-type on both write and read is still `H5T_NATIVE_DOUBLE`, HDF5 converts, and a
-caller keeps passing and receiving `real(real64)`. Nothing in a host has to
-change.
+**The reader interface is unchanged.** Nothing on the reading side ever
+depended on any of this: the memory type on both write and read is
+`H5T_NATIVE_DOUBLE`, HDF5 converts, and a caller keeps passing and receiving
+`real(real64)`.
 
-`./test_h5_storage_policy.x` checks every product in the tree against this
-table, so an axis cannot silently become single later. Products written before
-the policy are brought onto it in place, without recomputing anything, by
-`python3 pyutil/migrate_h5_float32.py`.
+`./test_h5_storage_policy.x` checks the file type of every dataset of every
+product in the tree against these two classes, so a type cannot silently change
+later. A product written before the code policy is brought onto it in place,
+without recomputing anything, by `python3 pyutil/migrate_h5_regime_int8.py`.
+
+The six shipped products come to 122.4 MB on disk: astrodust 86.76, dl07 9.77,
+mrn 6.47, zubko 16.31, themis 2.16 and g18d 0.94 MB.
 
 ## The ionizing band
 

@@ -3,30 +3,25 @@ program test_h5_storage_policy
    !
    !   ./test_h5_storage_policy.x
    !
-   ! The policy, stated once in sed/src/sedust_h5.f90 above the writers and
-   ! enforced here, has three classes decided by what a dataset IS:
+   ! The policy has two classes, decided by what a dataset IS:
    !
-   !   quantities  Q_abs, Q_sca, Q_ext, Q_re, g, Z, F_tot, F_ref, the C_*
-   !               cross sections, K_abs, albedo -- anything a calculation
-   !               produced.  32-bit float in the file.  The physics carries
-   !               its own uncertainty far above float32's 1.2e-7 relative
-   !               resolution, so the other four bytes buy nothing.
+   !   values  Q_abs, Q_sca, Q_ext, Q_re, g, Z, F_tot, F_ref, the C_* cross
+   !           sections, K_abs, albedo -- anything a calculation produced --
+   !           and the coordinate axes lambda, a_eff, theta, theta_i, theta_s,
+   !           phi, band_lambda that those are tabulated on.  All 64-bit
+   !           float, so a number read back out of a product is the number
+   !           that was computed, and an axis stays strictly ascending however
+   !           finely it is spaced.  The astrodust wavelength grid resolves
+   !           each X-ray absorption edge with a pair of points 6.7e-7 apart
+   !           in relative wavelength, and a grid that stopped being strictly
+   !           ascending has broken this code once already.
    !
-   !   axes        lambda, a_eff, theta, theta_i, theta_s, phi, band_lambda.
-   !               64-bit float.  Their problem is DISTINCTNESS, not accuracy:
-   !               the astrodust wavelength grid resolves each X-ray absorption
-   !               edge with a pair of points 6.7e-7 apart in relative
-   !               wavelength, only six to eleven representable float32 values
-   !               apart, and a grid that stopped being strictly ascending has
-   !               broken this code once already.
+   !   codes   regime.  One signed byte: three distinct values, which eight
+   !           bytes would carry while saying they are continuous.
    !
-   !   codes       regime.  One signed byte.
-   !
-   ! This test is what keeps an axis from silently becoming single later: the
-   ! writers take `single` as an OPTIONAL argument defaulting to lossless, so a
-   ! wrong tag is a one-word edit and nothing else would notice it.  It reads
-   ! the FILE types only -- the memory type on both write and read is still
-   ! double, which is why no reader had to change.
+   ! This test is what keeps a dataset from silently changing type later.  It
+   ! reads the FILE types only; the memory type on both write and read is
+   ! double, which is why nothing on the reading side depends on this.
    use, intrinsic :: iso_fortran_env, only: int64
 #ifdef SEDUST_HDF5
    use hdf5
@@ -38,11 +33,9 @@ program test_h5_storage_policy
    character(len=*), parameter :: MODELS(6) = &
       [character(len=9) :: 'astrodust', 'dl07', 'mrn', 'zubko', 'themis', 'g18d']
 
-   ! The coordinate axes, matched on the dataset's own name because the same
-   ! axis appears under several groups.
-   character(len=*), parameter :: AXES(7) = &
-      [character(len=11) :: 'lambda', 'a_eff', 'theta', 'theta_i', 'theta_s', &
-                            'phi', 'band_lambda']
+   ! The datasets of codes, matched on the dataset's own name because the same
+   ! name appears under several groups.
+   character(len=*), parameter :: CODES(1) = [character(len=6) :: 'regime']
 
    integer :: nbad, nfile, nds
 
@@ -152,12 +145,10 @@ contains
       call h5dclose_f(did, e2)
       nds = nds + 1
 
-      if (name == 'regime') then
-         what = 'code';       want_class = H5T_INTEGER_F;  want_byte = 1
-      else if (is_axis(name)) then
-         what = 'axis';       want_class = H5T_FLOAT_F;    want_byte = 8
+      if (is_code(name)) then
+         what = 'code';    want_class = H5T_INTEGER_F;  want_byte = 1
       else
-         what = 'quantity';   want_class = H5T_FLOAT_F;    want_byte = 4
+         what = 'value';   want_class = H5T_FLOAT_F;    want_byte = 8
       end if
 
       if (tclass /= want_class .or. int(nbyte) /= want_byte) then
@@ -170,16 +161,16 @@ contains
    end subroutine check_dataset
 
 
-   logical function is_axis(name)
+   logical function is_code(name)
       character(len=*), intent(in) :: name
       integer :: k
-      is_axis = .false.
-      do k = 1, size(AXES)
-         if (name == trim(AXES(k))) then
-            is_axis = .true.;  return
+      is_code = .false.
+      do k = 1, size(CODES)
+         if (name == trim(CODES(k))) then
+            is_code = .true.;  return
          end if
       end do
-   end function is_axis
+   end function is_code
 
 
    function class_name(c) result(s)

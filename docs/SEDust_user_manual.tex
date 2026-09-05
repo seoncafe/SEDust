@@ -2940,7 +2940,7 @@ large \code{g18d} populations have \emph{no} \code{g} dataset --- see
 
 \subsection{What is stored in what precision}\label{sec:h5precision}
 
-The products store their numbers in three precisions, chosen by what a dataset
+The products hold two classes of dataset, told apart by what a dataset
 \emph{is} rather than by how large it is:
 
 \begin{center}
@@ -2948,56 +2948,50 @@ The products store their numbers in three precisions, chosen by what a dataset
 \toprule
 class & file type & datasets \\
 \midrule
-computed quantities & 32-bit float & \code{Q\_ext}, \code{Q\_abs}, \code{Q\_sca}, \code{g},
-   \code{albedo}, \code{C\_ext}, \code{C\_abs}, \code{C\_sca},
-   \code{K\_abs}, \code{C\_polext}, \code{Q\_re},
-   \code{Z}, \code{F\_tot}, \code{F\_ref}, \code{C\_sca\_tot},
-   \code{C\_sca\_ref}, \code{C\_ext\_tot}, \code{C\_ext\_ref}, and the
-   aligned \code{C\_ext\_al}, \code{C\_pol\_al}, \code{C\_bir\_al},
-   \code{C\_sca\_al}, \code{C\_sca\_pol\_al} \\[2pt]
-coordinate axes     & 64-bit float & \code{lambda}, \code{a\_eff}, \code{theta}, \code{theta\_i},
-   \code{theta\_s}, \code{phi}, \code{band\_lambda} \\[2pt]
-codes               & 8-bit integer & \code{regime} \\
+values & 64-bit float & the computed \code{Q\_ext}, \code{Q\_abs}, \code{Q\_sca},
+   \code{g}, \code{albedo}, \code{C\_ext}, \code{C\_abs}, \code{C\_sca},
+   \code{K\_abs}, \code{C\_polext}, \code{Z}, \code{F\_tot}, \code{F\_ref},
+   \code{C\_sca\_tot}, \code{C\_sca\_ref}, \code{C\_ext\_tot},
+   \code{C\_ext\_ref} and the aligned \code{C\_ext\_al}, \code{C\_pol\_al},
+   \code{C\_bir\_al}, \code{C\_sca\_al}, \code{C\_sca\_pol\_al}, and the
+   coordinate axes \code{lambda}, \code{a\_eff}, \code{theta},
+   \code{theta\_i}, \code{theta\_s}, \code{phi}, \code{band\_lambda} they are
+   tabulated on \\[2pt]
+codes  & 8-bit signed integer & \code{regime} \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\paragraph{Why 32 bits for the quantities.} They carry their own uncertainty far
-above float32's $1.2\times10^{-7}$ relative resolution: the dielectric functions
-behind them are good to three figures, the $1/3$--$2/3$ graphite orientation
-average is 40\% wrong at 10\um, and the radiative transfer that consumes them
-has Monte Carlo noise of $10^{-2}$ to $10^{-3}$. Sixty-four bits on disk buy
-nothing and cost half the file: the six shipped products fall from 122\,MB to
-54\,MB on disk, and \code{data/astrodust/sedust\_astrodust.h5} --- the one that
-carries the aligned scattering matrix --- from 86.8\,MB to 39.2\,MB, which also
-clears the 50\,MB per-file warning GitHub prints on every push.
+\paragraph{Why the values are 64 bits.} A number read back out of a product is
+the number that was computed. Nothing is lost to storage, so a comparison
+against a product never has to leave room for what the file type discarded, and
+the product side of such a check is not the side that has to be given slack. An
+axis makes the same requirement sharper still: it has to stay strictly ascending
+however finely it is spaced. The astrodust wavelength grid resolves each X-ray
+absorption edge with a pair of points $6.7\times10^{-7}$ apart in relative
+wavelength, and a grid that stopped being strictly ascending has broken this
+code once already, when a six-digit text wavelength column made
+\code{load\_kext\_table} reject the file.
 
-\paragraph{Why the axes are the exception.} Their problem is not accuracy but
-\emph{distinctness} and monotonicity. The astrodust wavelength grid resolves
-each X-ray absorption edge with a pair of points $6.7\times10^{-7}$ apart in
-relative wavelength --- six to eleven representable float32 values, depending
-on where in its binade the value sits --- and a grid that stopped being strictly
-ascending has broken this code once already,
-when a six-digit text wavelength column made \code{load\_kext\_table} reject the
-file. The axes are 0.06\% of the payload, so keeping them lossless costs
-nothing measurable.
+\paragraph{Why \code{regime} is one byte.} It takes three distinct values ---
+0 for the T-matrix, 10 for the Rayleigh dipole limit, 20 for geometric optics
+--- and nothing between them. Eight bytes would carry them faithfully, but
+would at the same time say the quantity is continuous when it is not.
 
-\paragraph{The reader interface is unchanged.} Only the \emph{file} type moved.
-The memory type on both write and read is still \code{H5T\_NATIVE\_DOUBLE},
-HDF5 converts, and a caller keeps passing and receiving \code{real(real64)}.
-Nothing in a host has to change. The writers in \code{sed/src/sedust\_h5.f90}
-take the storage class as an optional \code{single} argument that
-\textbf{defaults to 64-bit}, the lossless choice, so a call site nobody tagged
-costs disk space and never accuracy.
+\paragraph{The reader interface is unchanged.} Nothing on the reading side ever
+depended on any of this: the memory type on both write and read is
+\code{H5T\_NATIVE\_DOUBLE}, HDF5 converts, and a caller keeps passing and
+receiving \code{real(real64)}.
 
-\code{./test\_h5\_storage\_policy.x} reads the file types of every product in
-the tree and checks them against this table, which is what keeps an axis from
-silently becoming single later. A product written before the policy is brought
-onto it in place --- no recomputation, every value, chunk, filter and attribute
-carried over --- by \code{python3 pyutil/migrate\_h5\_float32.py}. Measured over
-every shipped product, the migrated values agree with the originals to
-$5.96\times10^{-8}$ relative, which is exactly one unit in the last place of a
-float32 significand.
+\code{./test\_h5\_storage\_policy.x} reads the file type of every dataset of
+every product in the tree and checks it against these two classes, which is what
+keeps a type from silently changing later. A product written before the code
+policy is brought onto it in place --- no recomputation, every value, chunk,
+filter and attribute carried over --- by
+\code{python3 pyutil/migrate\_h5\_regime\_int8.py}.
+
+On disk the six shipped products come to 122.4\,MB: astrodust 86.76, dl07 9.77, mrn 6.47, zubko 16.31,
+themis 2.16 and g18d 0.94\,MB.
 
 \subsection{THEMIS and G18D: the published tables, on the model's own
 radii}\label{sec:dustemproducts}
@@ -3020,16 +3014,12 @@ polarized optics are built from the DustEM \emph{text} tables at build time
 (Sec.~\ref{sec:g18d-pol}), whichever source the scalar optics came from.
 
 That interpolation is in radius alone, so cutting the wavelength axis and
-interpolating commute, so the two routes follow the same steps. What separates
-them is storage: the product holds its quantities as 32-bit
-(\S\ref{sec:h5precision}), while the DustEM text tables the other route reads
-carry 7 to 13 significant digits, so the two cannot agree better than float32
-resolution. \code{./test\_dustem\_product.x} builds both ways and requires
-$10^{-6}$ relative agreement in $C_{\rm ext}$, $C_{\rm abs}$, $C_{\rm sca}$ and
-$\langle\cos\theta\rangle$ --- the smallest round number safely above that
-resolution, so that anything larger is a real disagreement in the
-interpolation. Measured: at most $3.4\times10^{-8}$, over THEMIS and G18D in
-both views. $M_{\rm dust}/N_{\rm H}$ still agrees exactly.
+interpolating commute: a model built from the product and one built from the
+text tables are the same numbers to rounding, not to the seven digits a text
+product would carry. \code{./test\_dustem\_product.x} builds both ways and
+requires $10^{-10}$ relative agreement in $C_{\rm ext}$, $C_{\rm abs}$,
+$C_{\rm sca}$ and $\langle\cos\theta\rangle$; measured, the two routes agree
+exactly.
 
 \paragraph{Where a $g$ is missing, nothing is written.} The DustEM distribution
 ships no \code{G\_amCBE\_0.3333x.DAT} and no
@@ -3062,9 +3052,7 @@ PAHs.
 
 Those files are the \textbf{default}. They are stored in \code{/qtable} of the
 product as they stand --- \code{check\_build\_dust.x} reads both sides and
-requires them to agree to the resolution of the 32-bit storage
-(\S\ref{sec:h5precision}), which is all a correctly rounded copy can differ by
---- so a run against that benchmark measures the
+requires an exact match --- so a run against that benchmark measures the
 stochastic-heating solver and not an optics difference. This tree's own
 recomputation, Mie on the Draine (2003) optical constants, sits beside them
 under names suffixed \code{\_mie\_d03}, and each set has its own extinction

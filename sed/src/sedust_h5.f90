@@ -209,75 +209,37 @@ contains
 
 
    ! ---- writers -------------------------------------------------------
-   !
-   ! STORAGE PRECISION.  Three classes of dataset, decided by what the numbers
-   ! ARE rather than by how large the array is:
-   !
-   !   quantities  Q_abs, Q_sca, Q_ext, Q_re, g, Z, F_tot, F_ref, the C_* cross
-   !               sections, K_abs, albedo -- anything that came out of a
-   !               calculation.  Written  single = .true., i.e. 32 bits in the
-   !               file.  The physics carries its own uncertainty far above
-   !               float32's 1.2e-7 relative resolution: the dielectric
-   !               functions are good to three figures, the 1/3-2/3 graphite
-   !               orientation average is 40% wrong at 10 um, and the radiative
-   !               transfer that consumes these has Monte Carlo noise of 1e-2
-   !               to 1e-3.  Sixty-four bits on disk buy nothing and cost half
-   !               the file.
-   !
-   !   axes        lambda, a_eff, theta, theta_i, theta_s, phi, band_lambda.
-   !               Left at 64 bits.  Their problem is not accuracy but
-   !               DISTINCTNESS and monotonicity: the astrodust wavelength grid
-   !               resolves each X-ray absorption edge with a pair of points
-   !               6.7e-7 apart in relative wavelength, only six to eleven
-   !               representable float32 values apart, and this code has
-   !               already been broken once by exactly that, when a six-digit
-   !               text wavelength column made load_kext_table reject the file
-   !               for not being strictly ascending.  The axes are 0.06% of
-   !               the payload, so keeping them lossless costs nothing
-   !               measurable.
-   !
-   !   codes       regime -- one signed byte, through h5_write_2d_i8 below.
-   !
-   ! The MEMORY type stays H5T_NATIVE_DOUBLE on both write and read; only the
-   ! FILE type moves.  HDF5 converts, so no reader changes and a caller keeps
-   ! passing and receiving real(real64).
-   !
-   ! `single` DEFAULTS TO .false., the lossless storage, on purpose: a call
-   ! site someone forgets to tag then costs disk space, never accuracy.
-   subroutine h5_write_1d(loc, name, a, units, long_name, single)
+   subroutine h5_write_1d(loc, name, a, units, long_name)
       integer(h5id_k),   intent(in) :: loc
       character(len=*), intent(in) :: name
       real(real64),     intent(in) :: a(:)
       character(len=*), intent(in), optional :: units, long_name
-      logical,          intent(in), optional :: single
       integer(hsize_t) :: d(1)
       d = [int(size(a), hsize_t)]
-      call write_real(loc, name, d, reshape(a, [size(a)]), units, long_name, single=single)
+      call write_real(loc, name, d, reshape(a, [size(a)]), units, long_name)
    end subroutine h5_write_1d
 
-   subroutine h5_write_2d(loc, name, a, units, long_name, single)
+   subroutine h5_write_2d(loc, name, a, units, long_name)
       integer(h5id_k),   intent(in) :: loc
       character(len=*), intent(in) :: name
       real(real64),     intent(in) :: a(:,:)
       character(len=*), intent(in), optional :: units, long_name
-      logical,          intent(in), optional :: single
       integer(hsize_t) :: d(2)
       d = [int(size(a,1), hsize_t), int(size(a,2), hsize_t)]
-      call write_real(loc, name, d, reshape(a, [size(a)]), units, long_name, single=single)
+      call write_real(loc, name, d, reshape(a, [size(a)]), units, long_name)
    end subroutine h5_write_2d
 
-   subroutine h5_write_3d(loc, name, a, units, long_name, single)
+   subroutine h5_write_3d(loc, name, a, units, long_name)
       integer(h5id_k),   intent(in) :: loc
       character(len=*), intent(in) :: name
       real(real64),     intent(in) :: a(:,:,:)
       character(len=*), intent(in), optional :: units, long_name
-      logical,          intent(in), optional :: single
       integer(hsize_t) :: d(3)
       d = [int(size(a,1), hsize_t), int(size(a,2), hsize_t), int(size(a,3), hsize_t)]
-      call write_real(loc, name, d, reshape(a, [size(a)]), units, long_name, single=single)
+      call write_real(loc, name, d, reshape(a, [size(a)]), units, long_name)
    end subroutine h5_write_3d
 
-   subroutine h5_write_6d(loc, name, a, units, long_name, single)
+   subroutine h5_write_6d(loc, name, a, units, long_name)
       ! The aligned phase matrix, (n_ti, n_ts, n_phi, 4, 4, n_band).  Its chunk
       ! is ONE band: a host reads a band at a time, and the whole array as a
       ! single chunk would be tens of megabytes through the chunk cache for
@@ -286,18 +248,16 @@ contains
       character(len=*), intent(in) :: name
       real(real64),     intent(in) :: a(:,:,:,:,:,:)
       character(len=*), intent(in), optional :: units, long_name
-      logical,          intent(in), optional :: single
       integer(hsize_t) :: d(6), ch(6)
       integer :: k
       do k = 1, 6
          d(k) = int(size(a,k), hsize_t)
       end do
       ch = d;  ch(6) = 1_hsize_t
-      call write_real(loc, name, d, reshape(a, [size(a)]), units, long_name, &
-                      chunk=ch, single=single)
+      call write_real(loc, name, d, reshape(a, [size(a)]), units, long_name, chunk=ch)
    end subroutine h5_write_6d
 
-   subroutine write_real(loc, name, d, flat, units, long_name, chunk, single)
+   subroutine write_real(loc, name, d, flat, units, long_name, chunk)
       ! One writer for every rank: chunked and deflated, with the units and a
       ! one-line description attached to the dataset rather than to a README
       ! that can drift away from it.
@@ -309,17 +269,9 @@ contains
       ! Chunk shape, when the default -- blocks along the first (wavelength)
       ! axis and the whole of the others -- is the wrong one for this array.
       integer(hsize_t), intent(in), optional :: chunk(:)
-      ! Store this dataset as 32-bit in the FILE.  Absent means 64-bit: the
-      ! lossless default, so that an untagged call site costs space and not
-      ! accuracy.  See the storage-precision note above h5_write_1d for which
-      ! datasets are which.
-      logical,          intent(in), optional :: single
-      integer(h5id_k)   :: sid, did, dcpl, file_type
+      integer(h5id_k)   :: sid, did, dcpl
       integer(hsize_t) :: ch(size(d))
       integer :: e, r
-      logical :: f32
-      f32 = .false.
-      if (present(single)) f32 = single
       r = size(d)
       call h5screate_simple_f(r, d, sid, e)
       ch = d
@@ -329,11 +281,7 @@ contains
       call h5pset_chunk_f(dcpl, r, ch, e)
       call h5pset_shuffle_f(dcpl, e)
       call h5pset_deflate_f(dcpl, GZIP_LEVEL, e)
-      ! Only the FILE type moves; the MEMORY type stays double and HDF5
-      ! converts, so nothing on the reading side has to know.
-      file_type = H5T_NATIVE_DOUBLE
-      if (f32) file_type = H5T_IEEE_F32LE
-      call h5dcreate_f(loc, trim(name), file_type, sid, did, e, dcpl_id=dcpl)
+      call h5dcreate_f(loc, trim(name), H5T_NATIVE_DOUBLE, sid, did, e, dcpl_id=dcpl)
       call h5dwrite_f(did, H5T_NATIVE_DOUBLE, flat, d, e)
       if (present(units))     call h5_put_attr_s(did, 'units', units)
       if (present(long_name)) call h5_put_attr_s(did, 'long_name', long_name)
@@ -651,29 +599,25 @@ contains
       integer(h5id_k), intent(in) :: loc;  character(len=*), intent(in) :: name
       h5_has = .false.
    end function
-   subroutine h5_write_1d(loc, name, a, units, long_name, single)
+   subroutine h5_write_1d(loc, name, a, units, long_name)
       integer(h5id_k), intent(in) :: loc;  character(len=*), intent(in) :: name
       real(real64), intent(in) :: a(:)
       character(len=*), intent(in), optional :: units, long_name
-      logical, intent(in), optional :: single
    end subroutine
-   subroutine h5_write_2d(loc, name, a, units, long_name, single)
+   subroutine h5_write_2d(loc, name, a, units, long_name)
       integer(h5id_k), intent(in) :: loc;  character(len=*), intent(in) :: name
       real(real64), intent(in) :: a(:,:)
       character(len=*), intent(in), optional :: units, long_name
-      logical, intent(in), optional :: single
    end subroutine
-   subroutine h5_write_3d(loc, name, a, units, long_name, single)
+   subroutine h5_write_3d(loc, name, a, units, long_name)
       integer(h5id_k), intent(in) :: loc;  character(len=*), intent(in) :: name
       real(real64), intent(in) :: a(:,:,:)
       character(len=*), intent(in), optional :: units, long_name
-      logical, intent(in), optional :: single
    end subroutine
-   subroutine h5_write_6d(loc, name, a, units, long_name, single)
+   subroutine h5_write_6d(loc, name, a, units, long_name)
       integer(h5id_k), intent(in) :: loc;  character(len=*), intent(in) :: name
       real(real64), intent(in) :: a(:,:,:,:,:,:)
       character(len=*), intent(in), optional :: units, long_name
-      logical, intent(in), optional :: single
    end subroutine
    subroutine h5_dims(loc, name, d, ok)
       integer(h5id_k), intent(in) :: loc;  character(len=*), intent(in) :: name

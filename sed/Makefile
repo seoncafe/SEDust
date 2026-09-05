@@ -16,7 +16,7 @@
 #   make test_dustem_polarized_extinction.x
 #                            g18d vs DustEM's own EXT_POL_G17_ModelD.RES
 #   make test_dustem_product.x   themis/g18d: the HDF5 product vs the text tables
-#   make test_h5_storage_policy.x    axes 64-bit, codes 8-bit, quantities 32-bit
+#   make test_h5_storage_policy.x    values 64-bit, regime codes 8-bit
 #   make use_dustlib_scatmat.x   rt_example aligned-scattering consumer (vs libsedust.a)
 #   make clean / cleanall
 #
@@ -340,9 +340,9 @@ test_size_distribution.x: src/size_dist.f90 src/test_size_distribution.f90
 	$(FC) $(FFLAGS) $^ -o $@
 	@echo 'Built: ./test_size_distribution.x'
 
-# The storage-precision policy of the HDF5 products themselves: every
-# coordinate axis 64-bit, every regime code 8-bit integer, every computed
-# quantity 32-bit.  It reads the FILE types of every product in the tree.
+# The storage-precision policy of the HDF5 products themselves: every value --
+# computed quantity or coordinate axis -- 64-bit float, every regime code
+# 8-bit integer.  It reads the FILE types of every product in the tree.
 test_h5_storage_policy.x: src/sedust_h5.f90 src/test_h5_storage_policy.f90
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./test_h5_storage_policy.x'

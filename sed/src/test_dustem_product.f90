@@ -10,15 +10,9 @@ program test_dustem_product
    ! in ln a between its amin and amax -- which is precisely the step
    ! build_dustem performs at build time when it reads the text tables itself,
    ! by the same routine.  That interpolation is in radius alone, so cutting
-   ! the wavelength axis and interpolating commute, so the two routes follow
-   ! the same steps.  What separates them is storage: the product stores its
-   ! computed quantities as 32-bit (see the storage-precision note in
-   ! sedust_h5.f90), whose relative resolution is 1.2e-7, while the DustEM text
-   ! tables the other route reads carry 7 to 13 significant digits.  The two
-   ! cannot agree better than float32 resolution, so the tolerance here is 1e-6
-   ! relative -- the smallest round number safely above it -- for C_ext, C_abs,
-   ! C_sca and <cos theta>.  Anything larger than that IS a disagreement in the
-   ! interpolation, which is what this checks.
+   ! the wavelength axis and interpolating commute, and the two routes must
+   ! agree to rounding rather than to a written precision.  The tolerance here
+   ! is 1e-10 relative for C_ext, C_abs, C_sca and <cos theta>.
    !
    ! Whether the model HAS an asymmetry parameter is part of the model, so it
    ! is compared too: the G18D product carries no g dataset for the two
@@ -43,7 +37,7 @@ program test_dustem_product
    character(len=*), parameter :: H5_G1   = '../data/g18d/sedust_g18d.h5'
    integer,  parameter :: NT_IN = 100
    real(wp), parameter :: T_LO = 1.0_wp, T_HI = 3000.0_wp
-   real(wp), parameter :: TOL = 1.0e-6_wp
+   real(wp), parameter :: TOL = 1.0e-10_wp
 
    character(len=32) :: which
    integer :: narg, nbad
