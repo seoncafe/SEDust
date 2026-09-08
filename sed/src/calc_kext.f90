@@ -133,7 +133,9 @@ program calc_kext
    character(len=16)  :: zubko_optics
    character(len=256) :: opt, fout, desc, ddir, arg
    ! Which populations of a DustEM-defined model carry no G_<gtype>.DAT, and
-   ! hence no scattering asymmetry.  Blank for every other model.
+   ! hence no scattering asymmetry.  Blank for every model shipped here,
+   ! G18 Model D included: SEDust computes the two G_ files its DustEM
+   ! directory does not carry.
    character(len=256) :: gmiss
 
    call use_tmatrix_euv_band_optics()
@@ -373,7 +375,7 @@ program calc_kext
       end if
       if (.not. m%gsca_complete) then
          write(*,'(a)') ' *** WARNING: no scattering asymmetry for this model.'
-         write(*,'(a,a)') ' *** The DustEM distribution ships no G_ file for: ', trim(gmiss)
+         write(*,'(a,a)') ' *** No G_ file was found for: ', trim(gmiss)
          write(*,'(a)') ' *** The <cos> column is written as 0 throughout;' // &
                         ' it is NOT a measurement.'
       end if
@@ -1116,17 +1118,32 @@ contains
       call add_note('#   already averaged over orientation, so they enter this scalar model')
       call add_note('#   exactly as a sphere table does.')
       call header_dustem_common(F_GRAIN_G18D, D_G18D)
+      call add_note('#')
+      call add_note('# WHERE THE <cos> COLUMN COMES FROM.  The DustEM distribution ships no')
+      call add_note('#   G_ file for the two spheroid populations: Guillet et al. computed no')
+      call add_note('#   asymmetry parameter, and DustEM reads a G_ file only under its `pdr`')
+      call add_note('#   run keyword, which this model does not set.  SEDust computes those')
+      call add_note('#   two tables itself, with')
+      call add_note('#     tmatrix/driver/spheroid_asymmetry_table.f90')
+      call add_note('#   from the same materials, shapes, size grids and wavelength grid the')
+      call add_note('#   distributed Q_ tables are built on: the random-orientation T-matrix')
+      call add_note('#   where it converges, g = 0 below x = 0.1 where the Rayleigh dipole')
+      call add_note('#   limit makes it exact, and the volume-equivalent sphere by Mie above')
+      call add_note('#   the T-matrix boundary.  Each G file''s header carries the census of')
+      call add_note('#   which regime produced each entry and the measured bound on the')
+      call add_note('#   sphere stand-in; data/g18d/where.txt records the validation.')
+      call add_note('#   Q_abs and Q_sca remain the distributed tables, unchanged.')
       if (.not. m%gsca_complete) then
          call add_note('#')
          call add_note('# NO SCATTERING ASYMMETRY FOR THIS MODEL.  The <cos> column is 0 at')
-         call add_note('#   every wavelength, and that 0 is not a measurement: the DustEM')
-         call add_note('#   distribution ships no G_<gtype>.DAT for')
+         call add_note('#   every wavelength, and that 0 is not a measurement: no G_<gtype>.DAT')
+         call add_note('#   was found for')
          call add_note('#     ' // trim(gmiss))
-         call add_note('#   which carry 90% of the dust mass, so <cos theta> is not defined')
-         call add_note('#   for this model.  Averaging the one population that does have a g')
-         call add_note('#   over the scattering of all of them would give a small number that')
-         call add_note('#   is the asymmetry of nothing, so it is not written.  C_ext, C_abs,')
-         call add_note('#   C_sca and the albedo are unaffected.')
+         call add_note('#   so <cos theta> is not defined for this model.  Averaging the')
+         call add_note('#   populations that do have a g over the scattering of all of them')
+         call add_note('#   would give a small number that is the asymmetry of nothing, so it')
+         call add_note('#   is not written.  C_ext, C_abs, C_sca and the albedo are')
+         call add_note('#   unaffected.')
       end if
       if (euv) then
          call header_wavelength_range('The range is the DustEM wavelength grid itself, ' // &

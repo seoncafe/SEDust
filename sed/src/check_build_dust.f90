@@ -24,6 +24,12 @@ program check_build_dust
    ! radius alone, so cutting the wavelength axis and interpolating commute and
    ! the two routes must agree to rounding, not to seven digits.  They are
    ! required to agree to 1e-10 relative.
+   !
+   ! Two things beyond the numbers are checked as well.  Whether the model HAS
+   ! a scattering asymmetry is part of the model, so it is compared population
+   ! by population (compare_gsca), and dust_extinction's answer when it is
+   ! asked for an asymmetry a model does not have is checked on its own
+   ! (check_undefined_asymmetry, run with the astrodust case).
    use constants,         only: wp
    use sed_astrodust_mod, only: dust_model_t, build_dust, build_astrodust, build_dl07, &
                                 build_mrn, build_zubko, build_dustem, &
@@ -56,15 +62,19 @@ program check_build_dust
    character(len=*), parameter :: K_ZU   = &
         '../data/zubko/kext_zubko_BARE_GR_S_mie_d03_euv.dat'
    ! The two DustEM-defined models: the GRAIN_*.DAT that IS each model, the
-   ! directory its optics and calorimetry hang under, and the extinction curve
-   ! the TEXT side of the comparison is given, so that the two sides are not
-   ! both served the product's own /kext.
+   ! directory its optics and calorimetry hang under, the extinction curve the
+   ! TEXT side of the comparison is given, so that the two sides are not both
+   ! served the product's own /kext, and the product itself, which the product
+   ! route is asked for by name where build_dust cannot report it (see
+   ! check_dustem).
    character(len=*), parameter :: F_GR_TH = '../data/themis/GRAIN_J13.DAT'
    character(len=*), parameter :: D_TH    = '../data/themis/'
    character(len=*), parameter :: K_TH    = '../data/themis/kext_themis_euv.dat'
+   character(len=*), parameter :: H5_TH   = '../data/themis/sedust_themis.h5'
    character(len=*), parameter :: F_GR_G1 = '../data/g18d/GRAIN_G17_ModelD.DAT'
    character(len=*), parameter :: D_G1    = '../data/g18d/'
    character(len=*), parameter :: K_G1    = '../data/g18d/kext_g18d_euv.dat'
+   character(len=*), parameter :: H5_G1   = '../data/g18d/sedust_g18d.h5'
    integer,  parameter :: NT_IN = 100
    real(wp), parameter :: T_LO = 1.0_wp, T_HI = 3000.0_wp
    ! Seven written digits in the text tables: a value can be off by 5e-7 of
@@ -89,12 +99,12 @@ program check_build_dust
    case ('dl07');       call check_dl07()
    case ('mrn');        call check_mrn()
    case ('zubko');      call check_zubko()
-   case ('themis');     call check_dustem('themis', F_GR_TH, D_TH, K_TH)
-   case ('g18d');       call check_dustem('g18d',   F_GR_G1, D_G1, K_G1)
+   case ('themis');     call check_dustem('themis', F_GR_TH, D_TH, K_TH, H5_TH)
+   case ('g18d');       call check_dustem('g18d',   F_GR_G1, D_G1, K_G1, H5_G1)
    case ('all');        call check_astrodust();  call check_dl07()
                         call check_mrn();        call check_zubko()
-                        call check_dustem('themis', F_GR_TH, D_TH, K_TH)
-                        call check_dustem('g18d',   F_GR_G1, D_G1, K_G1)
+                        call check_dustem('themis', F_GR_TH, D_TH, K_TH, H5_TH)
+                        call check_dustem('g18d',   F_GR_G1, D_G1, K_G1, H5_G1)
    case default
       write(*,'(a)') ' usage: ./check_build_dust.x [astrodust | dl07 | mrn |' // &
                      ' zubko | themis | g18d | all]'
@@ -125,6 +135,10 @@ contains
       call build_astrodust(mt, F_QT_E, NT_IN, T_LO, T_HI, status=st, kext_path=K_AD)
       call fail_if(st /= 0, 'astrodust wide: build_astrodust status', st)
       call compare('astrodust, EUV', mh, mt)
+
+      ! What dust_extinction does when it is asked for an asymmetry a model
+      ! does not have.  It needs a model that HAS one, and this is one.
+      call check_undefined_asymmetry(mh)
    end subroutine check_astrodust
 
    subroutine check_dl07()
@@ -232,7 +246,7 @@ contains
    end subroutine check_zubko_zda
 
 
-   subroutine check_dustem(model, grain, mdir, kext)
+   subroutine check_dustem(model, grain, mdir, kext, h5)
       ! A model defined by DustEM input files, both ways round: build_dust on
       ! the product, and build_dustem on the distribution's own text tables.
       ! The product holds those tables interpolated onto the model radii, which
@@ -244,40 +258,55 @@ contains
       ! the two populations the DustEM distribution ships no G_ file for, and a
       ! product route that filled a zero in there instead would report an
       ! asymmetry this model does not have.
-      character(len=*), intent(in) :: model, grain, mdir, kext
-      type(dust_model_t) :: mh, mt
+      !
+      ! build_dustem also names those populations, in gsca_missing, and the two
+      ! routes must name the same ones.  build_dust reaches the product through
+      ! build_dustem with qtable_path but does not pass that string back, so
+      ! the product route is asked for it here by the same call build_dust
+      ! makes.
+      character(len=*), intent(in) :: model, grain, mdir, kext, h5
+      type(dust_model_t) :: mh, mt, mq
       integer :: st
-      character(len=256) :: gmiss
+      character(len=256) :: gm_h, gm_t
 
       call build_dust(mh, model, DDIR, NT_IN, T_LO, T_HI, .false., status=st)
       call fail_if(st /= 0, model//' narrow: build_dust status', st)
       call build_dustem(mt, grain, mdir, NT_IN, T_LO, T_HI, status=st, &
-                        kext_path=kext, include_euv=.false., gsca_missing=gmiss)
+                        kext_path=kext, include_euv=.false., gsca_missing=gm_t)
       call fail_if(st /= 0, model//' narrow: build_dustem status', st)
+      call build_dustem(mq, grain, mdir, NT_IN, T_LO, T_HI, status=st, &
+                        kext_path=kext, include_euv=.false., gsca_missing=gm_h, &
+                        qtable_path=h5)
+      call fail_if(st /= 0, model//' narrow: build_dustem on the product status', st)
       call compare(model//', non-EUV', mh, mt, TOL_STORED)
-      call compare_gsca(model//', non-EUV', mh, mt, gmiss)
+      call compare_gsca(model//', non-EUV', mh, mt, gm_h, gm_t)
 
       call build_dust(mh, model, DDIR, NT_IN, T_LO, T_HI, .true., status=st)
       call fail_if(st /= 0, model//' wide: build_dust status', st)
       call build_dustem(mt, grain, mdir, NT_IN, T_LO, T_HI, status=st, &
-                        kext_path=kext, include_euv=.true., gsca_missing=gmiss)
+                        kext_path=kext, include_euv=.true., gsca_missing=gm_t)
       call fail_if(st /= 0, model//' wide: build_dustem status', st)
+      call build_dustem(mq, grain, mdir, NT_IN, T_LO, T_HI, status=st, &
+                        kext_path=kext, include_euv=.true., gsca_missing=gm_h, &
+                        qtable_path=h5)
+      call fail_if(st /= 0, model//' wide: build_dustem on the product status', st)
       call compare(model//', EUV', mh, mt, TOL_STORED)
-      call compare_gsca(model//', EUV', mh, mt, gmiss)
+      call compare_gsca(model//', EUV', mh, mt, gm_h, gm_t)
    end subroutine check_dustem
 
 
-   subroutine compare_gsca(label, mh, mt, gmiss)
+   subroutine compare_gsca(label, mh, mt, gm_h, gm_t)
       ! Does the product route reach the same "has an asymmetry parameter"
       ! state as the text route, population by population?
-      character(len=*),   intent(in) :: label, gmiss
+      character(len=*),   intent(in) :: label, gm_h, gm_t
       type(dust_model_t), intent(in) :: mh, mt
       integer :: ip
       logical :: bad
       write(*,'(a,a,a,l1,a,l1)') '   gsca_complete ', label, ':  HDF5 ', &
            mh%gsca_complete, '  text ', mt%gsca_complete
-      if (len_trim(gmiss) > 0) write(*,'(a,a)') '     no g published for: ', trim(gmiss)
+      if (len_trim(gm_t) > 0) write(*,'(a,a)') '     no g published for: ', trim(gm_t)
       call fail_if(mh%gsca_complete .neqv. mt%gsca_complete, 'gsca_complete', 0)
+      call fail_if(trim(gm_h) /= trim(gm_t), 'which populations report no g', 0)
       bad = size(mh%pops) /= size(mt%pops)
       if (.not. bad) then
          do ip = 1, size(mh%pops)
@@ -286,6 +315,53 @@ contains
       end if
       call fail_if(bad, 'which populations carry g', 0)
    end subroutine compare_gsca
+
+
+   subroutine check_undefined_asymmetry(m)
+      ! dust_extinction status 4: gbar was asked for from a model that carries
+      ! no scattering asymmetry.  It is a WARNING and not an error -- C_ext,
+      ! C_abs, C_sca and the albedo are filled and valid -- and the gbar that
+      ! comes back is 0 because the asymmetry is UNDEFINED, not because the
+      ! scattering is isotropic.  A host that could not tell those two zeros
+      ! apart would scatter isotropically through a model whose albedo reaches
+      ! 0.38 and never know.
+      !
+      ! m must be a model that HAS an asymmetry, so that the state under test
+      ! is reached by flipping one flag and nothing else: the second call is a
+      ! COPY of m with gsca_complete forced .false., which leaves m itself
+      ! untouched.  The three cross sections must then come back bit for bit
+      ! unchanged, and only the asymmetry may differ.
+      type(dust_model_t), intent(in) :: m
+      type(dust_model_t) :: m_nog
+      real(wp), allocatable :: e1(:), a1(:), s1(:), g1(:)
+      real(wp), allocatable :: e2(:), a2(:), s2(:), g2(:)
+      integer :: st1, st2, n
+
+      write(*,'(a)') ''
+      write(*,'(a)') ' === dust_extinction: gbar of a model with no asymmetry'
+      n = m%NLAM
+      allocate(e1(n), a1(n), s1(n), g1(n), e2(n), a2(n), s2(n), g2(n))
+
+      call dust_extinction(m, e1, a1, s1, gbar=g1, status=st1)
+      write(*,'(a,l1,a,i0,a,es9.2)') '   as built:  gsca_complete ', m%gsca_complete, &
+           ',  status ', st1, ',  max|gbar| ', maxval(abs(g1))
+      call fail_if(.not. m%gsca_complete, 'gsca_complete of the model under test', 0)
+      call fail_if(st1 /= 0, 'status of a model that HAS an asymmetry', st1)
+
+      m_nog = m
+      m_nog%gsca_complete = .false.
+      call dust_extinction(m_nog, e2, a2, s2, gbar=g2, status=st2)
+      write(*,'(a,i0,a,es9.2)') '   gsca_complete forced .false.:  status ', st2, &
+           ',  max|gbar| ', maxval(abs(g2))
+      write(*,'(a,es9.2)') '   max|dC| between the two calls        ', &
+           max(maxval(abs(e2 - e1)), maxval(abs(a2 - a1)), maxval(abs(s2 - s1)))
+      call fail_if(st2 /= 4, 'status 4 for a model with no asymmetry', st2)
+      call fail_if(any(g2 /= 0.0_wp), 'gbar zero for a model with no asymmetry', 0)
+      call fail_if(any(e2 /= e1) .or. any(a2 /= a1) .or. any(s2 /= s1), &
+                   'C_ext/C_abs/C_sca unchanged by the asymmetry flag', 0)
+
+      deallocate(e1, a1, s1, g1, e2, a2, s2, g2)
+   end subroutine check_undefined_asymmetry
 
 
    subroutine compare(label, mh, mt, tol_in)
@@ -331,10 +407,21 @@ contains
       allocate(xe(n), xa(n), xs(n), xg(n), ye(n), ya(n), ys(n), yg(n))
       call dust_extinction(mh, xe, xa, xs, gbar=xg, status=s1)
       call dust_extinction(mt, ye, ya, ys, gbar=yg, status=s2)
-      if (s1 /= 0 .or. s2 /= 0) then
-         write(*,'(a,i0,a,i0)') '   *** dust_extinction status: HDF5 ', s1, ', text ', s2
+      ! Status 4 is a WARNING and not a failure: the model carries no
+      ! scattering asymmetry, so the gbar it returned is the zero that means
+      ! undefined, and the <cos> comparison below then compares two zeros.
+      ! This is the state of g18d.  Both routes must reach the same state,
+      ! whichever it is; check_undefined_asymmetry tests the warning itself.
+      if (s1 /= s2) then
+         write(*,'(a,i0,a,i0)') '   *** dust_extinction status differs: HDF5 ', s1, &
+              ', text ', s2
+         nbad = nbad + 1
+      else if (s1 /= 0 .and. s1 /= 4) then
+         write(*,'(a,i0)') '   *** dust_extinction status ', s1
          nbad = nbad + 1
       else
+         if (s1 == 4) write(*,'(a)') &
+              '   dust_extinction status 4 both ways: this model has no asymmetry'
          call report('kext C_ext', xe, ye, tl)
          call report('kext C_abs', xa, ya, tl)
          call report('kext <cos>', xg, yg, tl)

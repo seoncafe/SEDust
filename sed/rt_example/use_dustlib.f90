@@ -150,7 +150,15 @@ program use_dustlib
    ! The curve comes from the table build_astrodust loaded above; status 2 would
    ! mean no table was found, and status 3 that m%lam runs outside it.
    call dust_extinction(m, Cext, Cabs, Csca, gbar=gbar, albedo=albedo, status=st)
-   if (st /= 0) then
+   ! Status 4 is the one code that is a WARNING rather than a failure: the
+   ! model carries no asymmetry parameter, so gbar came back 0 and is not a
+   ! measurement, while the cross sections and the albedo are valid.  A host
+   ! that treats every non-zero status as fatal would refuse such a model; a
+   ! host that treats 4 as success would scatter isotropically and never know.
+   ! Every model shipped here returns 0.
+   if (st == 4) then
+      print '(a)', ' dust_extinction: this model has no <cos>; gbar is 0 by convention'
+   else if (st /= 0) then
       print '(a,i0)', ' dust_extinction failed, status = ', st
       stop 1
    end if

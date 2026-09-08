@@ -267,17 +267,19 @@ module dust_lib
    !   zubko      Q_sca and <cos> columns of the model's own ZDA optics tables
    !   themis     Q_sca from the DustEM oprop/Q_<gtype>.DAT tables and <cos>
    !              from oprop/G_<gtype>.DAT, on each population's own radii
-   !   g18d       the same Q_sca, but the DustEM distribution ships no G_ file
-   !              for its two large populations, so this model has NO <cos>:
-   !              m%gsca_complete is .false. and the size integral returns
-   !              <cos> = 0 for the whole model rather than the average of the
-   !              one population that does carry it
+   !   g18d       the same Q_sca; <cos> from oprop/G_<gtype>.DAT for its PAHs
+   !              and from the two tables SEDust computes for its spheroid
+   !              populations, which the DustEM distribution has none for
+   !              (tmatrix/driver/spheroid_asymmetry_table.f90)
    !   from_files same, for whatever tables the descriptor names
    ! A population that genuinely does not scatter leaves its optics unallocated
    ! and contributes zero to the size integral. dust_extinction's status is 0
    ! on success, 1 if an output array is not of size m%NLAM, 2 if no table was
-   ! loaded, and 3 if m%lam reaches outside the table; when status is omitted
-   ! such a call stops the run. dust_emission adds status 3 = m is not the most
+   ! loaded, 3 if m%lam reaches outside the table, and 4 -- a warning, not a
+   ! failure -- if gbar was asked for by a model that carries no asymmetry
+   ! parameter, in which case gbar comes back 0 and the other outputs are
+   ! valid; when status is omitted a failure stops the run and the warning
+   ! prints one line. dust_emission adds status 3 = m is not the most
    ! recently built model.  size_integrated_extinction reads no table and is not
    ! restricted to the last-built model, so it uses status 1 alone.
    !

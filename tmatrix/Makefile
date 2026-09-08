@@ -3,6 +3,11 @@
 # `libtmatrix.a` owns no SEDust dependency and no size-parameter regime
 # selection.  `driver/spheroid_optics.f90` owns the regime selection; the
 # standalone driver adds only the astrodust dielectric table and grid.
+#
+# Executables:
+#   run_tmatrix.x               random-orientation astrodust Q table
+#   spheroid_asymmetry_table.x  the G18 Model D scattering-asymmetry tables
+#   compare_mie_spheres.x       published-sphere checks behind those tables
 
 FC = gfortran
 BUILD ?= release
@@ -142,6 +147,18 @@ DRIVER_FFLAGS = $(MODERN_FFLAGS) $(RECURSIVE_FLAG)
 
 read_index.o: driver/read_index.f90
 	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+effective_medium.o: driver/effective_medium.f90
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+dustem_optical_tables.o: driver/dustem_optical_tables.f90
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+# Readers shared with the SED solver.  ../sed/src/mie.f90 takes its working
+# precision from ../sed/src/constants.f90; the two are compiled here only for
+# the drivers below that need a Mie sphere, and nothing else in this directory
+# reads them.
+constants.o: ../sed/src/constants.f90
+	$(FC) $(DRIVER_FFLAGS) -c -o $@ $<
+mie.o: ../sed/src/mie.f90 constants.o
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
 asymptotic_optics.o: driver/asymptotic_optics.f90 tmatrix_kinds.o
 	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
 spheroid_optics.o: driver/spheroid_optics.f90 tmatrix_kinds.o tmatrix_status.o tmatrix_api.o asymptotic_optics.o
@@ -174,6 +191,39 @@ lyman_cut: $(Q_EUV)
 	            print; next } \
 	     (NF >= 8 && $$1+0 >= 0.0912) { print }' $(Q_EUV) > $(Q_LYMAN); \
 	echo "Wrote $(Q_LYMAN)  ($$n wavelengths, 0.0912 um and longward)"
+
+
+# Random-orientation scattering asymmetry of the two G18 Model D spheroid
+# populations, in the DustEM G_<gtype>.DAT layout.  The DustEM distribution
+# ships no G_ file for either of them, so without this the model reaches a
+# radiative-transfer host with g = 0 and an albedo of 0.38.  The size loop is
+# parallelized with OpenMP; each thread owns one T-matrix workspace (~37 MB).
+OBJ_ASYMMETRY = read_index.o asymptotic_optics.o spheroid_optics.o \
+                effective_medium.o dustem_optical_tables.o constants.o mie.o
+spheroid_asymmetry_table.o: driver/spheroid_asymmetry_table.f90 tmatrix_api.o \
+                            tmatrix_status.o spheroid_optics.o asymptotic_optics.o \
+                            read_index.o effective_medium.o dustem_optical_tables.o \
+                            constants.o mie.o
+	$(FC) $(DRIVER_FFLAGS) $(OMPFLAGS) -I. -c -o $@ $<
+spheroid_asymmetry_table.x: libtmatrix.a $(OBJ_ASYMMETRY) spheroid_asymmetry_table.o
+	$(FC) $(OMPFLAGS) $(OBJ_ASYMMETRY) spheroid_asymmetry_table.o -L. -ltmatrix $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./spheroid_asymmetry_table.x'
+	@echo 'Smoke test:  ./spheroid_asymmetry_table.x amc test'
+	@echo 'Full run:    ./spheroid_asymmetry_table.x'
+
+# The two published-sphere checks the asymmetry tables rest on: this tree's
+# Mie with the BE a-C index against DustEM's own amCBE sphere tables, and with
+# the WD01 astrosilicate index against Draine's suvSil_81.
+compare_mie_spheres.o: driver/compare_mie_spheres.f90 read_index.o \
+                       dustem_optical_tables.o constants.o mie.o
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+compare_mie_spheres.x: read_index.o dustem_optical_tables.o constants.o mie.o \
+                       compare_mie_spheres.o
+	$(FC) read_index.o dustem_optical_tables.o constants.o mie.o \
+	      compare_mie_spheres.o $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./compare_mie_spheres.x'
 
 evaluate_one.x: libtmatrix.a examples/evaluate_one.f90
 	$(FC) $(MODERN_FFLAGS) -I. examples/evaluate_one.f90 -L. -ltmatrix $(LDFLAGS) -o $@
@@ -268,7 +318,7 @@ clean:
 	rm -f *.o *.mod *.a *.x
 
 cleanall: clean
-	rm -f run_tmatrix.x evaluate_one.x test_api_regression.x test_api_status.x test_full_direct_regression.x test_parallel_api.x test_parallel_full_direct.x test_parallel_scattering_matrix.x test_parallel_spheroid_optics.x
+	rm -f run_tmatrix.x spheroid_asymmetry_table.x compare_mie_spheres.x evaluate_one.x test_api_regression.x test_api_status.x test_full_direct_regression.x test_parallel_api.x test_parallel_full_direct.x test_parallel_scattering_matrix.x test_parallel_spheroid_optics.x
 
 .PHONY: all clean cleanall example test smoke lyman_cut test-debug test-default-backend test-production-package test-full-direct-parallel test-api-parallel test-scattering-matrix-parallel test-spheroid-optics-parallel
 

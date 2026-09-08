@@ -663,14 +663,23 @@ contains
       ! spheroids whose Q tables are already averaged over orientation, so
       ! they enter this scalar product exactly as a sphere table would.
       !
-      ! NO g FOR THE TWO LARGE POPULATIONS.  The distribution ships no
-      ! G_amCBE_0.3333x.DAT and no G_aSil2001BE6pctG_0.4x.DAT, so those two
-      ! groups get Q_ext, Q_abs and Q_sca and NO g dataset.  The absence is the
-      ! record: a zero written there would be indistinguishable from a measured
-      ! zero, and a model built from this product would report an asymmetry
-      ! parameter the model does not have.  build_dustem reads the absence back
-      ! and comes to the same gsca_complete = .false. it reaches from the text
-      ! tables.
+      ! WHERE g COMES FROM.  Q_ext, Q_abs and Q_sca are the distributed tables:
+      ! nothing here is recomputed from a dielectric function.  The asymmetry
+      ! parameter is the one exception, and only because the distribution has
+      ! none for the two spheroid populations -- Guillet et al. computed no
+      ! asymmetry parameter, and DustEM reads a G_ file only under its `pdr`
+      ! run keyword, which this model does not set.  SEDust computes those two
+      ! tables itself, with tmatrix/driver/spheroid_asymmetry_table.f90, and
+      ! ships them as oprop/G_amCBE_0.3333x.DAT and
+      ! oprop/G_aSil2001BE6pctG_0.4x.DAT; each file's header records the
+      ! method.  They are read here exactly like a distributed G_ file, so all
+      ! three populations carry g and build_dustem reaches
+      ! gsca_complete = .true.
+      !
+      ! A population whose G_ file is absent still goes through: it gets no g
+      ! dataset, and the absence is the record.  A zero written there would be
+      ! indistinguishable from a measured zero, and a model built from the
+      ! product would report an asymmetry parameter it does not have.
       call write_dustem_product('g18d', D_G18D, F_GRAIN_G18D, &
            'Guillet et al. (2018) Model D')
    end subroutine write_g18d_tables
@@ -764,7 +773,7 @@ contains
                  rho = pops(ip)%rho, &
                  method = trim(what)//': the DustEM Q_ table as distributed, ' // &
                  'interpolated onto this population''s model radii linearly in radius; ' // &
-                 'the distribution ships no G_ file, so this population has no <cos theta>', &
+                 'no G_ file for this population, so it has no <cos theta>', &
                  source = trim(qpath)//'; radii from '//grain_file)
          end if
          write(*,'(a,a,a,i0,a,i0,a)') ' ', trim(model)//' '//trim(pname), ': ', &
@@ -875,12 +884,14 @@ contains
                              long_name='scattering asymmetry <cos>')
             call h5_put_attr_s(gid, 'scatters', 'yes')
          else
-            ! Scattering with no asymmetry parameter: the two large G18D
-            ! populations, for which the DustEM distribution ships no G_ file.
-            ! No g dataset is written, because a zero here would be a
-            ! measurement and this is the absence of one.
+            ! Scattering with no asymmetry parameter: a population whose
+            ! DustEM directory holds no G_ file and for which none was
+            ! computed.  No g dataset is written, because a zero here would be
+            ! a measurement and this is the absence of one.  (Guillet et al.
+            ! Model D was this case until SEDust computed the two missing
+            ! tables; see write_g18d_tables.)
             call h5_put_attr_s(gid, 'scatters', &
-                 'yes -- but no asymmetry parameter is published for it, so no g')
+                 'yes -- but no asymmetry parameter is available for it, so no g')
          end if
       end if
       if (present(flag_in)) then

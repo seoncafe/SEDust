@@ -158,12 +158,13 @@ contains
       ! attribute records that this is meant rather than missing.
       !
       ! A population that SCATTERS but has no asymmetry parameter is a third
-      ! case, and the two large G18D populations are it: the DustEM
-      ! distribution ships no G_ file for them, so their group carries Q_sca
-      ! and no g.  gpar then comes back as zero and has_g as .false., which is
-      ! how a caller tells "no measurement exists" from "the measurement is
-      ! zero".  Without has_g the two are indistinguishable, and a model built
-      ! from the product would report an asymmetry the model does not have.
+      ! case: its group carries Q_sca and no g.  gpar then comes back as zero
+      ! and has_g as .false., which is how a caller tells "no measurement
+      ! exists" from "the measurement is zero".  Without has_g the two are
+      ! indistinguishable, and a model built from the product would report an
+      ! asymmetry the model does not have.  The two G18 Model D spheroid
+      ! populations were this case until SEDust computed their G_ tables; no
+      ! group of any shipped product is in it now.
       character(len=*),      intent(in)  :: path, comp
       logical,               intent(in)  :: include_euv
       real(wp), allocatable, intent(out) :: aeff(:)
@@ -175,8 +176,8 @@ contains
       ! 20 geometric optics.  Left unallocated for a group that has none.
       integer, allocatable, optional, intent(out) :: flag(:,:)
       ! Whether the group carries a g dataset at all.  .false. for an
-      ! absorption-only group and for a scattering group the distribution
-      ! ships no asymmetry parameter for.
+      ! absorption-only group and for a scattering group with no asymmetry
+      ! parameter.
       logical, optional,     intent(out) :: has_g
 
       integer(h5id_k) :: fid, gid

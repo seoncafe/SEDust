@@ -250,6 +250,40 @@ that starts at the Lyman limit — verified, not asserted. In the HDF5 product t
 pair is one array and its `i_lyman`, so there is no second file to keep in
 step (§ *The HDF5 optics products* in the manual).
 
+### G18 Model D scattering asymmetry, computed here
+
+The DustEM distribution ships no `G_amCBE_0.3333x.DAT` and no
+`G_aSil2001BE6pctG_0.4x.DAT`. Guillet et al. (2018) computed no asymmetry
+parameter, and DustEM reads a `G_` file only under its `pdr` run keyword, which
+this model does not set. Those two populations hold 90% of the dust mass, so
+the model as distributed has no `<cos theta>` at all -- and a transfer code
+handed `g = 0` for a model whose albedo reaches 0.38 scatters isotropically.
+
+SEDust computes the two tables itself:
+
+    cd tmatrix
+    make spheroid_asymmetry_table.x
+    ./spheroid_asymmetry_table.x            # both populations, ~11 min on 36 threads
+    ./spheroid_asymmetry_table.x amc test   # smoke run, no file written
+
+They are written straight to `data/g18d/oprop/`, where the model reads them,
+and they ship. The physics is the same the distributed `Q_` tables are built
+on: prolate spheroids of axis ratio 1/3 (BE amorphous carbon of Zubko et al.
+1996) and 0.4 (the WD01 "smoothed UV" astrosilicate with 6% by volume of the
+same a-C as Maxwell Garnett inclusions), in random orientation, with `Q` and
+`g` defined against the volume-equivalent radius. `g = 0` below `x = 0.1`,
+where the Rayleigh dipole limit makes it exact; the random-orientation
+T-matrix where it converges; and the volume-equivalent sphere's Mie `g` beyond
+that, which is the one approximation and is bounded at 0.0146 (a-C) and 0.0094
+(silicate) by measurement on the same tables. Each file's header carries the
+census and the bound; `data/g18d/where.txt` records the four validation checks
+and `tmatrix/compare_mie_spheres.x` runs the first two of them.
+
+Regenerating the tables means regenerating the products that read them:
+
+    cd sed
+    ./calc_qtable.x g18d && ./calc_kext.x g18d && ./calc_kext.x g18d euv
+
 **These are our own tables.** For DL07 and MRN they are what those models
 already compute at build time, written down rather than recomputed -- the two
 share the calculation and differ in the radius grid it runs on. For Zubko they are a genuine
