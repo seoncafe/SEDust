@@ -15,7 +15,7 @@
 #   make test_dustem_extinction.x    themis/g18d vs DustEM's own EXT_*.RES
 #   make test_dustem_polarized_extinction.x
 #                            g18d vs DustEM's own EXT_POL_G17_ModelD.RES
-#   make test_dustem_product.x   themis/g18d: the HDF5 product vs the text tables
+#   make check_build_dust.x      every model: the HDF5 product vs the text builders
 #   make test_h5_storage_policy.x    values 64-bit, regime codes 8-bit
 #   make use_dustlib_scatmat.x   rt_example aligned-scattering consumer (vs libsedust.a)
 #   make clean / cleanall
@@ -55,6 +55,8 @@
 #   ./calc_kext.x themis euv           # THEMIS (Jones+13 / Koehler+14)
 #   ./calc_kext.x g18d   euv           # Guillet et al. (2018) Model D
 #   ./calc_kext.x from_files <descriptor> [data_dir]
+#   ./check_build_dust.x               # build_dust on HDF5 vs the text builders
+#   ./test_h5_storage_policy.x         # HDF5 storage precision policy
 
 FC      = gfortran
 
@@ -359,18 +361,18 @@ test_dustem_polarized_extinction.x: $(SRC_PIPE) src/test_dustem_polarized_extinc
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./test_dustem_polarized_extinction.x'
 
-# themis and g18d built from their HDF5 product against the same models built
-# from the DustEM text tables.  Run it after calc_qtable.x.
-test_dustem_product.x: $(SRC_PIPE) src/test_dustem_product.f90
-	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
-	@echo 'Built: ./test_dustem_product.x'
+# Does build_dust on the HDF5 products give the same model as the builders on
+# the text products?  Run it after calc_qtable.x and calc_kext.x.
+check_build_dust.x: $(SRC_PIPE) $(SRC_EUVTM) src/check_build_dust.f90 | $(TMARCH)
+	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
+	@echo 'Built: ./check_build_dust.x'
 
 cleanall: clean
 	rm -f *.a calc_enthalpy.x calc_sed.x calc_qtable.x \
 	      calc_kext.x calc_polext.x calc_polarized_optics.x \
 	      test_scatmat_aligned.x test_scalar_mode.x test_euv_extension.x \
 	      test_dustem_extinction.x test_dustem_polarized_extinction.x \
-	      test_dustem_product.x test_h5_storage_policy.x \
+	      check_build_dust.x test_h5_storage_policy.x \
 	      use_dustlib_scatmat.x use_dustlib.x use_dustlib_pol.x \
 	     
 	rm -f output/sed_*.dat output/enthalpy_*.dat

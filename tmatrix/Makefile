@@ -17,7 +17,9 @@
 #                               integral
 #   scattering_matrix_oriented.f90  fixed-orientation Mueller matrix
 #   aligned_population_optics.f90   size-integrated aligned-population products
-#   read_index.f90              dielectric-function reader
+#   read_index.f90              refractive-index reader, both Draine layouts
+#   effective_medium.f90        Maxwell Garnett mixing of two materials
+#   dustem_optical_tables.f90   reader for DustEM's LAMBDA / Q_ / G_ text tables
 #
 # Executables:
 #   run_tmatrix.x            random-orientation cross-section table
@@ -26,6 +28,7 @@
 #   run_scatmat_aligned.x    size-integrated aligned Mueller matrix (OpenMP)
 #   compare_*.x              verification drivers
 #   euv_polarized_optics.x   orientation-resolved optics shortward of 0.0912 um
+#   spheroid_asymmetry_table.x  the G18 Model D scattering-asymmetry tables
 #
 # Run:
 #   make                     # run_tmatrix.x run_scatmat.x run_q_jori.x
@@ -169,6 +172,10 @@ DRIVER_FFLAGS = $(MODERN_FFLAGS) $(RECURSIVE_FLAG)
 
 read_index.o: driver/read_index.f90
 	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+effective_medium.o: driver/effective_medium.f90
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+dustem_optical_tables.o: driver/dustem_optical_tables.f90
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
 asymptotic_optics.o: driver/asymptotic_optics.f90 tmatrix_kinds.o
 	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
 spheroid_optics.o: driver/spheroid_optics.f90 tmatrix_kinds.o tmatrix_status.o tmatrix_api.o asymptotic_optics.o
@@ -207,7 +214,8 @@ OBJ_ALIGNED  = $(OBJ_ORIENTED) scattering_matrix_oriented.o size_dist.o \
 all: run_tmatrix.x run_scatmat.x run_q_jori.x
 
 all-compare: compare_rayleigh_jori.x compare_tmatrix_jori.x compare_tmatrix_abs.x \
-             compare_go_jori.x compare_birefringence.x compare_scatmat_aligned.x
+             compare_go_jori.x compare_birefringence.x compare_scatmat_aligned.x \
+             compare_mie_spheres.x
 
 run_tmatrix.o: driver/run_tmatrix.f90 tmatrix_api.o tmatrix_status.o read_index.o asymptotic_optics.o spheroid_optics.o
 	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
@@ -343,6 +351,38 @@ euv_polarized_optics.x: libtmatrix.a $(OBJ_ORIENTED) constants.o mie.o euv_polar
 	@echo 'Built: ./euv_polarized_optics.x'
 	@echo 'Run:   ./euv_polarized_optics.x NODEFILE OUTFILE [sca|nosca] [XTM_HI]'
 
+# Random-orientation scattering asymmetry of the two G18 Model D spheroid
+# populations, in the DustEM G_<gtype>.DAT layout.  The DustEM distribution
+# ships no G_ file for either of them, so without this the model reaches a
+# radiative-transfer host with g = 0 and an albedo of 0.38.  The size loop is
+# parallelized with OpenMP; each thread owns one T-matrix workspace (~37 MB).
+spheroid_asymmetry_table.o: driver/spheroid_asymmetry_table.f90 tmatrix_api.o \
+                            tmatrix_status.o spheroid_optics.o asymptotic_optics.o \
+                            read_index.o effective_medium.o dustem_optical_tables.o \
+                            constants.o mie.o
+	$(FC) $(DRIVER_FFLAGS) $(OMPFLAGS) -I. -c -o $@ $<
+OBJ_ASYMMETRY = $(OBJ_BASE) spheroid_optics.o effective_medium.o \
+                dustem_optical_tables.o constants.o mie.o
+spheroid_asymmetry_table.x: libtmatrix.a $(OBJ_ASYMMETRY) spheroid_asymmetry_table.o
+	$(FC) $(OMPFLAGS) $(OBJ_ASYMMETRY) spheroid_asymmetry_table.o -L. -ltmatrix $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./spheroid_asymmetry_table.x'
+	@echo 'Smoke test:  ./spheroid_asymmetry_table.x amc test'
+	@echo 'Full run:    ./spheroid_asymmetry_table.x'
+
+# The two published-sphere checks the asymmetry tables rest on: this tree's
+# Mie with the BE a-C index against DustEM's own amCBE sphere tables, and with
+# the WD01 astrosilicate index against Draine's suvSil_81.
+compare_mie_spheres.o: driver/compare_mie_spheres.f90 read_index.o \
+                       dustem_optical_tables.o constants.o mie.o
+	$(FC) $(DRIVER_FFLAGS) -I. -c -o $@ $<
+compare_mie_spheres.x: read_index.o dustem_optical_tables.o constants.o mie.o \
+                       compare_mie_spheres.o
+	$(FC) read_index.o dustem_optical_tables.o constants.o mie.o \
+	      compare_mie_spheres.o $(LDFLAGS) -o $@
+	@echo
+	@echo 'Built: ./compare_mie_spheres.x'
+
 # The smallest possible external consumer of the public API: no SEDust module,
 # no input file, no workspace beyond the one it initializes itself.  It is what
 # a host code links against, so it is built the same way a host would.
@@ -358,7 +398,8 @@ cleanall: clean
 	rm -f run_tmatrix.x run_scatmat.x run_q_jori.x compare_rayleigh_jori.x \
 	      compare_tmatrix_jori.x compare_tmatrix_abs.x compare_go_jori.x \
 	      compare_birefringence.x compare_scatmat_aligned.x run_scatmat_aligned.x \
-	      euv_polarized_optics.x evaluate_one.x
+	      euv_polarized_optics.x evaluate_one.x spheroid_asymmetry_table.x \
+	      compare_mie_spheres.x
 
 .PHONY: all all-compare example clean cleanall lyman_cut
 

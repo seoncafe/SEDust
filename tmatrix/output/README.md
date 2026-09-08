@@ -13,6 +13,23 @@ SEDust's own regenerated orientation-resolved table (opt-in through
 `../../data/astrodust/q_DH21Ad_P0.20_Fe0.00_1.400.dat.gz` is the HD23 release
 table.
 
+## What `spheroid_asymmetry_table.x` and `compare_mie_spheres.x` leave here
+
+Neither writes a shipped product here: both write DIAGNOSTICS, and the tables
+they produce or certify live elsewhere.
+
+| file | written by | what it holds |
+|---|---|---|
+| `g18d_<gtype>_regimes.dat` | `spheroid_asymmetry_table.x` | one row per (lambda, a_V) of a G18 Model D spheroid population: x, a_V/lambda, our Q_abs and Q_sca, our g, the volume-equivalent sphere's g, the published Q, and the regime and tolerance that produced the entry |
+| `g18d_<gtype>_boundary.dat` | `spheroid_asymmetry_table.x` | the T-matrix convergence boundary size by size: the largest x at which a solve was accepted, and the tolerance it took |
+| `mie_vs_amCBEx.dat` | `compare_mie_spheres.x` | our Mie against DustEM's own BE a-C sphere tables |
+| `mie_vs_suvSil_81.dat` | `compare_mie_spheres.x` | our Mie against Draine's `suvSil_81` astrosilicate sphere table |
+
+The G tables themselves are written straight to `../../data/g18d/oprop/`,
+where the model reads them, and they ship. These four files are 25 MB of
+regenerable record and are not tracked; the census and the measured
+approximation bound that matter are in each G file's own header.
+
 ## The two wavelength axes do not match, and that is deliberate
 
 | product | wavelength axis | length |

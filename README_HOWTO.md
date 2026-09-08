@@ -96,6 +96,7 @@ make use_dustlib_scatmat.x  # reference consumer of the aligned-scattering API
 ./calc_kext.x astrodust euv # ... then /kext into each of those files
 ./calc_kext.x themis euv    #     (the euv run is the one that writes /kext)
 ./calc_polarized_optics.x          # -> /polarized in ../data/astrodust/sedust_astrodust.h5
+./check_build_dust.x        # build_dust on HDF5 vs the builders on text
 
 # polarized extinction alone, checked against the HD23 release
 make calc_polext.x         && ./calc_polext.x
@@ -295,9 +296,9 @@ products hold is those tables put on each population's own model radii -- the
 `amin` and `amax` -- interpolated linearly in radius, which is what DustEM does
 with the same tables. That is the one step between the distribution's files and
 the numbers the size integral uses, so a model built from the product and one
-built from the text tables agree to rounding; `./test_dustem_product.x`
-measures it and requires 1e-10. One group per population, named by its grain
-type, except that `GRAIN_J13.DAT` names `CM20` twice with different radius
+built from the text tables agree to rounding; `check_build_dust.x themis` and
+`... g18d` measure it and require 1e-10. One group per population, named by its
+grain type, except that `GRAIN_J13.DAT` names `CM20` twice with different radius
 ranges, so those two are `CM20_plaw-ed` (the large a-C:H/a-C grains) and
 `CM20_logn` (the small a-C grains). The two large G18D populations carry **no
 `g` dataset at all**: the distribution publishes no `G_` file for them, and an
@@ -510,6 +511,40 @@ with `dust_set_alignment` (the HD23 power law) or `dust_set_alignment_profile`
 (an arbitrary tabulated profile, for a RAT-derived reduction factor). Both are
 size weights applied outside the temperature solution, so neither re-solves
 `P(T)` and neither changes `lamI_total`.
+
+### G18 Model D scattering asymmetry, computed here
+
+The DustEM distribution ships no `G_amCBE_0.3333x.DAT` and no
+`G_aSil2001BE6pctG_0.4x.DAT`. Guillet et al. (2018) computed no asymmetry
+parameter, and DustEM reads a `G_` file only under its `pdr` run keyword, which
+this model does not set. Those two populations hold 90% of the dust mass, so
+the model as distributed has no `<cos theta>` at all -- and a transfer code
+handed `g = 0` for a model whose albedo reaches 0.38 scatters isotropically.
+
+SEDust computes the two tables itself:
+
+    cd tmatrix
+    make spheroid_asymmetry_table.x
+    ./spheroid_asymmetry_table.x            # both populations, ~11 min on 36 threads
+    ./spheroid_asymmetry_table.x amc test   # smoke run, no file written
+
+They are written straight to `data/g18d/oprop/`, where the model reads them,
+and they ship. The physics is the same the distributed `Q_` tables are built
+on: prolate spheroids of axis ratio 1/3 (BE amorphous carbon of Zubko et al.
+1996) and 0.4 (the WD01 "smoothed UV" astrosilicate with 6% by volume of the
+same a-C as Maxwell Garnett inclusions), in random orientation, with `Q` and
+`g` defined against the volume-equivalent radius. `g = 0` below `x = 0.1`,
+where the Rayleigh dipole limit makes it exact; the random-orientation
+T-matrix where it converges; and the volume-equivalent sphere's Mie `g` beyond
+that, which is the one approximation and is bounded at 0.0146 (a-C) and 0.0094
+(silicate) by measurement on the same tables. Each file's header carries the
+census and the bound; `data/g18d/where.txt` records the four validation checks
+and `tmatrix/compare_mie_spheres.x` runs the first two of them.
+
+Regenerating the tables means regenerating the products that read them:
+
+    cd sed
+    ./calc_qtable.x g18d && ./calc_kext.x g18d && ./calc_kext.x g18d euv
 
 ### G18 Model D polarization
 

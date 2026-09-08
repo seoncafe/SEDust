@@ -4563,16 +4563,17 @@ contains
       ! Whether to keep the ionizing part of the tables' own grid; default
       ! .true.  .false. cuts at lyman_index, as it does for every other model.
       logical, optional, intent(in) :: include_euv
-      ! The gtypes, comma separated, for which the distribution ships no
-      ! G_<gtype>.DAT, so that a caller can say which populations are the
-      ! reason m%gsca_complete came back .false.  Blank when every scattering
-      ! population carries an asymmetry parameter.
+      ! The gtypes, comma separated, for which no G_<gtype>.DAT was found, so
+      ! that a caller can say which populations are the reason
+      ! m%gsca_complete came back .false.  Blank when every scattering
+      ! population carries an asymmetry parameter, which is the case for every
+      ! model shipped here.
       character(len=*), optional, intent(out) :: gsca_missing
       ! The model's HDF5 product, when the caller has one.  It holds this
       ! model's own wavelength axis and, for each population, the cross
       ! sections ALREADY interpolated onto that population's model radii --
       ! the very numbers the text route below computes, so the two routes must
-      ! agree, and test_dustem_product.x measures that they do.  Blank or
+      ! agree, and check_build_dust.x measures that they do.  Blank or
       ! omitted reads the DustEM text tables under data_dir, and so does a
       ! product whose grids do not match this GRAIN_*.DAT.  It is an argument
       ! rather than module state so that a program writing /kext into a product
@@ -4874,7 +4875,7 @@ contains
          end if
 
          if (.not. has_g) then
-            ! No G_ file in the distribution, and so no g dataset in the
+            ! No G_ file beside the Q_ tables, and so no g dataset in the
             ! product either.  The population's gsca is left UNALLOCATED,
             ! which is the honest state: this model has no asymmetry parameter
             ! for it.  size_integrated_extinction reads m%gsca_complete and
@@ -5386,9 +5387,12 @@ contains
          ! The model definition is one file inside the model's own directory,
          ! and everything it implies -- oprop/, hcap/, the extinction curve,
          ! the product -- hangs under that same directory, so naming the model
-         ! names all of it.  G18D ships no G_ file for its two large
-         ! populations, so that model carries no <cos theta>; the model object
-         ! says so through m%gsca_complete and the size integral returns zero
+         ! names all of it.  Both models carry <cos theta> for every
+         ! scattering population: THEMIS from the distributed G_ files, G18D
+         ! from those plus the two SEDust computes for its spheroid
+         ! populations, which the distribution has none for.  A population
+         ! whose g were missing would leave the model with
+         ! m%gsca_complete = .false., and the size integral would return zero
          ! rather than the average of the populations that do carry one.
          if (trim(model) == 'themis') then
             cfg = trim(sedust_dir(trim(ddir), 'themis'))//'GRAIN_J13.DAT'
@@ -5711,11 +5715,14 @@ contains
       ! a g the ratio below is a partial numerator over a complete
       ! denominator -- a number that is the asymmetry of nothing and that
       ! reads as a small g rather than as a missing one.  The model then gets
-      ! <cos theta> = 0 everywhere, and the model object says why through
-      ! gsca_complete.  This is the state of Guillet et al. (2018) Model D,
-      ! whose DustEM distribution ships no G_ file for its two large
-      ! populations; every model built from a Mie or T-matrix calculation
-      ! carries g for each scattering population and is unaffected.
+      ! <cos theta> = 0 everywhere, the model object says why through
+      ! gsca_complete, and dust_extinction returns status 4 so that a host
+      ! cannot mistake that zero for isotropic scattering.  No model shipped
+      ! here is in that state: Guillet et al. (2018) Model D was, because the
+      ! DustEM distribution carries no G_ file for its two spheroid
+      ! populations, until SEDust computed those two tables (see
+      ! calc_qtable.f90 :: write_g18d_tables).  The branch stays for the next
+      ! model whose optics arrive without an asymmetry parameter.
       g_complete = .true.
       do ip = 1, size(m%pops)
          if (allocated(m%pops(ip)%Csca) .and. .not. allocated(m%pops(ip)%gsca)) &
@@ -5923,6 +5930,14 @@ contains
       !               are no scalar optics to return (see the builders'
       !               kext_path argument)
       !   status = 3  the model's wavelength grid runs outside the table
+      !   status = 4  WARNING, not an error: gbar was requested but this model
+      !               carries no scattering asymmetry (m%gsca_complete is
+      !               .false.), so the returned gbar is 0 and is NOT a
+      !               measurement.  Cext, Cabs, Csca and albedo are valid and
+      !               are filled as usual.  A zero that means "undefined" has
+      !               to be distinguishable from a zero that means "isotropic":
+      !               an RT host handed g = 0 for a model whose albedo reaches
+      !               0.38 would scatter isotropically and never know.
       integer,  optional, intent(out) :: status
       integer :: jw
       logical :: bad, ok
@@ -5977,6 +5992,29 @@ contains
 
       ! Polarized optics: still computed from the model, never tabulated.
       call size_integrated_polarized_extinction(m, Cpol_ext, Cbir_ext)
+
+      ! The scattering asymmetry is the one output this routine can serve as a
+      ! number without having one.  Return the zero that means undefined and
+      ! say so.  Everything else has already been filled, so this is a warning
+      ! and the call succeeds.
+      !
+      ! The zero is written HERE rather than taken from the table.  A model
+      ! whose optics carry no g has a g column of zeros in the curve written
+      ! for it, so the two agree today; but a curve is a file, and a file from
+      ! another vintage or another tool could hold the asymmetry of the
+      ! populations that DO carry one over the scattering of all of them --
+      ! the asymmetry of nothing, which reads as a small g rather than as a
+      ! missing one.  size_integrated_extinction refuses that ratio for the
+      ! same reason; this routine now refuses it as well.
+      if (present(gbar) .and. .not. m%gsca_complete) then
+         gbar = 0.0_wp
+         if (present(status)) then
+            status = 4
+         else
+            write(*,'(a)') 'dust_extinction: model '//trim(m%name)// &
+                 ' carries no scattering asymmetry; the returned gbar is 0, not a measurement'
+         end if
+      end if
    end subroutine dust_extinction
 
 

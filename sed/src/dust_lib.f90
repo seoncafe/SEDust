@@ -187,16 +187,22 @@ module dust_lib
    ! claimed the restriction for a while; it never applied to it.)
    !
    ! dust_extinction's status is 0 on success, 1 if an output array is not of
-   ! size m%NLAM, 2 if no extinction table was loaded for this model, and 3 if
-   ! m%lam runs outside the table; when it is omitted such a call stops the run.
+   ! size m%NLAM, 2 if no extinction table was loaded for this model, 3 if
+   ! m%lam runs outside the table, and 4 -- a warning, not a failure -- if
+   ! gbar was asked for by a model that carries no asymmetry parameter, in
+   ! which case gbar comes back 0 and every other output is valid.  When
+   ! status is omitted a failure stops the run and the warning prints one line.
    ! size_integrated_extinction reads no table, so it uses 1 alone.
    !
    ! Every builder carries scattering optics, so albedo and gbar are physical
    ! for every model: astrodust from the T-matrix Q table at every wavelength
    ! the model has, the ionizing band included, DL07 and MRN from Mie on the D03
    ! silicate and graphite functions, Zubko and file-defined models from the
-   ! Q_sca and g columns of their own tables. Only astrodust carries polarized
-   ! optics.
+   ! Q_sca and g columns of their own tables, THEMIS and G18 Model D from the
+   ! DustEM Q_ and G_ tables -- with G18 Model D's two spheroid populations,
+   ! which the distribution has no G_ file for, computed by
+   ! tmatrix/driver/spheroid_asymmetry_table.f90. Only astrodust carries
+   ! polarized optics.
    !
    ! GRAIN ALIGNMENT. Both the polarized emission (lamI_pol) and the dichroic
    ! extinction (Cpol_ext) are weighted by an alignment efficiency
