@@ -63,8 +63,8 @@ contains
       ! In the dipole regime g -> 0 (symmetric scattering pattern).
       !
       ! Optional orientation-resolved outputs qext_ori/qabs_ori/qsca_ori
-      ! (dimensioned 3, indexed by jori) return the per-orientation cross
-      ! sections that the random average above is built from, in the
+      ! (dimensioned 3, indexed by jori) return the cross sections for each
+      ! orientation that the random average above is built from, in the
       ! convention documented in sed/src/q_table_jori.f90:
       !   jori=1: k || a           -> E always transverse to the axis -> Q_b
       !   jori=2: k perp a, E || a  -> E along the axis               -> Q_a

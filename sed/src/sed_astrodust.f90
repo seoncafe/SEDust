@@ -16,37 +16,41 @@ module sed_astrodust_mod
    ! The driver `calc_sed.f90` calls this for the single
    ! Mathis-ISRF cell at U_mathis = 1.585 to compare with HD23.
    !
-   ! Restructured into init/solve and
-   ! limited to a single dust species (astrodust). The stochastic-vs-
-   ! equilibrium decision and P(T) solver are unchanged in algorithm.
+   ! Initialization and emission support multiple dust models. The GD P(T)
+   ! recursion takes its upward rates from the bin-overlap integrals of
+   ! Draine & Li (2001) on the incident field's significant support
+   ! (p_sub.f90, calc_P).
 
-   use, intrinsic :: iso_fortran_env, only: real64, int64
+   use, intrinsic :: iso_fortran_env, only: int64
+   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
    use constants,             only: wp
    use sed_mathlib,               only: interp, first_location, last_location, locate
-   use radfield,              only: bbody, calc_bbody, hardest_photon_energy, &
-                                    cmb_temperature
+   use radfield,              only: bbody, calc_bbody, planck_grid_t, prepare_planck_grid, &
+                                    hardest_photon_energy, cmb_temperature
    use p_sub,                 only: p_sub_setup, calc_Teq, calc_P
    use q_table_mod,           only: load_q_table, load_q_table_h5, &
-                                    qt_n_lam=>n_lam, qt_n_aeff=>n_aeff, &
+                                    qt_n_lam=>n_lam, &
                                     qt_lam=>lam_t, qt_aeff=>aeff_t, &
-                                    qt_qext=>qext, qt_qabs=>qabs, qt_qsca=>qsca, &
+                                    qt_qabs=>qabs, qt_qsca=>qsca, &
                                     qt_gpar=>gpar
    use size_dist_mod,         only: hd23_size_distribution, sd_n=>n_size, &
                                     sd_aeff=>a_dist, sd_dn=>dn_ad, &
                                     sd_dn_pah=>dn_pah, sd_fion=>f_ion
    use enthalpy_astrodust_mod, only: enthalpy_S1, enthalpy_S2, RHO_AD, RHO_PAH
    use enthalpy,              only: enthalpy_DL01
-   use qpah,                  only: qpah_dl07, qpah_ld01, qpah_abs, qpah_sca, &
+   use qpah,                  only: carbonaceous_grain_optics, carbonaceous_absorption, &
                                     qpah_xsec_vintage, &
                                     nc_coeff, nc_integer, qpah_graphite_source
-   use pah_ld01_mod,          only: q_pah_ld01, use_ld01_pah_xsec
+   use pah_ld01_mod,          only: use_ld01_pah_xsec
    use stoch_qm_mod,          only: qm_solve_grain, qm_verbose
    ! DL07 (silicate + carbonaceous) model support
    use grain_dist_mod,        only: grain_dist_dl07, gd_apply_d03_reduction
-   use q_silicate_mod,        only: q_silicate_abs, q_silicate_full, &
-                                    silicate_index_lambda_range
+   use q_silicate_mod,        only: q_silicate_full, &
+                                    silicate_index_lambda_range, &
+                                    silicate_index_available
    use q_graphite_mod,        only: q_graphite_full, &
-                                    graphite_index_lambda_range
+                                    graphite_index_lambda_range, &
+                                    graphite_index_available
    ! Astrodust optics from the DH21 dielectric function, for the EUV band
    ! below the T-matrix Q table's 0.0912 um (13.6 eV) short-wavelength end.
    ! astrodust_index_at is the refractive index there, which the spheroid
@@ -59,7 +63,7 @@ module sed_astrodust_mod
                                     get_astrodust_index_path, &
                                     astrodust_index_lambda_range
    use pah_ioniz_mod,         only: pah_ionfrac
-   use dust_model_mod,        only: dust_model_t, grain_pop_t, free_dust_model, &
+   use dust_model_mod,        only: dust_model_t, grain_pop_t, &
                                     CHANNEL_NAME_LEN
    use kext_table_mod,        only: load_kext_table
    use q_component_mod, only: load_q_component
@@ -125,6 +129,11 @@ module sed_astrodust_mod
    ! exposed so the MC SED builder can reproduce the same charge blend as
    ! the production sed_solve_pah (it loops both charge states).
    public :: Cabs_cneu, Cabs_cion, dn_cneu, dn_cion
+   ! ... and the cooling of each charge state, kappB(T) = int Cabs B_lam(T)
+   ! dlam on that state's own Cabs, which is what sed_solve_pah pairs with
+   ! Cabs_cneu / Cabs_cion.  kappB_pah_first is the f_ion-blended grain's and
+   ! belongs with Cabs_pah only.
+   public :: kappB_cneu, kappB_cion
    ! Exposed for mc/ single-grain P(T) cross-check (calc_P needs H, kappCMB):
    public :: H_first, H_pah_first, kappCMB, kappCMB_pah
    ! Toggle for the induced-emission (1 + J_lam/B_envelope) factor.
@@ -144,6 +153,9 @@ module sed_astrodust_mod
    !   'qm'        - energy-space transition-matrix solver
    public :: stoch_method
    public :: gd_photon_cutoff
+   public :: emission_bin_power_cutoff, emission_bin_power_total, &
+             emission_bin_power_skipped, emission_bin_power_weighted_total, &
+             emission_bin_power_weighted_skipped
    ! Diagnostic-output toggle for the shared grain loop. Default .true. so the
    ! CLI drivers keep their solver diagnostics; dust_emission sets it from the
    ! model's `verbose` field so the library path stays silent by default.
@@ -319,6 +331,21 @@ module sed_astrodust_mod
    ! fixes alone reproduce dbdis to <1% per band. Kept as a toggle for
    ! experiments.
    logical, save :: gd_photon_cutoff = .false.
+   ! The model state, emission_bin_power_cutoff, and diagnostic sums below
+   ! are shared module state. dust_emission is not reentrant: applications
+   ! must serialize simultaneous calls from host OpenMP threads. Internal
+   ! OpenMP loops remain supported. Set the option only between solves.
+   ! Heuristic stochastic emission may omit bins whose P(T)*kappB(T)
+   ! is below this fraction of the grain's largest bin power. Zero is exact.
+   ! The approximation applies only to the emission sum, never to calc_P.
+   real(wp), save :: emission_bin_power_cutoff = 0.0_wp
+   ! Integrated P*kappB over positive-probability bins in the most recent
+   ! dust_emission call. Weighted values include the grain number per H atom.
+   ! Units are those of kappB, with and without number per H, respectively.
+   real(wp), save :: emission_bin_power_total = 0.0_wp
+   real(wp), save :: emission_bin_power_skipped = 0.0_wp
+   real(wp), save :: emission_bin_power_weighted_total = 0.0_wp
+   real(wp), save :: emission_bin_power_weighted_skipped = 0.0_wp
    real(wp), parameter :: HC_ERG_UM = 6.62606957e-27_wp * 2.99792458e10_wp * 1.0e4_wp
    ! Production default solver. 'heuristic' = the GD look-ahead-narrowing variant
    ! (faster); 'draine' = Draine's original GD (Guhathakurta & Draine 1989 +
@@ -513,6 +540,9 @@ contains
       integer(int64) :: tick0, tick1, tick_rate
       real(wp), allocatable :: nr_euv(:), ki_euv(:)
       real(wp), allocatable :: q_euv_abs(:,:), q_euv_sca(:,:), q_euv_g(:,:)
+      ! Carbonaceous absorption efficiencies (NLAM, NA) of the two charge
+      ! states, kept for the f_ion blend of build_Cabs_pah.
+      real(wp), allocatable :: Qabs_cneu(:,:), Qabs_cion(:,:)
 
       if (present(status)) status = 0
       if (present(astrodust_index_path)) &
@@ -773,26 +803,34 @@ contains
       !   (1-f_ion) E[C^neu] + f_ion E[C^ion],   each solved independently,
       ! not  E[(1-f_ion)C^neu + f_ion C^ion].  f_ion(a) from HD23
       ! eq. (19). C = pi*(a_cm)^2 * Q convention.
+      !
+      ! Absorption (neutral, cation) and scattering of the carbonaceous grain
+      ! come from ONE carbonaceous_grain_optics call, which solves the graphite
+      ! Mie on the D03 dielectric functions once for all three.  Separate
+      ! calls (qpah_dl07 for each charge, qpah_sca, and qpah_dl07 for each
+      ! charge again in build_Cabs_pah) would solve that Mie five times
+      ! shortward of the PAH cutoff (0.058 um) and once longward of it; on the
+      ! astrodust EUV axis (604 of 1762 wavelengths shortward) the four extra
+      ! solutions were 80% of the model build.  The values are bit for bit
+      ! those of the separate calls.  The absorption efficiencies are kept,
+      ! indexed (wavelength, size) like Cabs_cneu, for build_Cabs_pah.
+      allocate(Qabs_cneu(NLAM, NA), Qabs_cion(NLAM, NA))
       do ja = 1, NA
          a_um = aeff(ja)
          do jw = 1, NLAM
-            if (use_ld01_pah_xsec) then
-               ! Use the Li & Draine (2001) PAH cross sections via the ported
-               ! QPAH_LD01 routine (drude_ld01 + same xi_gra graphite blend),
-               ! instead of our DL07 qpah_dl07.
-               call qpah_ld01(0, a_um, lam(jw), Q_neu)
-               call qpah_ld01(1, a_um, lam(jw), Q_ion)
-            else
-               call qpah_dl07(0, a_um, lam(jw), Q_neu)
-               call qpah_dl07(1, a_um, lam(jw), Q_ion)
-            end if
-            Cabs_cneu(jw, ja) = Q_neu * PI * (a_um * UM2CM)**2
-            Cabs_cion(jw, ja) = Q_ion * PI * (a_um * UM2CM)**2
+            ! use_ld01_pah_xsec selects the Li & Draine (2001) PAH cross
+            ! sections (drude_ld01 + the same xi_gra graphite blend) in place
+            ! of DL07.
             ! Scattering of the same grain: the graphite fraction of HD23
             ! eq. 15 scatters, the PAH part does not.  Its whole weight is in
             ! the far-UV -- 3.5% of this model's total tau_sca at 0.1 um in
             ! the HD23 release, and below 0.2% longward of 0.15 um.
-            call qpah_sca(a_um, lam(jw), Q_sca_c, g_sca_c)
+            call carbonaceous_grain_optics(merge('ld01', 'dl07', use_ld01_pah_xsec), &
+                                           a_um, lam(jw), Q_neu, Q_ion, Q_sca_c, g_sca_c)
+            Qabs_cneu(jw, ja) = Q_neu
+            Qabs_cion(jw, ja) = Q_ion
+            Cabs_cneu(jw, ja) = Q_neu * PI * (a_um * UM2CM)**2
+            Cabs_cion(jw, ja) = Q_ion * PI * (a_um * UM2CM)**2
             Csca_pah(jw, ja) = Q_sca_c * PI * (a_um * UM2CM)**2
             gsca_pah(jw, ja) = g_sca_c
          end do
@@ -817,9 +855,11 @@ contains
       call build_kappCMB_pah(); kappCMB_cion = kappCMB_pah
       log_kappB_cneu = log(max(kappB_cneu, tiny(0.0_wp)))
       log_kappB_cion = log(max(kappB_cion, tiny(0.0_wp)))
-      ! Restore the f_ion-blended Cabs_pah/kappB_pah/kappCMB_pah for any
-      ! external driver that reads them.
-      call build_Cabs_pah()
+      ! Restore the f_ion-blended Cabs_pah/kappB_pah/kappCMB_pah.  Nothing in
+      ! the library reads them after this point; mc/src/main_pT_compare.f90
+      ! and mc/src/mc_sed.f90 do.
+      call build_Cabs_pah(Qabs_cneu, Qabs_cion)
+      deallocate(Qabs_cneu, Qabs_cion)
       call build_kappB_pah()
       call build_kappCMB_pah()
       log_kappB_pah_first = log(max(kappB_pah_first, tiny(0.0_wp)))
@@ -954,9 +994,10 @@ contains
       ! readers keep their message + stop behavior (as the CLI drivers expect).
       !   status = 1  Q-table load failed
       !   status = 4  lam_min below the D03 dielectric functions' own shortest
-      !               wavelength (EUV band only).  There is no code 3 here:
-      !               this model needs no separate EUV dielectric function, so
-      !               nothing corresponds to sed_init's "index load failed".
+      !               wavelength, or those functions could not be read (EUV
+      !               band only; the printed message tells the two apart).
+      !               There is no code 3 here: this model needs no separate EUV
+      !               dielectric function beyond the D03 ones.
       integer, optional, intent(out) :: status
       ! Optional shortest wavelength [um] the model must cover; see sed_init.
       ! The Q table supplies this model's wavelength grid only -- its silicate
@@ -990,9 +1031,10 @@ contains
 
       character(len=512) :: q_h5, q_dir
       integer  :: i, ja, jw, jt, n_euv
-      real(wp) :: a_um, t, da, qabs1, Q_neu, Q_ion
+      real(wp) :: a_um, t, da, qabs1, Q_neu, Q_ion, Q_neu_solved, Q_ion_solved
       real(wp) :: geo, qext1, qsca1, gsca1
       real(wp) :: sil_lam_lo, sil_lam_hi, gra_lam_lo, gra_lam_hi, d03_lam_lo
+      logical  :: sil_index_read, gra_index_read
       real(wp), allocatable :: fion(:), lna(:), lam_grid(:), lam_base(:)
       ! Stored cross sections of the four DL07 populations, when tables for
       ! this grid exist; got_* says whether each was found.
@@ -1070,6 +1112,23 @@ contains
       ! (n, k) at the boundary value, which would pass a constant index off as
       ! physics, so refuse instead. Silicate and graphite are both required.
       if (n_euv > 0) then
+         ! An unreadable dielectric file leaves its wavelength array at the
+         ! placeholder 1 um, so the range below would report a coverage limit
+         ! the data never set.  Name the read failure instead (same status).
+         ! Both loads are made before the test: the functions read their
+         ! tables, so neither call may be skipped by short-circuiting.
+         sil_index_read = silicate_index_available()
+         gra_index_read = graphite_index_available()
+         if (.not. (sil_index_read .and. gra_index_read)) then
+            write(*,'(a)') ' sed_init_dl07: the D03 dielectric functions '// &
+               '(index_silD03, index_CpaD03, index_CpeD03) could not be read '// &
+               'under the SEDust data root; the EUV extension needs them.'
+            if (present(status)) then
+               status = 4;  deallocate(lam_grid);  return
+            else
+               stop 1
+            end if
+         end if
          call silicate_index_lambda_range(sil_lam_lo, sil_lam_hi)
          call graphite_index_lambda_range(gra_lam_lo, gra_lam_hi)
          d03_lam_lo = max(sil_lam_lo, gra_lam_lo)
@@ -1193,18 +1252,6 @@ contains
          a_um = aeff(ja)
          geo  = PI * (a_um * UM2CM)**2
          do jw = 1, NLAM
-            if (got_neu) then
-               Q_neu = tQa(jw, ja)
-            else
-               call qpah_abs(0, a_um, lam(jw), Q_neu)
-            end if
-            if (got_ion) then
-               Q_ion = uQa(jw, ja)
-            else
-               call qpah_abs(1, a_um, lam(jw), Q_ion)
-            end if
-            Cabs_cneu(jw, ja) = Q_neu * geo
-            Cabs_cion(jw, ja) = Q_ion * geo
             ! Scattering of the carbonaceous grain.  Charge shifts the PAH
             ! absorption features only, and a PAH is a molecule whose Rayleigh
             ! scattering is negligible, so both charge states scatter as the
@@ -1216,6 +1263,33 @@ contains
             else
                call q_graphite_full(a_um, lam(jw), qext1, qsca1, qabs1, gsca1)
             end if
+            ! Absorption of both charge states (qpah_xsec_vintage).  The
+            ! graphite of the blend is taken once for the pair, and where the
+            ! scattering above has just solved the D03 graphite Mie at this
+            ! (a, lambda) its Q_abs is handed over, so that Mie is solved once
+            ! per cell rather than three times.  Each Q is bit for bit what
+            ! qpah_abs returns for that charge (carbonaceous_absorption).
+            if (.not. (got_neu .and. got_ion)) then
+               if (got_gra) then
+                  call carbonaceous_absorption(trim(qpah_xsec_vintage), a_um, lam(jw), &
+                                               Q_neu_solved, Q_ion_solved)
+               else
+                  call carbonaceous_absorption(trim(qpah_xsec_vintage), a_um, lam(jw), &
+                                               Q_neu_solved, Q_ion_solved, Qabs_d03 = qabs1)
+               end if
+            end if
+            if (got_neu) then
+               Q_neu = tQa(jw, ja)
+            else
+               Q_neu = Q_neu_solved
+            end if
+            if (got_ion) then
+               Q_ion = uQa(jw, ja)
+            else
+               Q_ion = Q_ion_solved
+            end if
+            Cabs_cneu(jw, ja) = Q_neu * geo
+            Cabs_cion(jw, ja) = Q_ion * geo
             Csca_car(jw, ja) = qsca1 * geo
             gsca_car(jw, ja) = gsca1
          end do
@@ -1341,12 +1415,22 @@ contains
       integer  :: ir, ii, loc1, loc2, iguard, n_guard_resolve
       integer  :: n_stoch, n_equil_eeq, n_equil_fail
       real(wp) :: Teq, EEQ, del, Tmin_n, Tmax_n, a_cm_qm
+      real(wp) :: bin_power, power_cut
       real(wp), allocatable :: spec(:), P(:), lnP(:)
       real(wp), allocatable :: T(:), H(:), kappB(:)
       real(wp), allocatable :: Jout_local(:), emission_qm(:)
       logical :: Equil, Equil_prev, converged, qm_ok
+      type(planck_grid_t) :: emission_planck_grid
 
       Jout = 0.0_wp
+      call prepare_planck_grid(lam, emission_planck_grid)
+      if (.not. ieee_is_finite(emission_bin_power_cutoff) .or. &
+          emission_bin_power_cutoff < 0.0_wp .or. emission_bin_power_cutoff > 1.0_wp) &
+         error stop 'sed_grain_loop: invalid emission_bin_power_cutoff'
+
+      if (emission_bin_power_cutoff > 0.0_wp .and. &
+          trim(stoch_method) /= 'heuristic') &
+         error stop 'sed_grain_loop: emission_bin_power_cutoff requires heuristic solver'
 
       select case (trim(stoch_method))
 
@@ -1358,7 +1442,7 @@ contains
          !$omp parallel default(none) &
          !$omp&   shared(npop, dn_pop, Cabs_pop, kappB_pop, H_pop, &
          !$omp&          log_H_pop, log_kappB_pop, kappCMB_pop, J_lam, &
-         !$omp&          T_first, lam, Jout, NLAM, NT) &
+         !$omp&          T_first, lam, Jout, NLAM, NT, emission_planck_grid) &
          !$omp&   private(ir, ii, Teq, EEQ, Equil, converged, &
          !$omp&           spec, P, lnP, T, H, kappB, Jout_local) &
          !$omp&   reduction(+:n_stoch, n_equil_eeq, n_equil_fail)
@@ -1391,12 +1475,12 @@ contains
             end if
 
             if (Equil) then
-               call calc_bbody(Teq, lam, spec)
+               call calc_bbody(Teq, lam, spec, emission_planck_grid)
                Jout_local = Jout_local + dn_pop(ir) * Cabs_pop(:, ir) * spec
             else
                do ii = 1, NT
                   if (P(ii) > 0.0_wp) then
-                     call calc_bbody(T(ii), lam, spec)
+                     call calc_bbody(T(ii), lam, spec, emission_planck_grid)
                      Jout_local = Jout_local + dn_pop(ir) * P(ii) * Cabs_pop(:, ir) * spec
                   end if
                end do
@@ -1422,10 +1506,10 @@ contains
          ! the equilibrium enthalpy", so this places the top correctly
          ! without the draine-variant's iterative re-solves. The original
          ! look-ahead top (Teq*exp(+NARROW_FAC*del), inherited from the
-         ! previous grain) could land inside the populated tail; calc_P's
-         ! highest-bin correction then piles the clipped flux into the top
-         ! bin, producing the spurious NIR hot-tail emission (+70% NIR for
-         ! astrodust S1 vs the dbdis reference).
+         ! previous grain) could land inside the populated tail; calc_P
+         ! assigns every photon that carries the grain past the window's top
+         ! to the top bin, which then produced the spurious NIR hot-tail
+         ! emission (+70% NIR for astrodust S1 vs the dbdis reference).
          ! A one-shot P(top) guard (re-solve with a raised top) backs up
          ! the analytic bound; it fires rarely.
          Equil_prev = .false.
@@ -1503,12 +1587,25 @@ contains
             end if
 
             if (Equil) then
-               call calc_bbody(Teq, lam, spec)
+               call calc_bbody(Teq, lam, spec, emission_planck_grid)
                Jout = Jout + dn_pop(ir) * Cabs_pop(:, ir) * spec
             else
+               power_cut = 0.0_wp
+               if (emission_bin_power_cutoff > 0.0_wp) &
+                  power_cut = emission_bin_power_cutoff * maxval(P * kappB)
                do ii = 1, NT
                   if (P(ii) > 0.0_wp) then
-                     call calc_bbody(T(ii), lam, spec)
+                     bin_power = P(ii) * kappB(ii)
+                     emission_bin_power_total = emission_bin_power_total + bin_power
+                     emission_bin_power_weighted_total = emission_bin_power_weighted_total + &
+                                                          dn_pop(ir) * bin_power
+                     if (bin_power < power_cut) then
+                        emission_bin_power_skipped = emission_bin_power_skipped + bin_power
+                        emission_bin_power_weighted_skipped = emission_bin_power_weighted_skipped + &
+                                                                dn_pop(ir) * bin_power
+                        cycle
+                     end if
+                     call calc_bbody(T(ii), lam, spec, emission_planck_grid)
                      if (gd_photon_cutoff) then
                         ! dbdis photon cutoff: a grain in bin ii cannot
                         ! emit a photon more energetic than its enthalpy.
@@ -1532,7 +1629,7 @@ contains
          !$omp parallel default(none) &
          !$omp&   shared(npop, dn_pop, aeff_pop, Cabs_pop, kappB_pop, H_pop, &
          !$omp&          log_H_pop, log_kappB_pop, kappCMB_pop, J_lam, &
-         !$omp&          T_first, lam, grain_type, Jout, NLAM, NT) &
+         !$omp&          T_first, lam, grain_type, Jout, NLAM, NT, emission_planck_grid) &
          !$omp&   private(ir, ii, Teq, EEQ, Equil, converged, a_cm_qm, qm_ok, &
          !$omp&           spec, P, lnP, T, H, kappB, Jout_local, emission_qm) &
          !$omp&   reduction(+:n_stoch, n_equil_eeq, n_equil_fail)
@@ -1575,7 +1672,7 @@ contains
                      if (converged) then
                         do ii = 1, NT
                            if (P(ii) > 0.0_wp) then
-                              call calc_bbody(T(ii), lam, spec)
+                              call calc_bbody(T(ii), lam, spec, emission_planck_grid)
                               Jout_local = Jout_local + dn_pop(ir) * P(ii) * Cabs_pop(:, ir) * spec
                            end if
                         end do
@@ -1587,7 +1684,7 @@ contains
                end if
 
                if (Equil) then
-                  call calc_bbody(Teq, lam, spec)
+                  call calc_bbody(Teq, lam, spec, emission_planck_grid)
                   Jout_local = Jout_local + dn_pop(ir) * Cabs_pop(:, ir) * spec
                end if
             end block
@@ -1606,13 +1703,13 @@ contains
          ! Force EQUILIBRIUM for ALL grains (no stochastic heating): each
          ! grain emits B_lam(T_eq)*Cabs at its OWN size/composition-dependent
          ! equilibrium temperature, computed from that grain's absorption
-         ! cross section. (Option 1: per-(type,size) equilibrium temperature.)
+         ! cross section. Each composition and grain size has its own T_eq.
          allocate(spec(NLAM))
          n_equil_eeq = 0
          do ir = 1, npop
             if (dn_pop(ir) <= 0.0_wp) cycle
             call calc_Teq(lam, Cabs_pop(:, ir), J_lam, T_first, kappB_pop(:, ir), Teq)
-            call calc_bbody(Teq, lam, spec)
+            call calc_bbody(Teq, lam, spec, emission_planck_grid)
             Jout = Jout + dn_pop(ir) * Cabs_pop(:, ir) * spec
             n_equil_eeq = n_equil_eeq + 1
          end do
@@ -1808,10 +1905,11 @@ contains
    end subroutine narrow_T_window
 
 
-   subroutine build_TgrigGHk(TMIN, TMAX, log_H_wide, log_kappB_wide, &
-                             T_out, H_out, kappB_out)
-      ! Helper: log-spaced T grid of NT points in [TMIN, TMAX], with
-      ! H and kappB interpolated (log-log) from the wide tables.
+   subroutine temperature_window_enthalpy_kappB(TMIN, TMAX, log_H_wide, log_kappB_wide, &
+                                                T_out, H_out, kappB_out)
+      ! The temperature window of one Draine-narrowing pass: NT log-spaced
+      ! temperatures in [TMIN, TMAX], with the enthalpy H and the Planck
+      ! absorption integral kappB interpolated (log-log) from the wide tables.
       real(wp), intent(in)  :: TMIN, TMAX
       real(wp), intent(in)  :: log_H_wide(:), log_kappB_wide(:)
       real(wp), intent(out) :: T_out(:), H_out(:), kappB_out(:)
@@ -1827,7 +1925,7 @@ contains
          H_out(i)     = exp(lH)
          kappB_out(i) = exp(lk)
       end do
-   end subroutine build_TgrigGHk
+   end subroutine temperature_window_enthalpy_kappB
 
 
    subroutine U_to_T(U, H_wide, log_H_wide, T_out)
@@ -1915,8 +2013,8 @@ contains
          call U_to_T(UMAX, H_wide, log_H_wide, TMAX)
          if (TMAX <= TMIN) exit                              ! degenerate
 
-         call build_TgrigGHk(TMIN, TMAX, log_H_wide, log_kappB_wide, &
-                             T_out, H, kappB)
+         call temperature_window_enthalpy_kappB(TMIN, TMAX, log_H_wide, log_kappB_wide, &
+                                                T_out, H, kappB)
          U = H
 
          call calc_P(lam, Cabs_r, J_lam, T_out, kappB, H, P_out, lnP, kappCMB_r)
@@ -1996,16 +2094,18 @@ contains
    end subroutine narrow_iterative
 
 
-   subroutine build_Cabs_pah()
-      ! Cabs_pah(NLAM, NA) by mixing neutral and cation per f_ion.
+   subroutine build_Cabs_pah(Qabs_neu, Qabs_ion)
+      ! Cabs_pah(NLAM, NA) by mixing neutral and cation per f_ion, from the
+      ! absorption efficiencies sed_init computed for the two populations, so
+      ! the blend carries the cross sections (and the vintage, DL07 or LD01)
+      ! of the populations it is the blend of.
+      real(wp), intent(in) :: Qabs_neu(:,:), Qabs_ion(:,:)   ! (NLAM, NA)
       integer  :: ja, iw
-      real(wp) :: Q_neu, Q_ion, ksi
+      real(wp) :: ksi
       do ja = 1, NA
          ksi = sd_fion(ja)
          do iw = 1, NLAM
-            call qpah_dl07(0, aeff(ja), lam(iw), Q_neu)
-            call qpah_dl07(1, aeff(ja), lam(iw), Q_ion)
-            Cabs_pah(iw, ja) = (1.0_wp - ksi)*Q_neu + ksi*Q_ion
+            Cabs_pah(iw, ja) = (1.0_wp - ksi)*Qabs_neu(iw, ja) + ksi*Qabs_ion(iw, ja)
          end do
          Cabs_pah(:, ja) = Cabs_pah(:, ja) * PI * (aeff(ja) * UM2CM)**2
       end do
@@ -2843,7 +2943,8 @@ contains
       ! the process; when absent the build stops on error (CLI behavior).
       !   status = 1  wavelength axis could not be read
       !   status = 2  lam_min below the D03 dielectric functions' own shortest
-      !               wavelength (EUV band only)
+      !               wavelength, or those functions could not be read (EUV
+      !               band only; the printed message tells the two apart)
       !   status = 3  an explicitly named extinction table (kext_path) could
       !               not be read
       integer, optional,  intent(out) :: status
@@ -2869,6 +2970,7 @@ contains
 
       integer  :: ja, jw, jt, k
       real(wp) :: a_um, geo, t, dlga, qext1, qsca1, qabs1, gsca1
+      logical  :: sil_index_read, gra_index_read
       real(wp) :: sil_lam_lo, sil_lam_hi, gra_lam_lo, gra_lam_hi, d03_lam_lo
       real(wp) :: A_norm(2), acm
       real(wp), allocatable :: lam_grid(:), lam_base(:), lna(:)
@@ -2934,6 +3036,21 @@ contains
       ! those functions' own coverage.  Past it `interp` freezes (n, k) at the
       ! boundary value, which would pass a constant index off as physics.
       if (n_lam_euv > 0) then
+         ! See sed_init_dl07: report an unreadable dielectric file as such.
+         ! Both loads are made before the test: the functions read their
+         ! tables, so neither call may be skipped by short-circuiting.
+         sil_index_read = silicate_index_available()
+         gra_index_read = graphite_index_available()
+         if (.not. (sil_index_read .and. gra_index_read)) then
+            write(*,'(a)') ' build_mrn: the D03 dielectric functions '// &
+               '(index_silD03, index_CpaD03, index_CpeD03) could not be read '// &
+               'under the SEDust data root; the EUV extension needs them.'
+            if (present(status)) then
+               status = 2;  deallocate(lam_grid);  return
+            else
+               stop 1
+            end if
+         end if
          call silicate_index_lambda_range(sil_lam_lo, sil_lam_hi)
          call graphite_index_lambda_range(gra_lam_lo, gra_lam_hi)
          d03_lam_lo = max(sil_lam_lo, gra_lam_lo)
@@ -4688,11 +4805,25 @@ contains
       !   status = 1  unknown stoch_method
       !   status = 2  'qm' selected but a population is missing its radii
       !   status = 3  m is not the most recently built model
+      !   status = 4  emission_bin_power_cutoff outside [0,1] or nonfinite
+      !   status = 5  nonzero emission_bin_power_cutoff with another solver
       integer,  optional, intent(out) :: status
       real(wp), allocatable :: Jout_pop(:), Jchan(:,:)
       integer :: ip, ic
 
       if (present(status)) status = 0
+      emission_bin_power_total = 0.0_wp
+      emission_bin_power_skipped = 0.0_wp
+      emission_bin_power_weighted_total = 0.0_wp
+      emission_bin_power_weighted_skipped = 0.0_wp
+      if (.not. ieee_is_finite(emission_bin_power_cutoff) .or. &
+          emission_bin_power_cutoff < 0.0_wp .or. emission_bin_power_cutoff > 1.0_wp) then
+         if (present(status)) then
+            status = 4; return
+         else
+            error stop 'dust_emission: invalid emission_bin_power_cutoff'
+         end if
+      end if
 
       ! This routine solves on the MODULE grids, which the last build filled,
       ! so it can only answer for the model that build produced.  Refuse any
@@ -4719,6 +4850,15 @@ contains
             stop 1
          end if
       end select
+
+      if (emission_bin_power_cutoff > 0.0_wp .and. &
+          trim(m%stoch_method) /= 'heuristic') then
+         if (present(status)) then
+            status = 5; return
+         else
+            error stop 'dust_emission: emission_bin_power_cutoff requires heuristic solver'
+         end if
+      end if
 
       ! The 'qm' solver reads each population's radii; refuse rather than read
       ! an unallocated array (all builders now fill them, so this is a guard).

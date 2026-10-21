@@ -812,7 +812,7 @@ contains
       call add_note('#   xi_gra(a) of HD23 eq. 15, which is all of the mixture that')
       call add_note('#   scatters (3.5% of tau_sca at 0.1 um, nothing past 0.3 um).')
       call add_note('# Size integral over the HD23 size distribution (analytic, per H).')
-      call add_note('# Computed from the SED pipeline optics (sed_init), all components.')
+      call add_note('# Computed from the optics sed_init builds, all components.')
       write(s,'(a,es13.6,a)') '# Dust mass per H, M_dust/N_H = ', Mdust_H, &
            ' g/H  (rho_Ad=2.74, rho_PAH=2.0 g/cm^3; K_abs = C_abs/H / this).'
       call add_note(trim(s))

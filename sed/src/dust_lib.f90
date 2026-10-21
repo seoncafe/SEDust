@@ -400,10 +400,13 @@ module dust_lib
    ! and calls use_tmatrix_euv_band_optics() once, as above. libtmatrix.a
    ! itself needs no OpenMP runtime; the threading is on the SEDust side.
    !
-   ! The validated solver core (sed_grain_loop & helpers in sed_astrodust_mod)
-   ! is untouched; this module only re-exports the model API and adds the
-   ! table/interpolation layer.
+   ! The solver core resides in sed_astrodust_mod. This module re-exports
+   ! its model API and adds the table/interpolation layer.
    use constants,         only: wp
+   use p_sub, only: radiation_absorption
+   use radfield, only: isolated_radiation_support_count
+   use sed_astrodust_mod, only: emission_bin_power_cutoff, emission_bin_power_total, &
+        emission_bin_power_skipped, emission_bin_power_weighted_total, emission_bin_power_weighted_skipped
    use dust_model_mod,    only: CHANNEL_NAME_LEN
    use sed_paths,         only: sed_set_data_root, sed_get_data_root
    use sed_mathlib,           only: locate
@@ -441,6 +444,9 @@ module dust_lib
    ! the model's own oprop/ and hcap/ -- and both are SCALAR: what the
    ! distribution ships for them is orientation-averaged, so they have no
    ! polarized optics and none can be formed here.
+   public :: radiation_absorption, isolated_radiation_support_count
+   public :: emission_bin_power_cutoff, emission_bin_power_total, emission_bin_power_skipped
+   public :: emission_bin_power_weighted_total, emission_bin_power_weighted_skipped
    public :: dust_model_t, build_dust
    public :: build_astrodust, build_dl07, build_mrn, build_zubko, build_dustem, &
              build_from_files

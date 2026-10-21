@@ -36,15 +36,15 @@
 \section{Introduction}
 
 This memo documents the construction of an astrodust thermal emission
-pipeline that reproduces the Hensley \& Draine (2023, ApJ 948, 55;
+calculation that reproduces the Hensley \& Draine (2023, ApJ 948, 55;
 hereafter HD23) ``astrodust'' model from first principles, working
 from the published dielectric function (Draine \& Hensley
 2021a, ApJ 909, 94, hereafter DH21a) and size distribution. The
 deliverable is a Fortran library callable from a 3D radiative-transfer
-driver per cell, with the per-H emission expressed in HD23 units
+driver per cell, with the emission per H atom expressed in HD23 units
 (\si{erg.s^{-1}.sr^{-1}} per H atom).
 
-The pipeline consists of five phases:
+The calculation consists of five phases:
 \begin{itemize}
   \item[A.] Random-orientation T-matrix sweep on the DH21 native grid
         (169 sizes $\times$ 1762 wavelengths,
@@ -93,7 +93,7 @@ gives $14.3\%$). This residual is now \emph{resolved}
 \emph{release} is internally inconsistent --- its emitted
 \texttt{irem} tables radiate 9.3\% (astrodust) and 3.2\% (PAH) more
 than its own released \Cabs\ absorb from the same field --- whereas our
-pipeline conserves energy to 0.15\%. The deficit equals HD23's own
+calculation conserves energy to 0.15\%. The deficit equals HD23's own
 emitted-vs-absorbed excess; its component-dependence rules out a
 heating-field / $U$-convention offset and points to an
 internal-vs-released cross-section vintage difference.
@@ -136,7 +136,7 @@ $\lambda$ range                            & \SIrange{1e-4}{3.981e4}{\micro\mete
 \subsection{Two-track cross-section architecture}
 
 HD23 treats the astrodust and PAH populations on \emph{separate} tracks
-for their optical properties, and our pipeline mirrors that separation
+for their optical properties, and our calculation mirrors that separation
 verbatim:
 
 \begin{itemize}
@@ -162,7 +162,7 @@ verbatim:
 \end{itemize}
 
 The two-track structure is propagated through the rest of the
-pipeline: astrodust uses the T-matrix Q tables and the full MPFA,
+calculation: astrodust uses the T-matrix Q tables and the full MPFA,
 PAH uses the DL07 cross sections (Sect.~\ref{sec:pah}). The
 present section is the astrodust track. The PAH track lives in
 Sect.~\ref{sec:pah}.
@@ -282,7 +282,7 @@ local bin width.
 To evaluate eq.~\ref{eq:tau}, the figure generator
 \texttt{docs/make\_figs.py} loads the full Q table, interpolates \Qabs\ and \Qext\ in
 $\log a$ from the 169-point DH21 grid onto the 167-point size-distribution
-grid (the same rule as the pipeline's \texttt{q\_table.f90}), sums, and
+grid (the same rule as the code's \texttt{q\_table.f90}), sums, and
 interpolates onto the HD23 release wavelength grid
 (\texttt{wav.dat}, 1000 points). The same calculation is run for the
 scattering channel against \texttt{scattering.dat}.
@@ -305,8 +305,8 @@ band ($\pm 1\%$) is shown in dotted red.}
 \label{fig:tau}
 \end{figure}
 
-This is the strongest single piece of evidence that the optical
-properties pipeline is sound, since it is purely a function of
+This is the strongest single piece of evidence that the optical-property
+calculation is sound, since it is purely a function of
 $\Qext$, the size distribution, and the cross-section conversion
 $C = \pi a^2 Q$, and is completely independent of any thermal
 or enthalpy assumption.
@@ -375,7 +375,7 @@ Observations:
         \SI{2175}{\angstrom} bump). Whatever physical revision
         produced the 2009 numbers, it changes the dust mass per H
         ($M_\mathrm{dust}/N_H$ dropped by 25\%) but not the wavelength
-        shape of the per-H optical properties at the percent level.
+        shape of the optical properties per H atom at the percent level.
   \item \textbf{Extinction:} all three curves reproduce the
         \SI{2175}{\angstrom} bump, the FUV rise, and a roughly
         power-law optical/NIR tail. HD23 is uniformly lower in
@@ -868,7 +868,7 @@ files).
 \paragraph{Direct test of the hypothesis (avenue 3).}
 We packaged the HD23 release \texttt{jori=1} block into a drop-in
 substitute Q-table and fed it through
-the full \texttt{sed\_solve} pipeline with a dedicated driver.
+the full \texttt{sed\_solve} calculation with a dedicated driver.
 Result for Stage S1\_C1, measured with the literal Mathis~1983 field
 and before the enthalpy ghost-bin correction, and not re-measured
 since --- the ``baseline'' column is therefore the state of that run,
@@ -885,7 +885,7 @@ band ($\mu$m)            & baseline (then) & jori=1 substitute & naive x1.186 & 
 \bottomrule
 \end{tabularx}
 
-The full-pipeline substitution recovers only $\sim 4$ percentage
+The substitution through the full calculation recovers only $\sim 4$ percentage
 points of the FIR-peak deficit (from $-15.1\%$ to $-11.3\%$),
 nowhere near the $-0.2\%$ that the naive $\times 1.186$ scaling
 predicted. At the same time the sub-mm and mm bands flip sign and
@@ -1079,7 +1079,7 @@ peak sits closer to 130\,$\mu$m). The CMB temperature change
 CMB heating is subdominant to stellar UV at all but the very
 largest grain sizes.
 
-The full-pipeline effect for the headline comparison (Stage S1\_C1
+The full-calculation effect for the headline comparison (Stage S1\_C1
 vs HD23 \texttt{astrodust\_irem.dat} at $\log U = 0.20$) is
 summarised in Table~\ref{tab:mathis_c}: the FIR-peak deficit moves
 from $-14.33\%$ to $-7.57\%$, sub-mm from $-5.53\%$ to $-3.07\%$,
@@ -1183,20 +1183,20 @@ PAH       & $2.003\times10^{-24}$ & $2.067\times10^{-24}$ &
 \end{tabular}
 \caption{Energy budget per H at $\log U = 0.20$. The HD23 release
 emits $9.3\%$ (astrodust) and $3.2\%$ (PAH) more than its own released
-\Cabs\ absorb; our pipeline conserves to $0.15\%$
+\Cabs\ absorb; our calculation conserves to $0.15\%$
 (ours$/P_{\rm abs} = 0.999$).}
 \label{tab:ad_energy}
 \end{table}
 
 The ratio $P_{\rm em}/P_{\rm abs}$ is constant in $U$ (a pure
-amplitude factor). Our pipeline, run with the release-consistent
+amplitude factor). Our calculation, run with the release-consistent
 \Cabs, conserves energy to $0.15\%$ and therefore lands exactly at
 ours/HD23 $= 0.914$, matching the emergent SED itself, which
 integrates to $0.911\times$ HD23 over
 \SIrange{0.1}{3000}{\micro\meter} and $0.905\times$ over
 \SIrange{60}{300}{\micro\meter} --- i.e.\ \emph{the long-standing
 FIR-peak ``deficit'' equals HD23's own emitted-vs-absorbed excess},
-not an error in our pipeline. Because the excess is
+not an error in our calculation. Because the excess is
 component-dependent ($9.3\%$ astrodust vs.\ $3.2\%$ PAH), it cannot be
 a heating-field or $U$-convention offset (which would shift both
 components equally); it points instead to the internal \Cabs\ (or
@@ -1697,7 +1697,7 @@ test; \texttt{pyutil/tests/} carries only
 The Python sidecar is intended for prototyping radiation-field
 shapes, plotting single-grain spectra, and validating the Fortran
 library on representative grains without running the full
-size-distribution pipeline.
+size-distribution calculation.
 
 
 \section{Model-agnostic dust-emission library (Phase H)}
@@ -2203,7 +2203,7 @@ numbers that made the spheroid the default rather than the option.
 
 \section{Conclusions and next steps}
 
-The pipeline reproduces HD23's published results across the
+The calculation reproduces HD23's published results across the
 independent observables we have probed:
 
 \begin{tabularx}{0.95\textwidth}{l l c}
@@ -2277,7 +2277,7 @@ candidate:
         that HD23 used the \texttt{jori=1} block of the release file
         directly (instead of constructing the random-orientation
         average) was tested by building a drop-in substitute Q-table
-        and feeding it through the full \texttt{sed\_solve} pipeline.
+        and feeding it through the full \texttt{sed\_solve} calculation.
         The substitution recovers
         only $\sim 4$ percentage points of the deficit (from $-15.1\%$
         to $-11.3\%$ at the FIR peak), with sign flips in adjacent
@@ -2317,7 +2317,7 @@ $2$--$3\%$ sub-mm / mm deficit) was subsequently \emph{resolved}
 by an energy-budget audit (\S\ref{sec:phaseE-resolution},
 Table~\ref{tab:ad_energy}): the HD23 \emph{release} radiates $9.3\%$
 (astrodust) and $3.2\%$ (PAH) more than its own released \Cabs\
-absorb from the same field, whereas our pipeline conserves energy to
+absorb from the same field, whereas our calculation conserves energy to
 $0.15\%$. The deficit therefore equals HD23's own emitted-vs-absorbed
 excess, not an error on our side, and this rules out \emph{both}
 candidates raised above. Candidate~(i), a $U_{\rm Mathis}$ /
@@ -2325,7 +2325,7 @@ heating-field convention offset, cannot produce a
 \emph{component-dependent} excess ($9.3\%$ astrodust vs.\ $3.2\%$
 PAH) --- it would shift both components equally. Candidate~(ii), a
 \Teq/size-sampling difference on our side, is excluded because the
-pipeline conserves energy to $0.15\%$ when run against the
+calculation conserves energy to $0.15\%$ when run against the
 release-consistent \Cabs. The residual is an amplitude-type
 inconsistency pointing to the internal \Cabs\ (or abundance
 normalization) used for the \texttt{irem} tables exceeding what the

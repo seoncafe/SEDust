@@ -5,7 +5,10 @@ module mc_sed
    !
    ! Two populations are computed:
    !   - Astrodust grains    (Cabs, dn_ad, comp = 'ad_s1_c1'|'ad_s1_c2'|'ad_s2')
-   !   - PAH grains          (Cabs_pah, dn_pah, comp = 'pah')
+   !   - PAH grains          (Cabs_cneu/kappB_cneu, dn_cneu and
+   !                          Cabs_cion/kappB_cion, dn_cion, comp = 'pah'),
+   !                          the two charge states solved separately and
+   !                          summed, as sed_solve_pah does
    !
    ! The size loop is OpenMP-parallel.  Each iteration creates its own
    ! grain_t and rng_t (both stack-local in the parallel region), runs
@@ -25,11 +28,10 @@ module mc_sed
    use mc_engine,             only: grain_setup_from_cabs, mc_run_engine, &
                                     mc_run_engine_2pass, mc_run_engine_buffered, &
                                     grain_get_QPL
-   use sed_astrodust_mod,     only: sed_init, NLAM, NA, NT, lam, aeff,    &
-                                    dn_ad, dn_pah, Cabs, Cabs_pah, T_first, &
-                                    kappB_first, kappB_pah_first, &
+   use sed_astrodust_mod,     only: NLAM, NA, NT, lam, aeff, T_first, &
+                                    dn_ad, Cabs, kappB_first, &
                                     Cabs_cneu, Cabs_cion, dn_cneu, dn_cion, &
-                                    sed_solve, sed_solve_pah
+                                    kappB_cneu, kappB_cion
    implicit none
    private
    public :: mc_sed_solve_astrodust, mc_sed_solve_pah, mc_sed_solve_total
@@ -49,7 +51,7 @@ contains
       ! (large) grain branch:
       !   use_mc_for_large_grain = .false. (default): equilibrium grains use
       !       calc_Teq -- delta-function emission at Teq, the analytic
-      !       production-pipeline path.
+      !       path sed_solve takes.
       !   use_mc_for_large_grain = .true.: equilibrium grains also use MC.
       ! mc_engine_kind selects which engine handles the MC path:
       !   'fixed'    : mc_run_engine (log grid 2-5000 K, fast, low-resolution
@@ -83,10 +85,15 @@ contains
       real(wp),         intent(out) :: lamI_lam_out(:)
       real(wp), allocatable :: lamI_cion(:)
       allocate(lamI_cion(size(lamI_lam_out)))
-      call mc_sed_loop(Cabs_cneu, dn_cneu, kappB_pah_first, 'pah', J_lam, U_isrf, &
+      ! Each charge state is cooled by the kappB of its own Cabs, as in
+      ! sed_solve_pah; the f_ion-blended kappB_pah_first would set Teq (the
+      ! equilibrium gate, the equilibrium emission and the adaptive DA85
+      ! split) of a grain that absorbs as one charge state and cools as the
+      ! blend.
+      call mc_sed_loop(Cabs_cneu, dn_cneu, kappB_cneu, 'pah', J_lam, U_isrf, &
                        N_events, base_seed, use_mc_for_large_grain, &
                        mc_engine_kind, lamI_lam_out)
-      call mc_sed_loop(Cabs_cion, dn_cion, kappB_pah_first, 'pah', J_lam, U_isrf, &
+      call mc_sed_loop(Cabs_cion, dn_cion, kappB_cion, 'pah', J_lam, U_isrf, &
                        N_events, base_seed + 5000, use_mc_for_large_grain, &
                        mc_engine_kind, lamI_cion)
       lamI_lam_out = lamI_lam_out + lamI_cion
@@ -241,7 +248,7 @@ contains
                if (lam_c_adapt < lam(2))      lam_c_adapt = lam(2)
                if (lam_c_adapt > lam(NLAM-1)) lam_c_adapt = lam(NLAM-1)
             else
-               lam_c_adapt = 1000.0_wp     ! fallback to original default
+               lam_c_adapt = 1000.0_wp     ! the fixed DA85 split used before the adaptive one
             end if
 
             call grain_setup_from_cabs(grain, aeff(ja), U_isrf, comp, lam, Q_ja, &

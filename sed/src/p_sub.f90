@@ -1,35 +1,22 @@
 module p_sub
    ! Equilibrium-temperature solver and Guhathakurta-Draine (1989)
-   ! stochastic-heating temperature-distribution solver.
+   ! stochastic-heating temperature-distribution solver, with the
+   ! finite-bin upward transition rates of Draine & Li (2001).
    !
-   ! Includes the following optimizations
-   ! relative to the original (justified for use inside a 3D-RT loop
-   ! that calls sed_solve millions of times):
-   !
-   !   - Logarithmic-trapezoid integration weights `dlnlam_int(:)` are
-   !     precomputed once via `p_sub_setup(lambda)` instead of being
-   !     rebuilt inside calc_Teq on every call. Saves ~3 nlambda
-   !     log calls per equilibrium solve.
-   !   - `log_lambda(:)` is also cached (used by the highest-bin
-   !     correction in calc_P).
-   !   - calc_Teq's inner sum is collapsed to a single SUM intrinsic;
-   !     gfortran -O2 vectorizes it cleanly.
-   !
-   ! The numerical algorithm follows Guhathakurta & Draine (1989); outputs match
-   ! to roundoff at the regression test points.
+   ! Absorption and upward transitions use the same sampled field support and
+   ! the same interpolant: Cabs * J_lambda * lambda linear in ln(lambda)
+   ! between samples, which radiation_absorption integrates exactly (the
+   ! logarithmic trapezoid).
+   ! The wavelength grid must be positive and strictly increasing. A continuum
+   ! field ends at its first and last significant samples; no half interval
+   ! toward an exterior zero sample contributes photons beyond those ends.
 
-   use, intrinsic :: iso_fortran_env, only: real64
+   use, intrinsic :: iso_fortran_env, only: real64, int64
    use constants, only: wp
-   use sed_mathlib,   only: interp, logadd
-   ! The upward-transition rates are driven by PHOTONS, so the band they are
-   ! integrated over is the band the field occupies -- not the span of whatever
-   ! optics table the model happens to be tabulated on.  hardest_photon_energy
-   ! is the library's one answer to "how hard does this field get"; calc_P is
-   ! the fourth caller that needs it.
-   use radfield,      only: hardest_photon_energy
+   use radfield, only: radiation_field_support, isolated_radiation_support_count, RADIATION_SUPPORT_ISOLATED
    implicit none
    private
-   public :: p_sub_setup, calc_Teq, calc_P
+   public :: p_sub_setup, calc_Teq, calc_P, radiation_absorption
 
    real(wp), parameter :: PI     = 3.141592653589793238462643383279502884197d0
    real(wp), parameter :: FOURPI = PI * 4.0d0
@@ -37,33 +24,26 @@ module p_sub
    real(wp), parameter :: hp    = 6.62606957d-27  ! cm^2 g s^-1
    real(wp), parameter :: hc    = hp*c*1d4        ! erg um  (lambda is in um)
 
-   ! Sampling of the highest-bin integral, which runs over every photon more
-   ! energetic than the top enthalpy bin's gap.
-   !
-   ! The rule used to be a flat 51 points spanning from lambda(1) -- the short
-   ! end of the OPTICS GRID -- to the gap wavelength.  That tied the resolution
-   ! to the optics table instead of to the band being integrated.  On a grid
-   ! stopping at the Lyman limit it happened to work, giving dln(lambda) =
-   ! 0.0018-0.0238 across the bins that carry the correction; on a table
-   ! carried to 1e-4 um the same 51 points spread over 912 times the range and
-   ! left between 1 and 8 of them inside the band the field actually occupies.
-   !
-   ! Moving the lower limit to the field's own short end fixes where the band
-   ! is, but a fixed count would still make the step follow the band's width,
-   ! so the count follows it instead: enough points for a step of
-   ! DLNWAV_TARGET, never fewer than NWAV_MIN, never more than NWAV_MAX.
-   ! DLNWAV_TARGET is the coarsest step the old 51 points ever gave over the
-   ! bands that carry the correction, so a narrow band is sampled at least as
-   ! finely as before (NWAV_MIN reproduces it outright), and a band four
-   ! decades wide -- which the old rule sampled at dln(lambda) = 0.19 -- is no
-   ! longer starved.  The integrand, C_abs(lambda) * lambda^2 * J_lambda, is
-   ! smooth over the illuminated band, so a bounded step is all it needs.
-   integer,  parameter :: NWAV_MIN      = 51
-   integer,  parameter :: NWAV_MAX      = 301
-   real(wp), parameter :: DLNWAV_TARGET = 0.02_wp
+   ! The absorbed power per unit photon energy on a field's support, built
+   ! once for each calc_P call (absorbed_power_spectrum).
+   type :: absorbed_power_t
+      integer :: m = 0
+      real(wp), allocatable :: E(:), y(:), slope(:), F0(:), F1(:)
+   end type absorbed_power_t
 
-   real(wp), allocatable :: dlnlam_int(:)
-   real(wp), allocatable :: log_lambda(:)
+   ! A photon energy E [erg] on that spectrum: its segment i, y there, and
+   ! the absorbed power F0 = int_0^E g dE below it.
+   type :: photon_energy_t
+      real(wp) :: E = 0.0_wp, y = 0.0_wp, F0 = 0.0_wp
+      integer  :: i = 0
+   end type photon_energy_t
+
+   ! 1/k, k = 1 .. 15, for the series of exponential_remainders
+   real(wp), parameter :: INV_INTEGER(15) = [1.0_wp, 0.5_wp, 1.0_wp/3.0_wp, 0.25_wp, &
+      0.2_wp, 1.0_wp/6.0_wp, 1.0_wp/7.0_wp, 0.125_wp, 1.0_wp/9.0_wp, 0.1_wp, &
+      1.0_wp/11.0_wp, 1.0_wp/12.0_wp, 1.0_wp/13.0_wp, 1.0_wp/14.0_wp, 1.0_wp/15.0_wp]
+
+   real(wp), allocatable :: cached_lambda(:), log_lambda(:)
    integer :: NLAM = 0
 
    ! calc_P matrix workspace, reused per thread across calls to avoid the
@@ -74,23 +54,75 @@ module p_sub
 contains
 
    subroutine p_sub_setup(lambda)
-      ! Precompute the wavelength integration weights and the cached
-      ! log(lambda) array. Call once after the lambda grid is loaded
-      ! (e.g., from the Q table) and before any calc_Teq / calc_P call.
+      ! Cache logarithmic wavelengths after the model grid is loaded.
+      ! The public absorption integral also accepts other grids and computes
+      ! their logarithms locally without changing this shared read-only cache.
       real(wp), intent(in) :: lambda(:)
       integer :: k
       NLAM = size(lambda)
-      if (allocated(dlnlam_int)) deallocate(dlnlam_int, log_lambda)
-      allocate(dlnlam_int(NLAM), log_lambda(NLAM))
+      if (NLAM < 2) error stop 'p_sub_setup: at least two wavelengths required'
+      if (any(lambda <= 0.0_wp)) error stop 'p_sub_setup: nonpositive wavelength'
+      if (any(lambda(2:) <= lambda(:NLAM-1))) error stop 'p_sub_setup: unordered wavelengths'
+      if (allocated(cached_lambda)) deallocate(cached_lambda, log_lambda)
+      allocate(cached_lambda(NLAM), log_lambda(NLAM))
+      cached_lambda = lambda
       do k = 1, NLAM
          log_lambda(k) = log(lambda(k))
       end do
-      dlnlam_int(1)    = 0.5_wp * (log_lambda(2) - log_lambda(1))
-      dlnlam_int(NLAM) = 0.5_wp * (log_lambda(NLAM) - log_lambda(NLAM-1))
-      do k = 2, NLAM-1
-         dlnlam_int(k) = 0.5_wp * (log_lambda(k+1) - log_lambda(k-1))
-      end do
    end subroutine p_sub_setup
+
+
+   subroutine radiation_support(lambda, Jfield, first, last)
+      ! The continuum definition is shared with hardest_photon_energy.
+      ! Logarithmic integration additionally requires this grid ordering.
+      real(wp), intent(in) :: lambda(:), Jfield(:)
+      integer, intent(out) :: first, last
+      integer :: support_status
+      if (size(lambda) /= size(Jfield)) error stop 'radiation_support: size mismatch'
+      if (any(lambda <= 0.0_wp)) error stop 'radiation_support: nonpositive wavelength'
+      if (size(lambda) > 1) then
+         if (any(lambda(2:) <= lambda(:size(lambda)-1))) &
+            error stop 'radiation_support: unordered wavelengths'
+      end if
+      call radiation_field_support(lambda, Jfield, first, last, support_status)
+      if (support_status == RADIATION_SUPPORT_ISOLATED) then
+         !$omp atomic update
+         isolated_radiation_support_count = isolated_radiation_support_count + 1_int64
+      end if
+   end subroutine radiation_support
+
+
+   function radiation_absorption(lambda, Cabs, Jfield) result(absorption)
+      ! Integral of Cabs * J_lambda d(lambda) by the logarithmic trapezoid
+      ! rule, restricted to the sampled continuum support. No 4*pi or unit
+      ! conversion is included: lambda and J_lambda must use compatible units.
+      ! A host can use this same function for its absorbed-power normalization.
+      ! No p_sub_setup call is required for this public integral.
+      real(wp), intent(in) :: lambda(:), Cabs(:), Jfield(:)
+      real(wp) :: absorption, width, left, right, loglam(size(lambda))
+      logical :: cache_matches
+      integer :: first, last, k
+      if (size(Cabs) /= size(lambda)) error stop 'radiation_absorption: size mismatch'
+      call radiation_support(lambda, Jfield, first, last)
+      absorption = 0.0_wp
+      if (first == 0) return
+      cache_matches = .false.
+      if (allocated(cached_lambda)) then
+         if (size(cached_lambda) == size(lambda)) cache_matches = all(cached_lambda == lambda)
+      end if
+      if (cache_matches) then
+         loglam = log_lambda
+      else
+         loglam = log(lambda)
+      end if
+      left = Cabs(first) * Jfield(first) * lambda(first)
+      do k = first+1, last
+         right = Cabs(k) * Jfield(k) * lambda(k)
+         width = loglam(k) - loglam(k-1)
+         absorption = absorption + 0.5_wp * (left + right) * width
+         left = right
+      end do
+   end function radiation_absorption
 
 
    subroutine calc_Teq(lambda, Cabs, Jfield, T, kappB, Teq)
@@ -109,7 +141,7 @@ contains
       real(wp), intent(out) :: Teq
       real(wp) :: kappJ, lTeq
       integer  :: nT, j
-      kappJ = sum(Cabs * Jfield * lambda * dlnlam_int)
+      kappJ = radiation_absorption(lambda, Cabs, Jfield)
       nT = size(T)
       if (kappJ <= kappB(1)) then
          Teq = T(1)
@@ -128,38 +160,50 @@ contains
 
 
    subroutine calc_P(lambda, Cabs, Jfield, T, kappB, H, P, lnP, kappCMB)
-      ! Guhathakurta & Draine (1989) matrix solver for the temperature
-      ! distribution P(T) of a stochastically heated grain.
-      ! Numerics follow the Guhathakurta & Draine recursion; only the
-      ! `log_lambda` lookup avoids a recomputed log() call inside the
-      ! highest-bin correction loop.
+      ! Guhathakurta & Draine (1989, GD89) matrix solver for the temperature
+      ! distribution P(T) of a stochastically heated grain, on the enthalpy
+      ! grid H(T) (erg), with the GD89 linear recursion for the steady state.
+      !
+      ! Downward rates are GD89's continuous cooling,
+      !    A(u-1, u) = 4 pi [kappB(u) - kappCMB] / (H(u) - H(u-1)).
+      ! Upward rates are Draine & Li (2001, ApJ 551, 807; DL01) eqs. (15)-(24)
+      ! for l -> u < nT, eq. (16) for the top bin nT, and eq. (28) for the
+      ! absorptions that stay inside bin l, added to l -> l+1; see
+      ! upward_absorption_rates.  A grain is taken to be spread uniformly over
+      ! bin l, and a photon of energy E moves it into bin u in proportion to
+      ! the overlap of [H_l,min + E, H_l,max + E] with bin u.  For bins
+      ! narrow compared with the photon energies and with the scale on which
+      ! Cabs J varies, these reduce to DL01 eq. (26), i.e. GD89 eq. (2.5),
+      !    A(u, l) = 4 pi Cabs J_lambda hc Delta H_u / E^3,  E = H_u - H_l,
+      ! the point-sampled form used here until 2026-10-21.  That limit fails
+      ! wherever a bin is broader than the band the field occupies: sampled
+      ! at one photon energy per bin pair, a bin's absorbed power then misses
+      ! part of the band or counts part of it twice.
+      !
+      ! Validity: the rates hold at any bin width.  Summed over u, every bin
+      ! l < nT absorbs the power 4 pi radiation_absorption(lambda, Cabs,
+      ! Jfield) to rounding; photons that would carry the grain past the
+      ! lower edge of the top bin are assigned to the top bin (eq. 16, which
+      ! counts their energy, where GD89 eq. (2.6) counted them as photons).
+      ! The top bin has no upward transition, so the enthalpy window must
+      ! leave P(nT) negligible.  The steady state then emits
+      ! 4 pi sum_(u>=2) P(u) [kappB(u) - kappCMB] = (1 - P(nT)) times that
+      ! power, an identity of the recursion.  What finite bins still
+      ! approximate is the uniform spread within a bin and the cooling
+      ! difference quotient, so the emitted spectrum's shape must be checked
+      ! by refining the enthalpy grid.  A field that absorbs nothing leaves
+      ! P(1) = 1.
       real(wp), intent(in)    :: lambda(:), Cabs(:), Jfield(:)
       real(wp), intent(in)    :: T(:), kappB(:), H(:)
       real(wp), intent(inout) :: P(:), lnP(:)
       real(wp), optional, intent(in) :: kappCMB
-      integer  :: nlambda, nT, k, i1, i2, j
-      real(wp) :: ener, wavl, kappB_tot
-      real(wp) :: Jwavl, delH, Cross
+      integer  :: nT, i1, i2, j, first, last
+      real(wp) :: kappB_tot
       real(wp) :: sumP
       real(wp) :: sumB
-      integer  :: nwav
-      real(wp) :: dlnwav, wav
-      real(wp) :: u_hard, lam_hard, span
 
-      nlambda = size(lambda)
       nT      = size(T)
-      ! Hardest photon the FIELD carries, and the wavelength that goes with it.
-      ! Every upward rate below is cut off there: a transition needing more
-      ! energy than this has nothing to drive it.  A field that is zero
-      ! everywhere returns 0, and the fallback then leaves the old grid-edge
-      ! behavior rather than dividing by it.
-      u_hard = hardest_photon_energy(lambda, Jfield)
-      if (u_hard > 0.0_wp) then
-         lam_hard = hc / u_hard
-      else
-         lam_hard = lambda(1)
-         u_hard   = hc / lambda(1)
-      end if
+      call radiation_support(lambda, Jfield, first, last)
       ! Amat_ws/Bmat_ws are reused per thread across calls: (re)allocate only
       ! when unallocated or when nT changes, then zero-fill (the recursion
       ! rebuilds the whole matrix each call).
@@ -182,47 +226,8 @@ contains
          Amat_ws(i1-1, i1) = FOURPI / (H(i1) - H(i1-1)) * kappB_tot
       end do
 
-      ! Upward transitions
-      do i1 = 1, nT-1
-         do i2 = i1+1, nT
-            ener = H(i2) - H(i1)
-            if (i2 == nT) then
-               delH = H(i2) * 0.5_wp * log(H(i2)/H(i2-1))
-            else
-               delH = H(i2) * 0.5_wp * log(H(i2+1)/H(i2-1))
-            end if
-            wavl = hc / ener
-            call interp(lambda, Jfield, wavl, Jwavl)
-            call interp(lambda, Cabs,   wavl, Cross)
-            ! No photon this hard exists, so the transition has no driver.
-            ! Without the test `interp` clamps instead: asked below lambda(1) it
-            ! returns Jfield(1), which on a grid ending at the field's own edge
-            ! is the full J there rather than zero, and every gap wider than the
-            ! hardest photon is then driven by a photon flux that is not in the
-            ! field.  A grid carried past the field makes the clamp harmless,
-            ! but the cutoff belongs to the physics, not to the tabulation.
-            if (ener > u_hard) Jwavl = 0.0_wp
-            Amat_ws(i2, i1) = FOURPI * Cross * hc * delH / ener**3 * Jwavl
-            ! Highest-bin: add transitions to all energies above this bin, i.e.
-            ! to every photon shorter than wavl.  The field carries none shorter
-            ! than lam_hard, so the band is [lam_hard, wavl] -- and it is empty
-            ! when the gap already exceeds the hardest photon.  Leaving that
-            ! case to the loop would integrate backwards over an unilluminated
-            ! band and subtract a rate.
-            if (i2 == nT .and. ener < u_hard) then
-               span   = log(wavl/lam_hard)
-               nwav   = min(NWAV_MAX, max(NWAV_MIN, ceiling(span/DLNWAV_TARGET) + 1))
-               dlnwav = span/(nwav-1)
-               do k = 1, nwav
-                  wav = lam_hard * exp((k-1)*dlnwav)
-                  call interp(lambda, Jfield, wav, Jwavl)
-                  call interp(lambda, Cabs,   wav, Cross)
-                  Amat_ws(i2, i1) = Amat_ws(i2, i1) + &
-                     FOURPI * Cross * wav**2 / hc * dlnwav * Jwavl
-               end do
-            end if
-         end do
-      end do
+      ! Upward transitions (DL01 eqs. 15-16, 28)
+      call upward_absorption_rates(lambda, Cabs, Jfield, first, last, H, nT, Amat_ws)
 
       sumB = 0_wp
       i2 = nT
@@ -255,9 +260,324 @@ contains
             !--- set above already carries "unreachable"; leave it in place.
             where (P > 0_wp) lnP = log(P)
          end if
+      else
+         ! Without absorbed photons the normalized stationary state is the
+         ! lowest enthalpy bin, not an identically zero probability vector.
+         P(1) = 1.0_wp
+         lnP(1) = 0.0_wp
       end if
       ! Amat_ws/Bmat_ws are intentionally not deallocated: they are kept
       ! (per thread) for reuse on the next call.
    end subroutine calc_P
+
+   subroutine upward_absorption_rates(lambda, Cabs, Jfield, first, last, H, nT, Amat)
+      ! Photon-absorption rates A(u, l) [s^-1] from enthalpy bin l to every
+      ! higher bin u, Draine & Li (2001, ApJ 551, 807) eqs. (15)-(24), (16)
+      ! and (28).  Amat(u, l), u > l, must be zero on entry.
+      !
+      ! Bin u is [E_u,min, E_u,max] = [edge(u-1), edge(u)], with each inner
+      ! edge at the geometric mean sqrt(H_u H_(u+1)) of adjacent enthalpies and
+      ! the two outer edges one half step beyond the end points, so the width
+      ! dH_u agrees with GD89's H_u ln(H_(u+1)/H_(u-1))/2 to second order in
+      ! the step.  With g(E) dE = 4 pi Cabs J_lambda dlambda, the power
+      ! absorbed per unit photon energy, eq. (15) is
+      !    A(u, l) = [int Phi_ul(E) g(E) dE] / (H_u - H_l),
+      ! where Phi_ul(E) = dH_u G_ul(E) is the fraction of a grain spread
+      ! uniformly over bin l that a photon E moves into bin u (eqs. 17-24):
+      ! (E - W1)/dH_l on (W1, W2), min(dH_l, dH_u)/dH_l on (W2, W3) and
+      ! (W4 - E)/dH_l on (W3, W4), with W1 = E_u,min - E_l,max,
+      ! W2 = W1 + min(dH_l, dH_u), W3 = W1 + max(dH_l, dH_u) and
+      ! W4 = W1 + dH_l + dH_u.  In terms of A_k = edge(k) - edge(l) and
+      ! B_k = edge(k) - edge(l-1), W1 = A_(u-1), W4 = B_u and {W2, W3} =
+      ! {B_(u-1), A_u}, so stepping u adds the two photon energies A_u, B_u.
+      !
+      ! Eq. (16): the top bin nT takes every photon that carries the grain past
+      ! its lower edge, with weight (E - W1)/dH_l up to Wc = W1 + dH_l and 1
+      ! beyond.  Eq. (28): photons E < dH_l leave a fraction 1 - E/dH_l of bin
+      ! l inside bin l; that power is added to l -> l+1.  Summed over u these
+      ! fractions are 1 at every E > 0, so each bin l < nT absorbs the whole
+      ! power, 4 pi radiation_absorption(lambda, Cabs, Jfield).
+      !
+      ! The rising and falling edges are integrated in closed form from their
+      ! start over their width (absorption_moments), not as differences of
+      ! the cumulants F0 and F1 at their ends: a bin can be many orders of
+      ! magnitude narrower than the photon energies, and the moment
+      ! int (E - W) g dE taken as F1 - W F0 at E ~ W would lose the digits
+      ! of E/dH.  The plateau and the top-bin tail are differences of F0,
+      ! whose rounding is a fraction of order 1e-16 of the bin's whole
+      ! absorption.
+      real(wp), intent(in)    :: lambda(:), Cabs(:), Jfield(:), H(:)
+      integer,  intent(in)    :: first, last, nT
+      real(wp), intent(inout) :: Amat(:,:)
+      type(absorbed_power_t) :: g
+      type(photon_energy_t)  :: A_lo, B_lo, A_hi, B_hi, zero, hardest
+      real(wp) :: edge(0:max(nT, 1)), dH(max(nT, 1))
+      real(wp) :: dH_l, dH_u, rise, power, d0, r1
+      integer  :: l, u
+
+      if (first == 0 .or. last <= first .or. nT < 2) return
+      call absorbed_power_spectrum(lambda, Cabs, Jfield, first, last, g)
+
+      edge(0) = H(1) * sqrt(H(1) / H(2))
+      do l = 1, nT-1
+         edge(l) = sqrt(H(l) * H(l+1))
+      end do
+      edge(nT) = H(nT) * sqrt(H(nT) / H(nT-1))
+      ! The widths edge(l) - edge(l-1) from the enthalpy differences, which
+      ! are exact, rather than from the difference of two edges, which loses
+      ! the digits of H/dH on a narrow window.
+      dH(1) = sqrt(H(1) / H(2)) * (H(2) - H(1))
+      do l = 2, nT-1
+         dH(l) = sqrt(H(l)) * (H(l+1) - H(l-1)) / (sqrt(H(l+1)) + sqrt(H(l-1)))
+      end do
+      dH(nT) = sqrt(H(nT) / H(nT-1)) * (H(nT) - H(nT-1))
+
+      zero    = photon_energy(g, 0.0_wp, 1)
+      hardest = photon_energy(g, g%E(g%m), g%m)
+      B_lo%i = 1
+      do l = 1, nT-1
+         dH_l = dH(l)
+         A_lo = zero
+         B_lo = photon_energy(g, dH_l, B_lo%i)
+         ! eq. (28): weight dH_l - E on (0, dH_l)
+         call absorption_moments(g, zero, B_lo, dH_l, d0, r1)
+         Amat(l+1, l) = (dH_l * d0 - r1) / (dH_l * (H(l+1) - H(l)))
+         do u = l+1, nT
+            if (A_lo%i == g%m) exit
+            if (u == nT) then
+               ! eq. (16): weight E - W1 on (W1, Wc), dH_l on (Wc, E_hard),
+               ! with Wc = W1 + dH_l = B_(nT-1)
+               call absorption_moments(g, A_lo, B_lo, dH_l, d0, r1)
+               power = r1 + dH_l * (hardest%F0 - B_lo%F0)
+            else
+               dH_u = dH(u)
+               rise = min(dH_l, dH_u)
+               A_hi = photon_energy(g, edge(u) - edge(l), A_lo%i)
+               B_hi = photon_energy(g, edge(u) - edge(l-1), B_lo%i)
+               power = 0.0_wp
+               if (B_hi%i > 0) then
+                  ! rising edge (A_(u-1), W2), plateau (W2, W3), falling
+                  ! edge (W3, B_u)
+                  if (B_lo%E <= A_hi%E) then
+                     call absorption_moments(g, A_lo, B_lo, rise, d0, r1)
+                     power = r1 + rise * max(A_hi%F0 - B_lo%F0, 0.0_wp)
+                     call absorption_moments(g, A_hi, B_hi, rise, d0, r1)
+                  else
+                     call absorption_moments(g, A_lo, A_hi, rise, d0, r1)
+                     power = r1 + rise * max(B_lo%F0 - A_hi%F0, 0.0_wp)
+                     call absorption_moments(g, B_lo, B_hi, rise, d0, r1)
+                  end if
+                  power = power + (rise * d0 - r1)
+               end if
+               A_lo = A_hi
+               B_lo = B_hi
+            end if
+            Amat(u, l) = Amat(u, l) + max(power, 0.0_wp) / (dH_l * (H(u) - H(l)))
+         end do
+      end do
+   end subroutine upward_absorption_rates
+
+
+   subroutine absorbed_power_spectrum(lambda, Cabs, Jfield, first, last, g)
+      ! The absorbed power per unit photon energy on the field support, in
+      ! ascending photon energy E_n = hc/lambda: g(E) dE = 4 pi y d(ln E),
+      ! y = Cabs J_lambda lambda, linear in ln(E) between samples -- the
+      ! interpolant of radiation_absorption's logarithmic trapezoid.  The
+      ! segment widths tau_n in ln(E) are taken from the sample energies
+      ! themselves, ln(1 + relative step), the scale on which every
+      ! photon energy inside a segment is placed (photon_energy); the total
+      ! power then agrees with radiation_absorption to the rounding of its
+      ! widths.  Stores the slopes dy/d(ln E) and the cumulants
+      ! F0(E_n) = int_0^E_n g dE and F1(E_n) = int_0^E_n E g dE.
+      real(wp), intent(in) :: lambda(:), Cabs(:), Jfield(:)
+      integer,  intent(in) :: first, last
+      type(absorbed_power_t), intent(out) :: g
+      real(wp) :: tau, phi, psi
+      integer  :: n, k
+      g%m = last - first + 1
+      allocate(g%E(g%m), g%y(g%m), g%slope(g%m), g%F0(g%m), g%F1(g%m))
+      do n = 1, g%m
+         k = last - n + 1
+         g%E(n) = hc / lambda(k)
+         g%y(n) = Cabs(k) * Jfield(k) * lambda(k)
+      end do
+      g%F0(1) = 0.0_wp
+      g%F1(1) = 0.0_wp
+      g%slope(g%m) = 0.0_wp
+      do n = 1, g%m - 1
+         tau = log_one_plus((g%E(n+1) - g%E(n)) / g%E(n))
+         g%slope(n) = (g%y(n+1) - g%y(n)) / tau
+         call exponential_remainders(tau, phi, psi)
+         g%F0(n+1) = g%F0(n) + FOURPI * (g%y(n) + 0.5_wp * g%slope(n) * tau) * tau
+         g%F1(n+1) = g%F1(n) + FOURPI * g%E(n) * &
+            (g%y(n) * (phi + tau) + g%slope(n) * (psi + 0.5_wp * tau * tau))
+      end do
+   end subroutine absorbed_power_spectrum
+
+
+   pure function photon_energy(g, x, hint) result(pt)
+      ! Photon energy x [erg] placed on the absorbed-power spectrum: its
+      ! segment i (E(i) <= x < E(i+1); 0 below the softest sample, m at or
+      ! above the hardest), y there, and F0(x).  The search steps from hint,
+      ! since successive energies lie close together.
+      type(absorbed_power_t), intent(in) :: g
+      real(wp), intent(in) :: x
+      integer,  intent(in) :: hint
+      type(photon_energy_t) :: pt
+      real(wp) :: t
+      integer  :: i
+      pt%E = x
+      if (x < g%E(1)) then
+         pt%i = 0
+         pt%y = 0.0_wp
+         pt%F0 = 0.0_wp
+         return
+      end if
+      if (x >= g%E(g%m)) then
+         pt%i = g%m
+         pt%y = g%y(g%m)
+         pt%F0 = g%F0(g%m)
+         return
+      end if
+      i = min(max(hint, 1), g%m - 1)
+      do while (x < g%E(i))
+         i = i - 1
+      end do
+      do while (x >= g%E(i+1))
+         i = i + 1
+      end do
+      pt%i = i
+      t = 0.0_wp
+      if (x > g%E(i)) t = log_one_plus((x - g%E(i)) / g%E(i))
+      pt%y = g%y(i) + g%slope(i) * t
+      pt%F0 = g%F0(i) + FOURPI * (g%y(i) + 0.5_wp * g%slope(i) * t) * t
+   end function photon_energy
+
+
+   subroutine absorption_moments(g, p, q, w, d0, r1)
+      ! d0 = int g dE and r1 = int (E - p) g dE over the photon energies
+      ! (p, q), q - p = w >= 0, the part outside the field support
+      ! contributing nothing.  The interval is split at the samples it
+      ! crosses: partial segments are integrated in closed form from their
+      ! start and width, whole segments from the cumulants.  q only locates
+      ! the end; the width is w, so the accuracy of a narrow interval is that
+      ! of w, not that of the difference of two photon energies.
+      type(absorbed_power_t), intent(in) :: g
+      type(photon_energy_t),  intent(in) :: p, q
+      real(wp), intent(in)  :: w
+      real(wp), intent(out) :: d0, r1
+      real(wp) :: start, y_start, offset, width, piece0, piece1
+      integer  :: i, j
+
+      d0 = 0.0_wp
+      r1 = 0.0_wp
+      if (w <= 0.0_wp .or. p%i == g%m .or. q%i == 0) return
+      start = p%E
+      y_start = p%y
+      i = p%i
+      offset = 0.0_wp
+      if (i == 0) then
+         ! below the softest field photon the integrand is zero
+         offset = g%E(1) - p%E
+         start = g%E(1)
+         y_start = g%y(1)
+         i = 1
+      end if
+      width = w - offset
+      j = q%i
+      if (j == g%m) then
+         ! above the hardest field photon the integrand is zero
+         j = g%m - 1
+         width = g%E(g%m) - start
+      end if
+
+      if (j <= i) then
+         call segment_moments(g, i, start, y_start, max(width, 0.0_wp), d0, r1)
+      else
+         call segment_moments(g, i, start, y_start, g%E(i+1) - start, d0, r1)
+         if (j > i + 1) then
+            ! whole segments i+1 .. j-1
+            piece0 = g%F0(j) - g%F0(i+1)
+            r1 = r1 + ((g%F1(j) - g%F1(i+1)) - g%E(i+1) * piece0) + (g%E(i+1) - start) * piece0
+            d0 = d0 + piece0
+         end if
+         call segment_moments(g, j, g%E(j), g%y(j), max(width - (g%E(j) - start), 0.0_wp), &
+                              piece0, piece1)
+         r1 = r1 + piece1 + (g%E(j) - start) * piece0
+         d0 = d0 + piece0
+      end if
+      r1 = r1 + offset * d0
+   end subroutine absorption_moments
+
+
+   pure subroutine segment_moments(g, i, start, y_start, width, d0, r1)
+      ! int g dE and int (E - start) g dE over (start, start + width) inside
+      ! segment i, in closed form for y linear in ln(E): with
+      ! t = ln(1 + width/start), y_s = y at start and k the segment slope,
+      !    d0 = 4 pi (y_s + k t/2) t,
+      !    r1 = 4 pi start [y_s (e^t - 1 - t) + k (t e^t - (e^t - 1) - t^2/2)].
+      type(absorbed_power_t), intent(in) :: g
+      integer,  intent(in)  :: i
+      real(wp), intent(in)  :: start, y_start, width
+      real(wp), intent(out) :: d0, r1
+      real(wp) :: t, phi, psi
+      t = log_one_plus(width / start)
+      call exponential_remainders(t, phi, psi)
+      d0 = FOURPI * (y_start + 0.5_wp * g%slope(i) * t) * t
+      r1 = FOURPI * start * (y_start * phi + g%slope(i) * psi)
+   end subroutine segment_moments
+
+
+   pure function log_one_plus(x) result(r)
+      ! ln(1 + x) for x >= 0, as ln(u) x / (u - 1) with u = 1 + x, which
+      ! cancels the rounding of u (accurate to a few ulps at any x).
+      real(wp), intent(in) :: x
+      real(wp) :: r, u
+      u = 1.0_wp + x
+      if (u == 1.0_wp) then
+         r = x
+      else
+         r = log(u) * x / (u - 1.0_wp)
+      end if
+   end function log_one_plus
+
+
+   pure subroutine exponential_remainders(t, phi, psi)
+      ! phi = e^t - 1 - t = sum_(k>=2) t^k/k! and
+      ! psi = t e^t - (e^t - 1) - t^2/2 = sum_(k>=3) (k-1) t^k/k!  for t >= 0.
+      ! Below t = 0.3 both are summed as series, truncated where the next
+      ! term is under 1e-17 of the sum; above it the closed forms lose to
+      ! cancellation at most a factor 40 in relative rounding (psi at 0.3).
+      real(wp), intent(in)  :: t
+      real(wp), intent(out) :: phi, psi
+      real(wp) :: term, e
+      integer  :: k, n
+      if (t < 0.3_wp) then
+         ! highest power kept; psi, whose sum starts at t^3, sets it
+         if (t < 1.0e-4_wp) then
+            n = 6
+         else if (t < 1.0e-3_wp) then
+            n = 7
+         else if (t < 1.0e-2_wp) then
+            n = 9
+         else if (t < 0.1_wp) then
+            n = 12
+         else
+            n = 15
+         end if
+         term = 0.5_wp * t * t
+         phi = term
+         psi = 0.0_wp
+         do k = 3, n
+            term = term * t * INV_INTEGER(k)
+            phi = phi + term
+            psi = psi + real(k - 1, wp) * term
+         end do
+      else
+         e = exp(t)
+         phi = e - 1.0_wp - t
+         psi = t * e - (e - 1.0_wp) - 0.5_wp * t * t
+      end if
+   end subroutine exponential_remainders
 
 end module p_sub

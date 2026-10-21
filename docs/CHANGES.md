@@ -4,6 +4,382 @@ A dated record of code and documentation changes, newest first. Each entry names
 the files it touches and, where a change moves numbers, states the measurement
 that was made on the tree itself.
 
+## 2026-10-21
+
+### Upward transition rates from the Draine & Li (2001) bin overlap
+
+`sed/src/p_sub.f90` (`calc_P` and seven new private routines),
+`sed/src/sed_astrodust.f90` (`build_TgrigGHk` renamed
+`temperature_window_enthalpy_kappB`; two comments),
+`sed/tests/test_absorption_balance.f90` (new),
+`sed/tests/test_radiation_support.f90`, `sed/tests/check_radiation_support.sh`,
+`sed/tests/README.md`, `README_HOWTO.md`, `docs/SEDust_user_manual.{tex,pdf}`,
+`docs/SEDUST_ABSORPTION_PLANCK_2026-10-21.md` (note).
+
+**Cause.** `calc_P` took the rate of every upward transition l -> u from one
+photon energy, E = H_u - H_l: A(u,l) = 4 pi C_abs J_lambda hc dH_u / E^3, the
+form of Guhathakurta & Draine (1989) eq. (2.5) and of Draine & Li (2001, ApJ
+551, 807; DL01) eq. (26), plus a separately sampled photon-number integral
+for the top bin (GD89 eq. 2.6). That form holds only while a bin is narrow
+compared with the photon energies and with the scale on which C_abs J varies.
+On the NT = 200 heuristic windows it is not: a bin broader than the band the
+field occupies samples that band at one energy per bin pair, so what a bin
+absorbs summed over u missed part of the band or counted part of it twice,
+and the steady state did not emit what the grain absorbs.
+
+**Change.** The upward rates are now DL01 eqs. (15)-(24) for l -> u < nT,
+eq. (16) for the top bin (every photon carrying the grain past its lower edge,
+counted by energy), and eq. (28) for the absorptions that stay inside bin l,
+added to l -> l+1. Bins are [sqrt(H_(u-1) H_u), sqrt(H_u H_(u+1))]; the
+integrals are taken in closed form over the interpolant that
+`radiation_absorption` integrates (C_abs J_lambda lambda linear in ln lambda)
+on the same significant support, so every bin below the top absorbs
+4 pi `radiation_absorption` exactly, and the steady state emits
+4 pi sum_(u>=2) P(u) [kappB(u) - kappCMB] = (1 - P(nT)) times that, an identity
+of the GD89 recursion. The rising and falling parts of each overlap are
+integrated from their start over their width, and the bin widths are formed
+from enthalpy differences, so a bin 1e-10 as wide as the photon energies keeps
+its digits. The point-sampled rates, the top-bin sampling rule
+(`NWAV_MIN`, `NWAV_MAX`, `DLNWAV_TARGET`) and the `interp`/`logadd` import are
+gone; there is one upward rate in the code. A field that absorbs nothing still
+gives P(1) = 1.
+
+**Checks.** `test_absorption_balance` (new, run by
+`check_radiation_support.sh`): 72 grains and fields with bins from 5e-10 of the
+softest photon to 700 times the hardest close the energy budget to 2.0e-15
+(tolerance 1e-14) with ifort and gfortran. The two-bin case of
+`test_radiation_support` pinned the old photon-number top-bin rate,
+(lambda_2^2 - lambda_1^2)/(2hc) per unit cooling; DL01 eq. (16) gives the
+absorbed power instead, 4 pi P(2) kappB(2) = 1.5 ln 2 (in that test's units),
+now checked to 1e-14. Every rate of those 72 cases agrees with a
+quadruple-precision build of the same code on identical inputs to 2.4e-14 of
+its bin's total absorption. On 36 production grains dumped from the 15-field
+run (silicate size bins 6, 57, 76), P above 1e-4 of its peak agrees with the
+quadruple-precision solve to 6.2e-13 (most below 2e-14); rates formed as
+direct differences of the cumulants F0, F1 leave up to 6.1e-9 there.
+
+**Effect** (astrodust, NT = 200, ifort precise, one thread; S0/S1/S2 x five
+absorbed powers, the fields of the entry below). Emitted over supported
+absorbed power, which ranged 0.99787-1.01729, is now 1.00104-1.00175:
+
+| field | 3e-23 | 1e-22 | 1e-21 | 1e-20 | 1e-19 |
+|---|---|---|---|---|---|
+| S0 | 1.0015834 | 1.0015979 | 1.0016162 | 1.0015984 | 1.0017521 |
+| S1 | 1.0014920 | 1.0015062 | 1.0015264 | 1.0015138 | 1.0016601 |
+| S2 | 1.0010379 | 1.0010538 | 1.0010801 | 1.0010801 | 1.0012240 |
+
+The remaining +0.10 to +0.18% lies outside the matrix, whose budget closes to
+rounding; it is not attributed here.
+Against the previous code the total power moves by up to -1.58% (S2 at
+1e-19), 20-40 um by up to -2.23%, the AD channel total by up to -2.79%, the PAH
+channel total by -0.96 to +0.57%. Against a bin-overlap run at NT = 1600 the NT = 200 total
+power is now within 0.016% (was up to 1.62%), 6-9 um within 0.34% (1.87%),
+8-15 um 0.74% (1.44%), 20-40 um 0.21% (2.07%), > 120 um 0.40% (0.35%); 1-3 um
+remains +3.1 to +4.6% (was up to +6.2%) and 3-5 um +1.0 to +2.0% (3.0%). That
+near-infrared excess belongs to the NT = 200 enthalpy grid itself (point and
+bin-overlap rates agree there to 0.57% at NT = 1600) and is not addressed here. The 15 spectra agree with the
+scratch prototype of the same rates to 9e-9 in every band and channel.
+
+The `emission_bin_power_cutoff = 1e-6` path changes the bands by at most
+1e-4% (channels 0.0021%), as before. With the `draine` solver, which also
+calls `calc_P`, emitted over absorbed power is 1.00104-1.00176 (was
+1.00068-1.00380); DL07 gives 1.00068-1.00110 (was 0.99320-1.01252) and MRN
+0.99991-1.00017 (was 0.99179-1.01086). MRN, without PAHs, moves +120% in
+1-3 um and +45% in 3-5 um, bands that carry a small part of its power; its
+total moves by up to 1.07%.
+
+Time for the 15 fields (median of five calls each, one thread): 14.62 s
+against 11.54 s, 1.27x; with the 1e-6 cutoff 9.53 s against 7.69 s, 1.24x.
+By profile the extra cost is the closed-form integration of the rising and
+falling parts of each overlap; it buys rates accurate to rounding at any bin
+width.
+
+### An unreadable D03 dielectric file is reported as such
+
+`sed/src/sed_astrodust.f90` (`sed_init_dl07`, `build_mrn`).
+
+With an EUV extension both builders compare the grid with the D03 dielectric
+functions' coverage. When `index_silD03`, `index_CpaD03` or `index_CpeD03`
+could not be read, the loaders leave their wavelength arrays at the 1 um
+placeholder, and the refusal then printed "which stop at 1.000E+00 um", a
+coverage limit the data never set. Both builders now check
+`silicate_index_available` and `graphite_index_available` first and name the
+read failure; the status codes are unchanged (4 for `sed_init_dl07`, 2 for
+`build_mrn`), and so is every result when the files are present: the
+astrodust 15-field spectra are byte-identical to the merged tree's. Checked
+with a data root lacking the three files: the new message and status 4.
+
+### Consistent absorption support and optional stochastic emission truncation
+
+`sed/src/p_sub.f90`, `sed/src/radfield.f90`,
+`sed/src/sed_astrodust.f90`, `sed/src/dust_lib.f90`, `sed/build_lib.sh`,
+`sed/tests/` (new), `docs/SEDUST_ABSORPTION_PLANCK_2026-10-21.md` (new),
+`docs/data/sedust_*_20261021.{json,tsv}` (new), and
+`docs/figs/sedust_absorption_planck_20261021.pdf` (new).
+
+The equilibrium absorption integral and upward transitions in `calc_P` now
+use the same first and last significant samples of the incident continuum.
+Exterior half intervals do not add photons beyond that support. The highest
+enthalpy bin clips its photon integral to the same support and uses half
+weights at both endpoints (this quadrature was replaced later the same day by
+the bin-overlap rates, entry above). `dust_lib` exports `radiation_absorption` for a
+host to use this convention without duplicating its quadrature. Its return
+value excludes 4*pi and unit conversions. A zero radiation field returns a
+normalized lowest-state probability distribution.
+
+On the fixed S2 fields, the removed absorption is 3.6984576% at the hard edge
+and 0.1052244% at the soft edge. At the five original power targets, corrected
+Pemit/Pabs is 1.00156680, 0.99787188, 1.00133212, 0.99811577, and 1.01728569.
+The brightest case is farther from unity in absolute error than before;
+finite enthalpy resolution remains an independent limitation. Direct
+individual-grain transition heating agrees with the corresponding net
+cooling to 5e-15 relative, but can differ substantially from direct
+absorption at NT=200. The report separates that discretization error from
+the support mismatch and includes a fixed-window NT=200--1600 diagnostic.
+
+Prepared Planck coefficients and a binary search for the x>=700 zero tail
+preserve all 75 spectrum files from the original library within each tested
+compiler. The optional `emission_bin_power_cutoff` defaults to zero; at 1e-6
+it omits low-P*kappB bins from heuristic emission only, without changing P or
+renormalizing. The largest measured total-band error is 0.0003276614%; the
+largest AD/PAH channel-band error is 0.00735438%. The largest omitted fraction
+of grain-number-weighted stochastic bin power is 2.67862e-7. These are band
+measurements, not bounds on monochromatic tails.
+
+For NT=200, one process and one OpenMP thread, the median exact-Planck time
+ratio is 2.32107 with Intel IFX 2026.1.1 in precise mode, but 0.948402 with
+GNU Fortran 16.2.0. E1 separately gives median ratios 1.52551 and 1.32436,
+respectively. Ratios divide reference time by changed time; the GNU exact
+change is slower. Measurements use five calls for each of 15 fixed fields
+on a shared host. Full spectra, band tables, timing ranges, individual-grain
+budgets, and validation scope are recorded in the
+[measurement report](SEDUST_ABSORPTION_PLANCK_2026-10-21.md).
+
+The fresh library build exposed a pre-existing missing `dustem_io` source
+in `sed/build_lib.sh`; its dependency order is corrected. Focused checked
+builds pass for absorption boundaries, highest-bin quadrature, Planck bit
+identity, and invalid emission thresholds. The public validation driver
+links against the fresh HDF5 archive. The `sed_init` and `build_Cabs_pah`
+subroutines and all existing data products are unchanged by these edits.
+
+Independent review corrections make the continuum support definition common
+to absorption/transitions and `hardest_photon_energy`. A single significant
+wavelength has zero represented bandwidth and reports
+`RADIATION_SUPPORT_ISOLATED` through a pure query. The public cumulative
+`isolated_radiation_support_count` counts rejected absorption/transition
+checks; pure queries do not increment it. Internal updates are atomic.
+The significance-floor rationale and limitations of the one-sided initial
+enthalpy-window argument are documented. The solver header acknowledges the
+changed transition integration, and comments state that host OpenMP calls
+to `dust_emission` must be serialized because model/options/diagnostics are
+shared state.
+
+After these corrections, ifort precise reproduces all 150 preceding spectra
+and 16 inputs byte for byte, with unchanged powers and skipped-bin sums.
+Focused support, Planck bit-identity, and public API checks pass. The full
+isolated-field diagnostic distinguishes it from darkness through status 2
+and a counter increase from zero to 383. `sed/tests/build_validation.sh`
+now defaults to the production ifort precise flags and Intel HDF5; explicit
+GNU builds remain available as reference checks.
+
+### Carbonaceous optics: the D03 graphite Mie solved once at each (a, lambda)
+
+`sed/src/qpah.f90`, `sed/src/sed_astrodust.f90`, `sed/build_lib.sh`,
+`sed/tests/dump_astrodust_optics.f90` (new),
+`sed/tests/dump_carbonaceous_optics.f90` (new).
+
+`sed_init` built the two PAH populations with five separate calls at each
+(a, lambda): `qpah_dl07` for the neutral and the cation, `qpah_sca`, and, in
+`build_Cabs_pah`, `qpah_dl07` for both charges again. Each `qpah_dl07`
+shortward of the PAH cutoff (1/lambda >= 17.25 um^-1, 0.058 um) and every
+`qpah_sca` solve the graphite Mie on the D03 dielectric functions in two
+polarizations. So shortward of the cutoff the same Mie was solved five times;
+longward of it absorption takes the D16 sphere table and only the scattering
+call solves Mie. On the astrodust EUV axis (1762 wavelengths, 604 shortward of
+the cutoff, 167 radii) the build made 403472 `q_graphite_abs` calls
+(140.4 s, 348 us each), all shortward of the cutoff, and 294254
+`q_graphite_full` calls (35.2 s, of which 34.9 s in the 100868 calls shortward
+of the cutoff, 346 us each), out of a 176.1 s build, measured with timers in a
+copy of the source (ifort, one thread, NT = 200). The four extra solutions
+shortward of the cutoff were therefore 140.4 s, 80% of the build.
+
+New `qpah::carbonaceous_grain_optics(vintage, a, lambda, Qabs_neu, Qabs_ion,
+Qsca, gsca)` solves the D03 Mie once (`q_graphite_full`) and returns both
+charge states' absorption and the scattering; where the blend takes D03
+graphite (shortward of the cutoff, or `qpah_graphite_source = 'd03_sphere'`)
+it takes it from that solution, and the D16 table lookup is shared by the two
+charges. `qpah_dl07` and `qpah_ld01` are split into the PAH molecule part
+(`pah_molecule_qabs_dl07` / `_ld01`), the graphite of the blend
+(`graphite_qabs_in_blend`, the cutoff rule in one place) and the blend
+(`carbonaceous_qabs`); `qpah_sca` uses `carbonaceous_qsca`. `sed_init` keeps
+the two absorption efficiencies, indexed (wavelength, size), and passes them
+to `build_Cabs_pah`, which no longer calls `qpah_dl07`.
+
+The default build is bit-identical: every array of the three populations
+(`Cabs`, `Csca`, `gsca`, `kappB`, `kappCMB`, `dn`), `Cabs_cneu`, `Cabs_cion`,
+`Cabs_pah`, `kappB_pah_first`, `kappCMB_pah`, and `size_integrated_extinction`
+(`Cext`, `Cabs`, `Csca`, `gbar`, `albedo`) through `dump_astrodust_optics`,
+and the total and channel spectra of `dust_emission` on 15 fields.
+`dump_carbonaceous_optics` finds the separate calls and
+`carbonaceous_grain_optics` bit-identical to the previous `qpah_dl07`,
+`qpah_ld01` and `qpah_sca` for all three graphite sources, both carbon-count
+settings (417 real-valued, 470 rounded) and both sides of the cutoff,
+including the cutoff wavelength and its two neighboring doubles. Build time
+(`build_dust`, astrodust, NT = 200, EUV axis, one thread, median of three):
+176.59 s before, 35.88 s after.
+
+**`use_ld01_pah_xsec`: the f_ion blend now carries the LD01 cross
+sections.** `build_Cabs_pah` called `qpah_dl07` itself, so with
+`use_ld01_pah_xsec = .true.` the two populations carried Li & Draine (2001)
+cross sections while the blend `Cabs_pah`, and `kappB_pah_first` and
+`kappCMB_pah` built from it, were DL07. It now blends the efficiencies of the
+two populations. In that setting (no driver in this tree sets the switch)
+`Cabs_pah` changes at the 193386 points longward of the cutoff (relative change
+from -0.96 to +10.4, median 3e-8), `kappB_pah_first` from -0.61 to +1.44,
+`kappCMB_pah` up to +0.31. Nothing in the library reads the blend after
+`sed_init`: the population arrays, the 15 spectra and the size-integrated
+extinction are bit-identical before and after. Its readers are
+`mc/src/main_pT_compare.f90` (`Cabs_pah`, `kappB_pah_first`, `kappCMB_pah`)
+and `mc/src/mc_sed.f90` (`kappB_pah_first`).
+
+`sed/build_lib.sh` lists `dustem_io` (between `zubko_io` and `q_component`,
+the Makefile order); `sed_astrodust.f90` uses it and the script could not build
+the archive without it.
+
+### MC SED builder: each PAH charge state cooled by its own kappB
+
+`mc/src/mc_sed.f90`, `sed/src/sed_astrodust.f90`,
+`mc/src/main_pT_compare.f90` (comments only).
+
+`mc_sed_solve_pah` solved the neutral and the cation carbonaceous grains
+separately, as `sed_solve_pah` does, but passed both with the f_ion-blended
+`kappB_pah_first`, so each grain absorbed with its own `Cabs_cneu` or
+`Cabs_cion` and was given the cooling kappB(T) = int Cabs B_lambda(T) dlambda
+of the blend. In `mc_sed_loop` that kappB sets Teq (`calc_Teq`), which decides
+the equilibrium gate, the equilibrium-grain emission Cabs B(Teq), and the
+adaptive DA85 split between photon events and continuous heating.
+`sed_solve_pah` pairs each charge state with its own `kappB_cneu` /
+`kappB_cion`. Those two arrays are now public in `sed_astrodust_mod`, and
+`mc_sed` uses them; its unused imports (`sed_init`, `dn_pah`, `Cabs_pah`,
+`kappB_pah_first`, `sed_solve`, `sed_solve_pah`) are removed.
+
+Between 10 and 1000 K the blended kappB departs from the neutral one by up to
+72% and from the cation one by up to 111% at a < 6 nm, by 3e-2 at 11 nm and
+below 5e-4 from 45 nm up. Measured with `main_mc_sed.x` (gfortran, one
+thread, `run_sed_default.nml` with `N_events = 20000`, same seeds): the
+astrodust column is unchanged, the gate counts are unchanged (88
+equilibrium / 79 stochastic for each charge state), and the PAH emission
+moves by at most 1.05e-5 relative at wavelengths above 1e-6 of its peak
+(5.0e-4 in the faint tails, at the 6-digit output precision). Band
+integrals of the PAH lambda*I_lambda, taken over d ln(lambda) by the
+trapezoid rule with each band edge placed exactly by log-linear
+interpolation, move by +4.41e-7 (1-5 um), +1.57e-9 (5-15 um), +2.62e-6
+(15-60 um), -1.10e-6 (60-300 um) and -2.03e-6 (300-3000 um); the 20-60 um
+band moves by +3.54e-6 and the integral over the whole output grid by
++6.39e-7. These bands are the ones measured; they do not bound the change in
+other bands. The response is small
+because the grains where the two kappB differ are stochastically heated, and
+there kappB enters only through the event/continuum split; the MC emission
+itself is computed from the grain's own Cabs.
+
+`main_pT_compare.f90` with `pop = 'pah'` uses `Cabs_pah`, `kappB_pah_first`
+and `kappCMB_pah` together. All three are built on the same blended
+`Cabs_pah`, so both P(T) solvers see one self-consistent grain. That grain is
+not one that `sed_solve_pah` solves, but the program compares two solvers on
+identical input. A comment now says this; the code is unchanged.
+
+### `calc_qtable`: the D03 graphite Mie solved once at each tabulated (a, lambda)
+
+`sed/src/qpah.f90`, `sed/src/calc_qtable.f90`.
+
+`calc_qtable` called `qpah_dl07` once for each charge state. Each call
+solves the D03 graphite Mie wherever the blend takes D03 graphite. The DL07
+tables also called `q_graphite_full` at the same cell for the graphite
+component (`'d03_sphere'`, so at every wavelength), and the Zubko
+recomputation did the same for the PAH scattering. New public
+`qpah::carbonaceous_absorption(vintage, a, lambda, Qabs_neu, Qabs_ion
+[, Qabs_d03])` returns both charge states with the graphite of the blend
+taken once. Where the caller passes the D03 Q_abs it has already solved
+(`q_graphite_full`: the same orientation average of the same two Mie
+solutions as `q_graphite_d03_abs`), that value is used wherever the blend
+takes D03 graphite. `carbonaceous_grain_optics` now calls it. The astrodust
+PAH tables call it without `Qabs_d03`. The DL07 and Zubko tables pass the
+graphite Q_abs. `calc_qtable` no longer imports `qpah_dl07` or the unused
+`PI`. The unused imports `real64`, `qt_n_aeff`, `qt_qext`, `q_silicate_abs`,
+`free_dust_model` and `q_pah_ld01` are removed from `sed_astrodust.f90`.
+
+The 16 Q tables that `calc_qtable.x astrodust`, `dl07` and `zubko` regenerate
+are byte-identical before and after (gfortran -O3, one thread): the two
+astrodust PAH tables, the eight DL07 tables and the six Zubko tables. The 10
+`kext_*.dat` tables in the same directories are not written by
+`calc_qtable.x`; their files were left as they were. Every dataset and
+attribute of the three HDF5 products is identical (`h5diff -r`, exit 0). The
+files differ only in HDF5 internal metadata bytes. A scratch check finds
+`carbonaceous_absorption`, with and without `Qabs_d03`, bit-identical to
+`qpah_dl07` / `qpah_ld01` on the 17712 cells of the
+`dump_carbonaceous_optics` grid (three graphite sources, both carbon-count
+settings, the cutoff and its neighboring doubles). The same holds for
+`carbonaceous_grain_optics` against `qpah_sca`. Wall time, one run each:
+astrodust 101.2 s -> 52.6 s, dl07 371.2 s -> 270.1 s, zubko 85.3 s -> 85.9 s
+(its 28 PAH radii carry little Mie). The library (ifort precise) reproduces
+the 15-field spectra and `lambda.bin` of the preceding entry byte for byte.
+
+### `sed_init_dl07`: the D03 graphite Mie solved once at each (a, lambda)
+
+`sed/src/sed_astrodust.f90`.
+
+Where no stored table matches the model grid, `sed_init_dl07` solves the
+carbonaceous optics itself. It called `qpah_abs` for the neutral and for the
+cation and `q_graphite_full` for the scattering at each (a, lambda). The DL07
+model blends with `'d03_sphere'` graphite, so each `qpah_abs` solved the same
+D03 Mie again: three solutions at every cell. The scattering call now comes
+first, and its graphite Q_abs goes to `carbonaceous_absorption`, which
+returns both charge states. A table that is stored is still read, each
+population on its own; with the graphite table read but a PAH table
+missing, `carbonaceous_absorption` takes the graphite itself. `qpah_abs` is
+no longer imported.
+
+The branch is taken by `build_dl07` with `stored_q_dir = ''` (what
+`calc_qtable.x` passes) and with `pah_xsec = 'ld01'`. Both were run on the
+DL07 HDF5 axis (1823 wavelengths, EUV axis, NT = 200, ifort precise, one
+thread), against a library built from the source before this change. Every
+array of the three populations (`dn`, `Cabs`, `Csca`, `gsca`, `kappB`,
+`kappCMB`), the size-integrated `Cext` and `Csca`, `lambda.bin` and the 15
+total and channel spectra are byte-identical, for both vintages. The
+stored-table route (`build_dust('dl07')`) is byte-identical as well. On the
+model grid `carbonaceous_absorption` is bit-identical to `qpah_abs(0)` and
+`qpah_abs(1)`, with and without `Qabs_d03`, for both vintages. The model
+build took 132.7 s before and 59.9 s after (`'dl07'`), and 132.0 s before
+and 59.8 s after (`'ld01'`). Each is one run, with six single-thread runs
+sharing the host.
+
+### Build files and documents name the dust-model sources for what they are
+
+`sed/Makefile`, `mc/Makefile`, `README.md`, `docs/astrodust_sed_report.tex`,
+`docs/mc_pT_report.tex`, `docs/make_figs.py`,
+`docs/make_g18d_asymmetry_figs.py`, `pyutil/sed_from_cabs.py`,
+`mc/scripts/plot_sed_compare.py`, `sed/src/calc_kext.f90`,
+`sed/src/pah_ioniz.f90`.
+
+The source-list variable of `sed/Makefile` is now `SRC_DUST_MODEL`: the
+modules that build a dust model and solve its emission, without a driver.
+The corresponding list in `mc/Makefile` is now `SED_DUST_MODEL_SRC`. Its
+comment had said it was the same set and order as the `sed/Makefile` list.
+That was not true: it listed
+`q_graphite_d16_sphere.f90`, which `SHARED_GRA` already supplies, and it put
+`q_component` before `dustem_io`. The duplicate is dropped, since `$^` lists
+each prerequisite once and the command line does not change, and the order now
+follows `SRC_DUST_MODEL`. The comment now says the list holds the modules
+beyond `SHARED_*`. Every `sed/` target gives the same `make -n -B` command
+lines as before. The `mc/` lines differ only in that order. `calc_qtable.x`
+and `main_mc_sed.x` build with gfortran. Elsewhere the word is replaced by
+"calculation", "solver" or "code", according to its meaning. The note that
+`calc_kext.x` writes into an extinction file header now reads "Computed from
+the optics sed_init builds, all components." The existing
+`data/astrodust/kext_astrodust_MW.dat` keeps the old wording until it is
+rewritten. `docs/astrodust_sed_report.pdf` and `docs/mc_pT_report.pdf` have
+not been rebuilt from the edited sources.
+
 ## 2026-09-08
 
 ### G18 Model D gets a scattering asymmetry, computed from first principles
@@ -778,12 +1154,13 @@ skipped, with a message, until the two non-production graphite runs of
 
 ### `mc/` build and namelists
 
-`mc/Makefile`. The Monte Carlo drivers that pull in the SED pipeline
-(`main_mc_sed.x`, `main_pT_compare.x`) failed at link: `SED_PIPELINE` was
+`mc/Makefile`. The Monte Carlo drivers that pull in the dust-model sources
+(`main_mc_sed.x`, `main_pT_compare.x`) failed at link: their source list (now
+`SED_DUST_MODEL_SRC`) was
 missing `sed_paths.f90`, `sedust_h5.f90`, `sedust_product.f90`,
 `kext_table.f90` and `q_component.f90`, and the link line carried no HDF5
 libraries, so `sed_data_path`, `read_sedust_grid` and `read_sedust_qtable` came
-out undefined. The module list is now the same set and order as `SRC_PIPE` in
+out undefined. The module list is now the same set and order as `SRC_DUST_MODEL` (then under its former name) in
 `sed/Makefile`, and the same `HDF5` / `HDF5_PREFIX` switch is honored, with
 `-cpp` added so `-DSEDUST_HDF5` reaches the sources. `make HDF5=0` compiles the
 HDF5 paths out, as in `sed/`.

@@ -1315,7 +1315,11 @@ band's width (\code{NWAV\_MIN}, \code{NWAV\_MAX}, \code{DLNWAV\_TARGET} in
 band. Re-running the old grid with only the ghost removed and then only the
 sampling changed separates the two: the sampling moves nothing at all
 ($0.0000\%$), which says the flat 51 points had already converged once the
-limits were right; the ghost carries the entire change.
+limits were right; the ghost carries the entire change. (Since 2026-10-21
+there is no separate highest-bin sampling: every upward rate, the top bin's
+included, is the bin-overlap integral of Draine \& Li (2001) eqs.~15--16
+and~28, taken in closed form over the field's own support and interpolant;
+\code{NWAV\_MIN}, \code{NWAV\_MAX} and \code{DLNWAV\_TARGET} are gone.)
 
 \textbf{All three models shipped at the time moved}, and Zubko's move has nothing to do with
 the astrodust table --- its grid has always begun at $10^{-3}$\um, so it carried

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Compare the two MC-pT solver modes against the production astrodust pipeline:
+Compare the two MC-pT solver modes against the production astrodust solver:
   - default (use_mc_for_large_grain=F): calc_Teq for large + MC for small
   - mc_all (use_mc_for_large_grain=T):  MC for all grains
-  - reference: astrodust pipeline (calc_Teq + calc_P)
+  - reference: astrodust solver (calc_Teq + calc_P)
 """
 import os
 import numpy as np
@@ -58,7 +58,7 @@ def main():
     ax1.set_ylabel(r"$\lambda I_\lambda / N_H$ (erg s$^{-1}$ cm$^{-2}$ sr$^{-1}$)",
                    fontsize=9)
     ax1.legend(loc="lower center", fontsize=8, frameon=True)
-    ax1.set_title("Two MC-pT solver modes vs production astrodust pipeline, $\\log U=0.20$, Stage S2",
+    ax1.set_title("Two MC-pT solver modes vs production astrodust solver, $\\log U=0.20$, Stage S2",
                   fontsize=9)
     ax1.tick_params(labelsize=8)
 

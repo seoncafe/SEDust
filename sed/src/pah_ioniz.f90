@@ -18,7 +18,7 @@ module pah_ioniz_mod
    !    CHARGE             -> charge (subroutine)
    !    DJPEDE             -> djpede (integrand; DGPEDE, the
    !                          photodetachment-heating integrand, is not used
-   !                          by this pipeline and was not carried over)
+   !                          by this code and was not carried over)
    !    THRESHOLDS         -> thresholds
    !    PEYIELD            -> peyield
    !    DQG32              -> dqg32 (32-pt Gauss)

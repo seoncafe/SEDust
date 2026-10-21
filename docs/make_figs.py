@@ -152,7 +152,7 @@ def interp_in_a(q_lam, a_in, a_out):
     """Log-linear in a_eff, linear in Q, clamped at the grid edges.
 
     This is what sed/src/q_table.f90 `interp_q_in_a` does, so the size
-    integrals here reproduce the Fortran pipeline's.
+    integrals here reproduce the Fortran code's.
     """
     return np.interp(np.log(a_out), np.log(a_in), q_lam)
 

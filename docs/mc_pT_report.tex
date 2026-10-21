@@ -47,7 +47,7 @@ build an emergent SED.  The SED builder exposes a runtime flag
 ($\texttt{=\,F}$), small (stochastic) grains use the Monte Carlo
 engine while large (equilibrium) grains use the analytic
 \texttt{calc\_Teq} solver -- the same hybrid logic the production
-pipeline uses, but with MC replacing the
+solver uses, but with MC replacing the
 \citet{GuhathakurtaDraine1989} matrix solver in the stochastic
 branch.  In this mode the MC-based SED reproduces the production
 \texttt{sed\_solve} output to within $1$--$3\%$ in every band, once
@@ -145,7 +145,7 @@ There are two standard ways to obtain $P(T)$:
   state.
 \end{enumerate}
 The matrix method is more efficient and is what the production
-astrodust pipeline uses (\texttt{p\_sub.f90::calc\_P}).  The MC method
+astrodust solver uses (\texttt{p\_sub.f90::calc\_P}).  The MC method
 is conceptually simpler, has fewer numerical knobs, and provides a
 useful independent cross-check.  This document records the MC
 implementation kept under \verb|SEDust/mc/| and its validation.
@@ -363,7 +363,7 @@ forward Euler step, also subject to the $f_{\rm cap}$ cap.
 The implementation lives under \verb|SEDust/mc/| and is split
 into small modules that each do one thing.  Throughout, cgs units
 are used (erg, cm, s) except that wavelength is in $\umc$ to match
-the rest of the astrodust pipeline.
+the rest of the astrodust code.
 
 \begin{itemize}
 \item \verb|mc_heatcap.f90|: enthalpy $E_{\rm grain}(T,a)$ and heat
@@ -413,7 +413,7 @@ the rest of the astrodust pipeline.
 
 \item \verb|main_mc_sed.f90|: size-distribution SED driver
   (\verb|main_mc_sed.x|).  Reads a namelist, calls \verb|sed_init|
-  from the astrodust pipeline to load the grain Q table, size
+  from the astrodust code to load the grain Q table, size
   distribution, and PAH cross sections, then loops via \verb|mc_sed|.
   It calls \verb|sed_init| without the optional \verb|lam_min|, so the
   wavelength grid is the plain T-matrix $Q$-table grid
@@ -535,7 +535,7 @@ J_\lambda \;+\!\!= \; (dn/N_H)_j \cdot \Cabs(\lambda, a_j) \cdot
 where $w_i$ is the time spent in histogram bin $i$ (with center
 $T_{{\rm mid},i}$) accumulated by the MC.  Summing over both grain
 populations (astrodust + PAH) and applying the same final unit
-conversion as the production pipeline,
+conversion as the production solver,
 $\lambda I_\lambda = \lambda J_\lambda \times 10^{-3}$, gives the
 final SED in erg s$^{-1}$ cm$^{-2}$ sr$^{-1}$ H$^{-1}$.
 
@@ -576,7 +576,7 @@ brought the integrated PAH power from $1.15\times$ the matrix-solver
 reference (raw midpoint histogram, half-life step) to $1.005\times$.
 
 \paragraph{Charge-resolved PAH populations.}
-The production pipeline treats PAHs as a blend of two charge states,
+The production solver treats PAHs as a blend of two charge states,
 neutral and cation, mixed by an ionization fraction $f_{\rm ion}(a)$;
 the two have markedly different cross sections in the near-IR (the
 cation carries a \citet{Mattioda2005} NIR continuum that the neutral
@@ -609,7 +609,7 @@ the cost of the dynamic schedule with variable work per grain.
 \section{Comparison with the Guhathakurta--Draine matrix solver}\label{sec:compare}
 
 We compare \verb|main_mc_sed.x| against the production astrodust
-pipeline \verb|calc_sed.x astrodust|.  Both implementations read the
+solver \verb|calc_sed.x astrodust|.  Both implementations read the
 same Q table (\verb|q_astrodust_P0.20_Fe0.00_1.400.dat|), the same
 HD23 size distribution (\verb|size_dist.f90|), the same
 Mathis ISRF at $\log U=0.20$, and the same Stage 2 astrodust
@@ -638,7 +638,7 @@ grains are handled:
 \centering
 \includegraphics[width=\linewidth]{figs/sed_mc_vs_ref.pdf}
 \caption{Two MC-pT solver modes versus the production astrodust
-  pipeline, for the HD23 astrodust+PAH model in the Mathis ISRF at
+  solver, for the HD23 astrodust+PAH model in the Mathis ISRF at
   $\log U=0.20$, Stage 2 enthalpy. Both modes use the adaptive 2pass
   histogram engine, the integrator step cap (\S\ref{sec:algo}), the
   single-grain energy-conservation rescale and charge-resolved PAH

@@ -388,8 +388,11 @@ rate instead of adding none.
 
 Both limits now come from the field — `hardest_photon_energy`, the same routine
 the enthalpy ceiling uses — and the band is skipped outright when the gap is
-harder than the hardest photon. The sample count follows the band's width
-instead of being a flat 51 points.
+harder than the hardest photon. The sample count followed the band's width
+instead of being a flat 51 points. Since 2026-10-21 there is no separate
+highest-bin sampling: every upward rate, the top bin's included, is the
+bin-overlap integral of Draine & Li (2001) eqs. 15–16 and 28, taken in closed
+form over the field's own support and interpolant (`docs/CHANGES.md`).
 
 **This changed all three models shipped at the time**, and for Zubko it has nothing to do
 with the astrodust table: that model's grid has always started at 1e-3 um, so it

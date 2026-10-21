@@ -29,7 +29,7 @@ provide (`lam`, `J_lam`, `C_abs`) and returns what the cell needs to
 consume (`lam * I_lam`). Writing it in Python first makes it easy to
 prototype radiation field shapes, plot intermediate quantities, and
 validate the Fortran library on representative grains without the
-full T-matrix + size-distribution pipeline.
+full T-matrix and size-distribution calculation.
 """
 
 from __future__ import annotations

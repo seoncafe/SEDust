@@ -142,21 +142,22 @@ SRC_BASE    = src/constants.f90 src/sed_paths.f90 src/sed_mathlib.f90
 SRC_DL07MOD = src/pah_ioniz.f90 src/grain_dist.f90 src/q_silicate.f90 \
               src/pah_ld01.f90
 
-# Everything the SED pipeline needs, minus the driver.  SRC_H5 sits after
+# The modules that build a dust model (optics, size distributions, enthalpy)
+# and solve its emission, minus the driver.  SRC_H5 sits after
 # SRC_BASE because src/sedust_product.f90 uses constants, and before
 # src/q_table.f90, which reads the astrodust table through it.
-SRC_PIPE    = $(SRC_BASE) $(SRC_H5) src/enthalpy_v2.f90 \
-              src/size_dist.f90 src/q_table.f90 \
-              src/enthalpy_astrodust.f90 \
-              src/mie.f90 src/q_astrodust.f90 \
-              src/q_graphite.f90 src/q_graphite_d16.f90 \
-              src/q_graphite_d16_sphere.f90 src/qpah.f90 \
-              src/radfield.f90 src/p_sub.f90 \
-              src/stoch_qm.f90 $(SRC_DL07MOD) \
-              src/dust_model_mod.f90 src/kext_table.f90 src/zubko_io.f90 \
-              src/dustem_io.f90 \
-              src/q_component.f90 \
-              src/sed_astrodust.f90
+SRC_DUST_MODEL = $(SRC_BASE) $(SRC_H5) src/enthalpy_v2.f90 \
+                 src/size_dist.f90 src/q_table.f90 \
+                 src/enthalpy_astrodust.f90 \
+                 src/mie.f90 src/q_astrodust.f90 \
+                 src/q_graphite.f90 src/q_graphite_d16.f90 \
+                 src/q_graphite_d16_sphere.f90 src/qpah.f90 \
+                 src/radfield.f90 src/p_sub.f90 \
+                 src/stoch_qm.f90 $(SRC_DL07MOD) \
+                 src/dust_model_mod.f90 src/kext_table.f90 src/zubko_io.f90 \
+                 src/dustem_io.f90 \
+                 src/q_component.f90 \
+                 src/sed_astrodust.f90
 
 SRC_ENTH    = $(SRC_BASE) src/enthalpy_v2.f90 \
               src/enthalpy_astrodust.f90 $(SRC_CLIOPT) src/calc_enthalpy.f90
@@ -164,8 +165,8 @@ SRC_ENTH    = $(SRC_BASE) src/enthalpy_v2.f90 \
 # The command-line SYSTEM every program here shares: one vocabulary, one
 # parser, one refusal, one filename-tag rule, with each program declaring which
 # axes it has a referent for.  It reads the module state of the solver, the
-# radiation field and the optics, so it follows SRC_PIPE wherever the pipeline
-# is linked; it is NOT part of libsedust.a, a host having no command line.
+# radiation field and the optics, so it follows SRC_DUST_MODEL wherever those
+# modules are linked; it is NOT part of libsedust.a, a host having no command line.
 SRC_CLIOPT  = src/sed_run_options.f90
 # Where a setting LANDS: the module state the solver, the field and the optics
 # read.  Only the programs that HAVE those modules link it.
@@ -190,7 +191,7 @@ calc_enthalpy.x: $(SRC_ENTH)
 # this tree's own optics routines -- except the two DustEM-defined models,
 # whose published tables ARE the model and are stored on each population's own
 # model radii.
-calc_qtable.x: $(SRC_PIPE) $(SRC_CLIOPT) src/calc_qtable.f90
+calc_qtable.x: $(SRC_DUST_MODEL) $(SRC_CLIOPT) src/calc_qtable.f90
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./calc_qtable.x     (writes ../data/<model>/)'
 
@@ -198,21 +199,21 @@ calc_qtable.x: $(SRC_PIPE) $(SRC_CLIOPT) src/calc_qtable.f90
 # illuminated cell.  It is built against the T-matrix because the astrodust
 # EUV band, when one is asked for, is solved on the oblate spheroid of the Q
 # table rather than on a volume-equivalent sphere.
-calc_sed.x: $(SRC_PIPE) $(SRC_EUVTM) $(SRC_CLIOPT) $(SRC_CLIAPPLY) src/calc_sed.f90 | $(TMARCH)
+calc_sed.x: $(SRC_DUST_MODEL) $(SRC_EUVTM) $(SRC_CLIOPT) $(SRC_CLIAPPLY) src/calc_sed.f90 | $(TMARCH)
 	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
 	@echo 'Built: ./calc_sed.x'
 
 # Size-integrated transport optics (lambda, albedo, <cos>, C_ext/C_abs/C_sca
 # per H) for astrodust, DL07, Zubko or any file-defined model -> ../data/.
-# Reuses the full SED pipeline, so every table it writes is the same optics
+# Links the full SRC_DUST_MODEL, so every table it writes is the same optics
 # the RT hosts get from dust_extinction; only the driver differs.
-calc_kext.x: $(SRC_PIPE) $(SRC_EUVTM) $(SRC_CLIOPT) src/calc_kext.f90 | $(TMARCH)
+calc_kext.x: $(SRC_DUST_MODEL) $(SRC_EUVTM) $(SRC_CLIOPT) src/calc_kext.f90 | $(TMARCH)
 	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
 	@echo 'Built: ./calc_kext.x'
 
 # Does build_dust on the HDF5 products give the same model as the builders on
 # the text products?  Run it after calc_qtable.x and calc_kext.x.
-check_build_dust.x: $(SRC_PIPE) $(SRC_EUVTM) src/check_build_dust.f90 | $(TMARCH)
+check_build_dust.x: $(SRC_DUST_MODEL) $(SRC_EUVTM) src/check_build_dust.f90 | $(TMARCH)
 	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
 	@echo 'Built: ./check_build_dust.x'
 
@@ -231,13 +232,13 @@ test_h5_storage_policy.x: src/sedust_h5.f90 src/test_h5_storage_policy.f90
 
 # build_dustem on each DustEM-defined model against DustEM's own extinction
 # for it, ../data/{themis,g18d}/reference/EXT_*.RES.
-test_dustem_extinction.x: $(SRC_PIPE) src/test_dustem_extinction.f90
+test_dustem_extinction.x: $(SRC_DUST_MODEL) src/test_dustem_extinction.f90
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./test_dustem_extinction.x'
 
 # Builds every model from a foreign working directory with an absolute
 # data_dir, and checks that a bad one comes back as a status instead of an
-# abort.  Links the LIBRARY, not the pipeline sources, because that is what a
+# abort.  Links the LIBRARY, not the model sources, because that is what a
 # host sees.
 check_data_root.x: libsedust.a src/check_data_root.f90
 	$(FC) $(FFLAGS) -I. src/check_data_root.f90 libsedust.a $(H5LIBS) -o $@
@@ -257,7 +258,7 @@ check_data_root.x: libsedust.a src/check_data_root.f90
 #       call use_tmatrix_euv_band_optics()
 # once before build_astrodust.  Without that call, euv_tmatrix = .true. is
 # refused with status 6 rather than answered with a sphere.
-LIB_SRC = $(SRC_PIPE) src/dust_lib.f90
+LIB_SRC = $(SRC_DUST_MODEL) src/dust_lib.f90
 LIB_OBJ = $(notdir $(LIB_SRC:.f90=.o))
 
 ifdef WITH_TMATRIX
@@ -284,7 +285,7 @@ libsedust.a: $(LIB_SRC)
 endif
 
 # rt_example: built AS AN EXTERNAL host would -- against libsedust.a and the
-# .mod search path, not from the pipeline sources.  Build and run from sed/,
+# .mod search path, not from the model sources.  Build and run from sed/,
 # since the data paths inside are relative to ../.
 use_dustlib.x: libsedust.a rt_example/use_dustlib.f90
 	$(FC) $(FFLAGS) -I. rt_example/use_dustlib.f90 libsedust.a $(H5LIBS) -o $@

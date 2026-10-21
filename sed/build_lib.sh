@@ -112,10 +112,10 @@ SED_SRCS="constants sed_paths sed_mathlib sedust_h5 sedust_product enthalpy_v2 s
       enthalpy_astrodust mie \
       q_astrodust q_graphite q_graphite_d16 q_graphite_d16_sphere qpah radfield \
       p_sub stoch_qm pah_ioniz grain_dist q_silicate pah_ld01 dust_model_mod \
-      kext_table zubko_io q_component sed_astrodust dust_lib"
+      kext_table zubko_io dustem_io q_component sed_astrodust dust_lib"
 
 mkdir -p lib
-rm -f lib/*.o lib/*.mod lib/libsedust.a
+/bin/rm -f lib/*.o lib/*.mod lib/libsedust.a
 
 if [ -n "$WITH_TMATRIX" ]; then
    # T-matrix first: euv_astrodust_tmatrix at the end needs both these modules
