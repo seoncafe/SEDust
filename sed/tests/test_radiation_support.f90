@@ -30,8 +30,9 @@ program test_radiation_support
    call calc_P(lam(2:3),cross(2:3),field(2:3),t,cooling,h,reference,reference_log)
    if(any(abs(p-reference)>1e-14_wp)) error stop 'exterior zero extension'
    ! With two bins every absorbed photon raises the grain into the top bin
-   ! (Draine & Li 2001 eqs. 16 and 28), so 4 pi P(2) cooling(2) is the
-   ! absorbed power: only the support [1,2] um counts, whatever the gap.
+   ! (Draine & Li 2001 eqs. 16 and 28), so 4 pi P(2) cooling(2) = P(1) times
+   ! the absorbed power (hence the check on P(2)/P(1)): only the support
+   ! [1,2] um counts, whatever the gap.
    h=[hc,hc+hc/10.0_wp]
    call calc_P(lam,cross,field,t,cooling,h,p,lnp)
    expected=1.5_wp*log(2.0_wp)

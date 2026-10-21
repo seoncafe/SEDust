@@ -2062,12 +2062,16 @@ the field up.
 \medskip
 \noindent A fourth site took the same quantity from the grid and was
 found only after the extension. \texttt{calc\_P} in
-\texttt{sed/src/p\_sub.f90} sets the lower limit of the transition
+\texttt{sed/src/p\_sub.f90} set the lower limit of the transition
 integral into the top enthalpy bin, and took it from
 \texttt{lambda(1)}; \texttt{interp1} clamps below its range, so on the
 old grid that integral was fed the radiation field's value \emph{at}
-the Lyman limit for a band in which the field is exactly zero. It now
-takes the limit from \texttt{hardest\_photon\_energy} as well.
+the Lyman limit for a band in which the field is exactly zero. It then
+took the limit from \texttt{hardest\_photon\_energy} as well. (Since
+2026-10-21 \texttt{calc\_P} integrates every upward rate, the top bin
+included, over the overlap of the enthalpy bins with the absorbed-power
+spectrum on the field support (Draine \& Li 2001, eqs.~15--24 and 28), so
+this separate lower limit no longer exists.)
 \texttt{docs/EUV\_EXTENSION\_HOST\_REGRESSION.md} \S10 records the
 defect and decomposes what its repair changed; removing those photons
 moves the SED by far more than extending the grid does.

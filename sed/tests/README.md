@@ -43,7 +43,8 @@ Run `FC=ifort sed/tests/check_radiation_support.sh` (ifort is the default). It c
 in a new temporary directory and verifies absorption boundaries, the cached
 wavelength grid, equilibrium temperatures, the top-bin rate of a two-bin
 grain (every absorbed photon raises it to the top bin, Draine & Li 2001
-eq. 16, so 4 pi P(2) kappB(2) is the support absorption to 1e-14), and
+eq. 16, so 4 pi P(2) kappB(2) = P(1) times the support absorption, checked
+as P(2)/P(1) to 1e-14), and
 normalized probabilities for a dark field. It also checks that an isolated significant sample has zero continuum bandwidth in both absorption and the photon bound, reports `RADIATION_SUPPORT_ISOLATED` through the shared pure support query, and increments the public `isolated_radiation_support_count` through absorption/transition checks. Pure support queries do not increment the counter. The test does not build a dust model.
 
 The same script then runs `test_absorption_balance.f90`, the energy closure of

@@ -50,7 +50,8 @@ softest photon to 700 times the hardest close the energy budget to 2.0e-15
 (tolerance 1e-14) with ifort and gfortran. The two-bin case of
 `test_radiation_support` pinned the old photon-number top-bin rate,
 (lambda_2^2 - lambda_1^2)/(2hc) per unit cooling; DL01 eq. (16) gives the
-absorbed power instead, 4 pi P(2) kappB(2) = 1.5 ln 2 (in that test's units),
+absorbed power instead, 4 pi P(2) kappB(2) = P(1) x 1.5 ln 2 (in that test's
+units; the test checks P(2)/P(1)),
 now checked to 1e-14. Every rate of those 72 cases agrees with a
 quadruple-precision build of the same code on identical inputs to 2.4e-14 of
 its bin's total absorption. On 36 production grains dumped from the 15-field
@@ -91,8 +92,10 @@ total moves by up to 1.07%.
 Time for the 15 fields (median of five calls each, one thread): 14.62 s
 against 11.54 s, 1.27x; with the 1e-6 cutoff 9.53 s against 7.69 s, 1.24x.
 By profile the extra cost is the closed-form integration of the rising and
-falling parts of each overlap; it buys rates accurate to rounding at any bin
-width.
+falling parts of each overlap; it evaluates the defined overlap integrals to
+rounding at any bin width. The finite-bin approximation itself remains: the
+bins have geometric edges and keep their enthalpies H_j as representative
+energies, where DL01 Sec. 4.1 takes the arithmetic mean of the bin edges.
 
 ### An unreadable D03 dielectric file is reported as such
 
