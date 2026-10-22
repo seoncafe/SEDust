@@ -11,7 +11,7 @@ FC=ifort sed/build_lib.sh
 sed/tests/build_validation.sh sed/lib corrected /tmp/validation_corrected.x
 ```
 
-Use `exact` for a library without the new absorbed-power and emission-bin diagnostic symbols. Use `corrected` for a library exporting `radiation_absorption` and the `emission_bin_power_*` symbols. `FC` defaults to `ifort`, with `-O3 -qopenmp -recursive -fp-model precise -fpp -w` and HDF5 in `/data/opt/hdf5_intel`. Set `FC=gfortran` explicitly for a reference build; its HDF5 default is `/data/opt/hdf5_gfortran`. Use the same compiler and numerical flags for every speed or bit-identity comparison.
+Use `exact` for a library without the new absorbed-power and emission-bin diagnostic symbols. Use `corrected` for a library exporting `radiation_absorption` and the `emission_bin_power_*` symbols. `FC` defaults to `ifort`, with `-O3 -qopenmp -recursive -fp-model precise -fpp -w` and HDF5 in `/opt/hdf5_intel`. Set `FC=gfortran` explicitly for a reference build; its HDF5 default is `/opt/hdf5_gfortran`. Use the same compiler and numerical flags for every speed or bit-identity comparison.
 
 Create an empty output directory and run with one OpenMP thread:
 
@@ -69,8 +69,8 @@ cutoff reaches the existing model-validity check.
 
 ```sh
 ifort -O3 -qopenmp -recursive -fp-model precise -I sed/lib sed/tests/test_emission_cutoff.f90 \
-  sed/lib/libsedust.a /data/opt/hdf5_intel/lib/libhdf5_fortran.a \
-  /data/opt/hdf5_intel/lib/libhdf5.a -lsz -lz -ldl -lm \
+  sed/lib/libsedust.a /opt/hdf5_intel/lib/libhdf5_fortran.a \
+  /opt/hdf5_intel/lib/libhdf5.a -lsz -lz -ldl \
   -o /tmp/test_emission_cutoff.x
 /tmp/test_emission_cutoff.x
 ```

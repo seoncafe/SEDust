@@ -12,11 +12,11 @@ test_compiler=${FC:-ifort}
 case "$(basename "$test_compiler")" in
    gfortran*)
       test_flags='-O3 -ffree-line-length-none -cpp -fopenmp -frecursive'
-      hdf5_prefix=${HDF5_PREFIX:-/data/opt/hdf5_gfortran}
+      hdf5_prefix=${HDF5_PREFIX:-/opt/hdf5_gfortran}
       ;;
    *)
       test_flags='-O3 -qopenmp -recursive -fp-model precise -fpp -w'
-      hdf5_prefix=${HDF5_PREFIX:-/data/opt/hdf5_intel}
+      hdf5_prefix=${HDF5_PREFIX:-/opt/hdf5_intel}
       ;;
 esac
 case "$mode" in
@@ -29,4 +29,4 @@ script_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
    $definitions -I"$sed_directory" -I"$hdf5_prefix/include" \
    "$script_directory/validation_driver.f90" "$sed_directory/libsedust.a" \
    "$hdf5_prefix/lib/libhdf5_fortran.a" "$hdf5_prefix/lib/libhdf5.a" \
-   -lsz -lz -ldl -lm -o "$executable"
+   -lsz -lz -ldl -o "$executable"

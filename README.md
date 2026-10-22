@@ -189,4 +189,4 @@ Kwang-il Seon (KASI/UST)
 
 ---
 
-Last updated: 2026-10-22 21:40 KST
+Last updated: 2026-10-23 00:23 KST

@@ -52,8 +52,8 @@ TMDIR=${TMDIR:-../tmatrix}
 # libsedust.a that needs the HDF5 symbols.
 HDF5=${HDF5:-1}
 case "$(basename "$FC")" in
-   gfortran*|gfort*)  HDF5_PREFIX=${HDF5_PREFIX:-/data/opt/hdf5_gfortran} ;;
-   *)                 HDF5_PREFIX=${HDF5_PREFIX:-/data/opt/hdf5_intel} ;;
+   gfortran*|gfort*)  HDF5_PREFIX=${HDF5_PREFIX:-/opt/hdf5_gfortran} ;;
+   *)                 HDF5_PREFIX=${HDF5_PREFIX:-/opt/hdf5_intel} ;;
 esac
 if [ "$HDF5" != "0" ]; then
    H5FLAGS="-DSEDUST_HDF5 -I$HDF5_PREFIX/include"

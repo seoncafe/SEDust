@@ -9,7 +9,7 @@
 !
 ! Not part of the library.  Build against a library directory LIB:
 !   ifort -O2 -qopenmp -fpp [-DCOMBINED_OPTICS] -ILIB dump_carbonaceous_optics.f90 \
-!         -LLIB -lsedust -L<hdf5>/lib -lhdf5_fortran -lhdf5 -lsz -lz -ldl -lm
+!         -LLIB -lsedust -L<hdf5>/lib -lhdf5_fortran -lhdf5 -lsz -lz -ldl
 ! Usage: dump_carbonaceous_optics.x <data_dir> <output file>
 program dump_carbonaceous_optics
    use sed_paths, only: sed_set_data_root

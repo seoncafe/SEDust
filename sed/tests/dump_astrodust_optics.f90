@@ -13,7 +13,7 @@
 !
 ! Not part of the library.  Build against a library directory LIB:
 !   ifort -O2 -qopenmp -fpp -ILIB dump_astrodust_optics.f90 -LLIB -lsedust \
-!         -L<hdf5>/lib -lhdf5_fortran -lhdf5 -lsz -lz -ldl -lm
+!         -L<hdf5>/lib -lhdf5_fortran -lhdf5 -lsz -lz -ldl
 ! Usage: dump_astrodust_optics.x <data_dir> <output file> [ld01]
 ! A third argument 'ld01' sets use_ld01_pah_xsec, the Li & Draine (2001) PAH
 ! cross sections of the two PAH populations.
