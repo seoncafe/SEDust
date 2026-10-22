@@ -4,6 +4,107 @@ A dated record of code and documentation changes, newest first. Each entry names
 the files it touches and, where a change moves numbers, states the measurement
 that was made on the tree itself.
 
+## 2026-10-22
+
+### Intel Fortran builds
+
+`sed/Makefile`, `mc/Makefile`: compiler family detection (`ifort`, `ifx`,
+`mpiifort`, `mpiifx`) with the Intel flags of `sed/build_lib.sh`.
+`mc/src/main_mc_sed.f90`, `main_pT_compare.f90`: `use omp_lib` (IFX provides no
+intrinsic `omp_lib`). `mc/src/mc_sed.f90`: the BLOCK-local variables of the
+parallel region are declared at routine scope and listed in `private`.
+`sed/src/check_build_dust.f90`: the ZDA round-trip check allows two ulps,
+because IFX 2026.1 reads 2 of the 145321 rows of `suvSil_121_1201.dat` one ulp
+from the correctly rounded value. With IFX 2026.1.0 all `sed/` targets and `mc/`
+build and the read-only checks pass.
+
+### Other corrections
+
+`sed/src/p_sub.f90` (comments): the bin representative energy H_u versus DL01
+Sec. 4.1 and its validity range. `pyutil/sed_from_cabs.py`: `calc_P` and the
+absorption integral follow `p_sub.f90` (192 cases: upward rates bit-identical,
+P to 2.5e-14). `docs/SEDust_user_manual.tex`: the 1e-12 support-floor paragraph
+no longer places 1e-10 below 1e-13. `sed/tests/*.sh` are executable.
+
+### Port the v1.00 emission changes to v1.20
+
+Transfer `5f68a42..710503b` and the current v1.00 working-tree updates,
+including the bin-representative-energy qualification in `p_sub.f90` and
+executable modes for the two new test scripts. Preserve the v1.20 polarized
+optics, `Cpol` and `lamI_pol`, the aligned-scattering interfaces, and their
+build targets.
+
+`sed_astrodust.f90` was merged by hand where the v1.00 patch did not apply:
+the emission-bin cutoff skip sits before both the total and the polarized
+accumulation in `sed_grain_loop`, the prepared Planck grid is in the `draine`
+and `qm` OpenMP shared lists beside the polarized variables, an unreadable
+D03 file in `sed_init_dl07` returns status 7 (v1.20's code for the D03
+refusal; 4 in v1.00), and `error_unit` stays imported. `sed/build_lib.sh`
+now lists `dustem_io`, which `sed_astrodust.f90` uses and which the script
+lacked here as it did in v1.00.
+
+Validation on v1.20, gfortran, outside the repository: all 18 `sed/`
+Makefile targets and `mc/` build, with no compiler warnings in the merged
+modules; `test_scalar_mode`, `test_euv_extension`, `test_scatmat_aligned`,
+`test_dustem_extinction`, `test_dustem_polarized_extinction`,
+`check_build_dust`, `test_h5_storage_policy`, `test_size_distribution` and
+`check_data_root` pass. Astrodust, NT = 200, `include_euv = .false.`, Mathis
+field at U = 1.585 and 100, `heuristic` and `draine`: emitted over absorbed
+power (both from the same wavelength grid, absorption with the size-integrated
+C_abs of `dust_extinction`) was 0.99643-1.00031 before the transfer and is
+1.00048-1.00050 after. The total power moves by +0.019% to +0.409%; the
+polarized emission moves differently, e.g. heuristic at U = 100, 1-3 um:
+total +0.58%, polarized -1.34%; the emission polarization fraction at 153 um
+and 851 um changes by at most 3.5e-4 (absolute). With
+`emission_bin_power_cutoff = 1e-6` (heuristic, U = 100) the omitted P*kappB
+fraction is 1.4e-7 and the largest change relative to the peak is 3.8e-8 in
+the total and 1.1e-9 in the polarized emission; a nonzero cutoff with
+`draine` returns status 5 and a negative one status 4.
+
+The absorption solver uses the finite-bin overlap construction of Draine
+& Li (2001), equations (15), (16), and (28), on the represented radiation
+support. Shared support integration, prepared Planck coefficients,
+carbonaceous-optics reuse, and charge-specific PAH cooling are transferred
+with the new focused tests in `sed/tests/`. The optional
+`emission_bin_power_cutoff` defaults to zero and applies to the heuristic
+emission sum, not to heating rates or the probability distribution.
+Applications must serialize calls that use the shared mutable model state.
+
+The GD enthalpy grid and cooling remain in use. Geometric bin edges do not
+generally make `H(T)` the arithmetic bin centers of DL01 Sec. 4.1; this is
+not the complete DL01 statistical treatment. Energy-closure tests do not
+establish spectral convergence or bound relative polarized-emission errors.
+
+`SRC_DUST_MODEL` and `SED_DUST_MODEL_SRC` replace the old build-list names.
+The MC source list omits the redundant graphite-sphere declaration and
+keeps the v1.20 polarized modules in dependency order. The existing
+`SRC_POLH5` dependency correction is retained. Historical v1.20 entries
+below are preserved. Documents use the updated solver terminology.
+The manual and astrodust report also correct an existing claim that the
+relative radiation intensity bounds the temperature probability. The support
+floor is a numerical convention; excluded absorbed power must be assessed
+with the actual cross sections and wavelength intervals.
+
+No v1.00 timings, energy budgets, or spectral changes are adopted as v1.20
+measurements. The 71 `sed/output/sed_*.dat` products were regenerated with the
+merged code (gfortran; 66 change, the five `equil` products are byte-identical)
+and the astrodust report re-measured from them: S1_C1 against HD23, 30-300 um
+median -7.57% -> -7.37%, peak -10.06% -> -9.80%; Table mathis_c, the energy
+budget (PAH ours/HD23 0.963 -> 0.962; astrodust 0.914, which the committed
+products had not matched at 0.911), the Ad + PAH three-way and feature tables,
+the conclusions, and the timings (Xeon Gold 6254, one thread: one
+`dust_emission` 0.98 s, `calc_sed.x astrodust` 2.56 s). Two claims that were
+already wrong before the transfer were corrected from the same products: the
+60-300 um residual after the 1.093 amplitude is flat to +-3.3%, not +-2%, and
+in the MC report the MC-to-matrix band ratios are NIR 0.959, MIR 0.998, FIR
+1.001, sub-mm 1.002 (band-integrated), not "0.97/1.01/1.00/0.99, 1-3% in every
+band". The tracked MC products (`mc/output`: three SEDs, `pT_compare_ad`,
+the T_rad/T_eq diagnostic) and the four MC figures were regenerated. The
+untracked text `kext_*_euv.dat` of astrodust, dl07, mrn and zubko were
+regenerated as well: they predated the shipped HDF5 `/kext`, which `calc_kext.x`
+reproduces bit for bit, and `pyutil/tests/test_sedust_h5.py` now passes.
+Optical tables and the HDF5 products are unchanged.
+
 ## 2026-09-08
 
 ### G18 Model D gets a scattering asymmetry, computed from first principles
@@ -771,7 +872,7 @@ skipped, with a message, until the two non-production graphite runs of
 
 ### `mc/` build and namelists
 
-`mc/Makefile`. The Monte Carlo drivers that pull in the SED pipeline
+`mc/Makefile`. The Monte Carlo drivers that link the dust-model modules
 (`main_mc_sed.x`, `main_pT_compare.x`) failed at link: `SED_PIPELINE` was
 missing `sed_paths.f90`, `sedust_h5.f90`, `sedust_product.f90`,
 `kext_table.f90` and `q_component.f90`, and the link line carried no HDF5

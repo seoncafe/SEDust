@@ -447,10 +447,13 @@ module dust_lib
    ! large-x limit. See build_Cpol for what the table resolves and what it
    ! leaves at the geometric-optics zero.
    !
-   ! The validated solver core (sed_grain_loop & helpers in sed_astrodust_mod)
-   ! is untouched; this module only re-exports the model API and adds the
-   ! table/interpolation layer.
+   ! The solver core resides in sed_astrodust_mod. This module re-exports
+   ! its model API and adds the table/interpolation layer.
    use constants,         only: wp
+   use p_sub, only: radiation_absorption
+   use radfield, only: isolated_radiation_support_count
+   use sed_astrodust_mod, only: emission_bin_power_cutoff, emission_bin_power_total, &
+        emission_bin_power_skipped, emission_bin_power_weighted_total, emission_bin_power_weighted_skipped
    use dust_model_mod,    only: CHANNEL_NAME_LEN
    use sed_paths,         only: sed_set_data_root, sed_get_data_root
    use sed_mathlib,           only: locate
@@ -512,6 +515,9 @@ module dust_lib
    ! reduces to the scalar C_ext, and the aligned-grain scattering matrix has
    ! nothing to be built from -- an RT host that wants dichroic extinction or
    ! aligned scattering must run the astrodust model.
+   public :: radiation_absorption, isolated_radiation_support_count
+   public :: emission_bin_power_cutoff, emission_bin_power_total, emission_bin_power_skipped
+   public :: emission_bin_power_weighted_total, emission_bin_power_weighted_skipped
    public :: dust_model_t, build_dust
    ! Where the library looks for the data it was not handed a path to.
    ! build_dust sets this from its own data_dir and restores it, so a host on

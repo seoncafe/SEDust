@@ -15,7 +15,7 @@ tables, and this script draws them:
   4  g18d_sphere_vs_spheroid.pdf how far the volume-equivalent sphere sits
                                  from the spheroid in g, versus x
   5  g18d_gbar.pdf               the size-integrated <cos theta> of g18d that
-                                 comes out of the pipeline, beside THEMIS
+                                 comes out of the size integral, beside THEMIS
 
 Inputs are the files those programs write:
   tmatrix/output/mie_vs_amCBEx.dat        ./compare_mie_spheres.x
@@ -181,7 +181,7 @@ def sphere_vs_spheroid():
 
 
 # ----------------------------------------------------------------------
-# 5: what the pipeline delivers
+# 5: the size-integrated g the model delivers
 # ----------------------------------------------------------------------
 def gbar_end_to_end():
     fig, ax = plt.subplots(1, 2, figsize=(8.0, 3.2))

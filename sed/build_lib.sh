@@ -116,7 +116,7 @@ SED_SRCS="constants sed_paths sed_mathlib sedust_h5 sedust_product enthalpy_v2 s
       enthalpy_astrodust mie \
       q_astrodust q_graphite q_graphite_d16 q_graphite_d16_sphere qpah radfield \
       p_sub stoch_qm pah_ioniz grain_dist q_silicate pah_ld01 scatmat_aligned \
-      dust_model_mod zubko_io kext_table q_component sed_astrodust dust_lib"
+      dust_model_mod zubko_io kext_table q_component dustem_io sed_astrodust dust_lib"
 
 mkdir -p lib
 rm -f lib/*.o lib/*.mod lib/libsedust.a

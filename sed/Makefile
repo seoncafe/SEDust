@@ -59,6 +59,16 @@
 #   ./test_h5_storage_policy.x         # HDF5 storage precision policy
 
 FC      = gfortran
+# Compiler family, as in ../tmatrix/Makefile: only the flag spellings differ.
+# An Intel build links ../tmatrix/libtmatrix.a, which must be built with the
+# same compiler: cd ../tmatrix && make FC=ifort libtmatrix.a
+# On the oneAPI releases installed here `ifort` is the IFX compiler.  Set
+# FC_FAMILY on the command line for a wrapper whose name hides the compiler.
+ifneq (,$(filter ifort ifx mpiifort mpiifx,$(notdir $(FC))))
+   FC_FAMILY ?= intel
+else
+   FC_FAMILY ?= gnu
+endif
 
 # ---- HDF5 -------------------------------------------------------------
 # The optics products (kext curves, Q tables, and in v1.20 the polarized
@@ -72,7 +82,7 @@ FC      = gfortran
 # The prefix must hold include/hdf5.mod built by THIS compiler -- a .mod from
 # another gfortran release is not readable, which is the usual failure here.
 HDF5        ?= 1
-ifeq ($(FC),ifort)
+ifeq ($(FC_FAMILY),intel)
    HDF5_PREFIX ?= /data/opt/hdf5_intel
 else
    HDF5_PREFIX ?= /data/opt/hdf5_gfortran
@@ -113,6 +123,14 @@ FFLAGS += -fopenmp
 # both compilers, so nothing is broken today; stating it keeps the reentrancy
 # of a threaded path from resting on that side effect.
 FFLAGS += -frecursive
+# Intel spellings of the same flags, as build_lib.sh uses them: -fpp for -cpp,
+# -qopenmp, and -recursive for -frecursive (not a no-op on Intel, see above).
+# -fp-model precise because Intel otherwise defaults to -fp-model fast, which
+# the T-matrix convergence test linked into calc_sed.x and calc_kext.x does
+# not tolerate (see build_lib.sh).
+ifeq ($(FC_FAMILY),intel)
+   FFLAGS = -O3 -fpp -fp-model precise -qopenmp -recursive $(H5FLAGS)
+endif
 
 # ---- T-matrix library, for the astrodust EUV band only ---------------
 # The astrodust model's extreme-ultraviolet band (a lam_min shorter than the Q
@@ -152,10 +170,10 @@ SRC_BASE    = src/constants.f90 src/sed_paths.f90 src/sed_mathlib.f90
 SRC_DL07MOD = src/pah_ioniz.f90 src/grain_dist.f90 src/q_silicate.f90 \
               src/pah_ld01.f90
 
-# Everything the SED pipeline needs, minus the driver.
+# The dust-model modules, in dependency order, without a driver.
 # SRC_H5 sits after SRC_BASE because src/sedust_product.f90 uses constants,
 # and before src/q_table.f90, which reads the astrodust table through it.
-SRC_PIPE    = $(SRC_BASE) $(SRC_H5) src/enthalpy_v2.f90 \
+SRC_DUST_MODEL    = $(SRC_BASE) $(SRC_H5) src/enthalpy_v2.f90 \
               src/size_dist.f90 src/q_table.f90 src/q_table_jori.f90 \
               src/enthalpy_astrodust.f90 \
               src/mie.f90 src/q_astrodust.f90 \
@@ -173,8 +191,8 @@ SRC_ENTH    = $(SRC_BASE) src/enthalpy_v2.f90 \
 # The command-line SYSTEM every program here shares: one vocabulary, one
 # parser, one refusal, one filename-tag rule, with each program declaring which
 # axes it has a referent for.  It reads the module state of the solver, the
-# radiation field and the optics, so it follows SRC_PIPE wherever the pipeline
-# is linked; it is NOT part of libsedust.a, a host having no command line.
+# radiation field and the optics, so it follows SRC_DUST_MODEL wherever these modules
+# are linked; it is NOT part of libsedust.a, a host having no command line.
 SRC_CLIOPT  = src/sed_run_options.f90
 # Where a setting LANDS: the module state the solver, the field and the optics
 # read.  Only the programs that HAVE those modules link it.
@@ -199,7 +217,7 @@ calc_enthalpy.x: $(SRC_ENTH)
 # this tree's own optics routines -- except the two DustEM-defined models,
 # whose published tables ARE the model and are stored on each population's own
 # model radii.
-calc_qtable.x: $(SRC_PIPE) $(SRC_CLIOPT) src/calc_qtable.f90
+calc_qtable.x: $(SRC_DUST_MODEL) $(SRC_CLIOPT) src/calc_qtable.f90
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./calc_qtable.x     (writes ../data/<model>/)'
 
@@ -207,17 +225,17 @@ calc_qtable.x: $(SRC_PIPE) $(SRC_CLIOPT) src/calc_qtable.f90
 # illuminated cell.  It is built against the T-matrix because the astrodust
 # EUV band, when one is asked for, is solved on the oblate spheroid of the Q
 # table rather than on a volume-equivalent sphere.
-calc_sed.x: $(SRC_PIPE) $(SRC_EUVTM) $(SRC_CLIOPT) $(SRC_CLIAPPLY) src/calc_sed.f90 | $(TMARCH)
+calc_sed.x: $(SRC_DUST_MODEL) $(SRC_EUVTM) $(SRC_CLIOPT) $(SRC_CLIAPPLY) src/calc_sed.f90 | $(TMARCH)
 	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
 	@echo 'Built: ./calc_sed.x'
 
 # Size-integrated transport optics (lambda, albedo, <cos>, C_ext/C_abs/C_sca
 # per H) for astrodust, DL07, Zubko or any file-defined model -> ../data/.
-# Reuses the full SED pipeline and computes the size integral from first
+# Uses the dust-model optics and computes the size integral from first
 # principles (size_integrated_extinction); the tables it writes here are the
 # very ones dust_extinction reads back for an RT host.  The astrodust product
 # also carries the dichroic C_polext/H column.
-calc_kext.x: $(SRC_PIPE) $(SRC_EUVTM) $(SRC_CLIOPT) src/calc_kext.f90 | $(TMARCH)
+calc_kext.x: $(SRC_DUST_MODEL) $(SRC_EUVTM) $(SRC_CLIOPT) src/calc_kext.f90 | $(TMARCH)
 	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
 	@echo 'Built: ./calc_kext.x'
 
@@ -229,7 +247,7 @@ SRC_POLEXT = $(SRC_BASE) src/size_dist.f90 src/q_table_jori.f90 \
 # The /polarized groups of data/sedust_astrodust.h5: the orientation-resolved
 # cross sections and the two scattering matrices.  It APPENDS, so run it after
 # calc_qtable.x (which replaces the file) and calc_kext.x.
-SRC_POLH5 = $(SRC_BASE) $(SRC_H5) src/q_table_jori.f90 src/scatmat_aligned.f90 \
+SRC_POLH5 = $(SRC_BASE) $(SRC_H5) src/size_dist.f90 src/q_table_jori.f90 src/scatmat_aligned.f90 \
             $(SRC_CLIOPT) src/calc_polarized_optics.f90
 
 calc_polarized_optics.x: $(SRC_POLH5)
@@ -242,8 +260,8 @@ calc_polext.x: $(SRC_POLEXT)
 
 # Aligned-scattering interface checks: reader round-trip, symmetry
 # reconstruction, eta algebra, and K consistency against the calc_polext-style
-# f_align-weighted size integrals. Reuses the full SED pipeline + dust_lib.
-SRC_TSCAT = $(SRC_PIPE) src/dust_lib.f90 src/test_scatmat_aligned.f90
+# f_align-weighted size integrals. Uses the dust-model modules and dust_lib.
+SRC_TSCAT = $(SRC_DUST_MODEL) src/dust_lib.f90 src/test_scatmat_aligned.f90
 
 test_scatmat_aligned.x: $(SRC_TSCAT)
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
@@ -253,7 +271,7 @@ test_scatmat_aligned.x: $(SRC_TSCAT)
 # polarized astrodust build agree on Cext/Cabs/Csca/gbar and the total SED, the
 # scalar build carries no polarized optics and opens no polarized Q table, and a
 # scalar request combined with an explicit polarized path is a contradiction.
-SRC_TSCALAR = $(SRC_PIPE) src/dust_lib.f90 src/test_scalar_mode.f90
+SRC_TSCALAR = $(SRC_DUST_MODEL) src/dust_lib.f90 src/test_scalar_mode.f90
 
 test_scalar_mode.x: $(SRC_TSCALAR)
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
@@ -263,7 +281,7 @@ test_scalar_mode.x: $(SRC_TSCALAR)
 # grid, the table block left untouched, the join at the Q table's 0.0912 um end,
 # and a polarized build whose EUV block reproduces the dichroism and
 # birefringence a direct T-matrix calculation of the same spheroid gives.
-SRC_TEUV = $(SRC_PIPE) src/dust_lib.f90 src/test_euv_extension.f90
+SRC_TEUV = $(SRC_DUST_MODEL) src/dust_lib.f90 src/test_euv_extension.f90
 
 test_euv_extension.x: $(SRC_TEUV)
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
@@ -283,7 +301,7 @@ test_euv_extension.x: $(SRC_TEUV)
 #       call use_tmatrix_euv_band_optics()
 # once before build_astrodust.  Without that call, euv_tmatrix = .true. is
 # refused with status 11 rather than answered with a sphere.
-LIB_SRC = $(SRC_PIPE) src/dust_lib.f90
+LIB_SRC = $(SRC_DUST_MODEL) src/dust_lib.f90
 LIB_OBJ = $(notdir $(LIB_SRC:.f90=.o))
 
 ifdef WITH_TMATRIX
@@ -310,7 +328,7 @@ libsedust.a: $(LIB_SRC)
 endif
 
 # rt_example: aligned-scattering Peest-style consumer, built AS AN EXTERNAL host
-# would -- against libsedust.a and the .mod search path, not from the pipeline
+# would -- against libsedust.a and the .mod search path, not from the model
 # sources. Build and run from sed/ (data paths are relative to ../).
 use_dustlib_scatmat.x: libsedust.a rt_example/use_dustlib_scatmat.f90
 	$(FC) $(FFLAGS) -I. rt_example/use_dustlib_scatmat.f90 libsedust.a $(H5LIBS) -o $@
@@ -318,7 +336,7 @@ use_dustlib_scatmat.x: libsedust.a rt_example/use_dustlib_scatmat.f90
 
 # Builds every model from a foreign working directory with an absolute
 # data_dir, and checks that a bad one comes back as a status instead of an
-# abort.  Links the LIBRARY, not the pipeline sources, because that is what a
+# abort.  Links the LIBRARY, not the model sources, because that is what a
 # host sees.
 check_data_root.x: libsedust.a src/check_data_root.f90
 	$(FC) $(FFLAGS) -I. src/check_data_root.f90 libsedust.a $(H5LIBS) -o $@
@@ -351,19 +369,19 @@ test_h5_storage_policy.x: src/sedust_h5.f90 src/test_h5_storage_policy.f90
 
 # build_dustem on each DustEM-defined model against DustEM's own extinction
 # for it, ../data/{themis,g18d}/reference/EXT_*.RES.
-test_dustem_extinction.x: $(SRC_PIPE) src/test_dustem_extinction.f90
+test_dustem_extinction.x: $(SRC_DUST_MODEL) src/test_dustem_extinction.f90
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./test_dustem_extinction.x'
 
 # The polarized extinction of a DustEM-defined model against DustEM's own,
 # ../data/g18d/reference/EXT_POL_G17_ModelD.RES.
-test_dustem_polarized_extinction.x: $(SRC_PIPE) src/test_dustem_polarized_extinction.f90
+test_dustem_polarized_extinction.x: $(SRC_DUST_MODEL) src/test_dustem_polarized_extinction.f90
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./test_dustem_polarized_extinction.x'
 
 # Does build_dust on the HDF5 products give the same model as the builders on
 # the text products?  Run it after calc_qtable.x and calc_kext.x.
-check_build_dust.x: $(SRC_PIPE) $(SRC_EUVTM) src/check_build_dust.f90 | $(TMARCH)
+check_build_dust.x: $(SRC_DUST_MODEL) $(SRC_EUVTM) src/check_build_dust.f90 | $(TMARCH)
 	$(FC) $(FFLAGS) $(TMINC) $^ $(TMLIB) $(H5LIBS) -o $@
 	@echo 'Built: ./check_build_dust.x'
 

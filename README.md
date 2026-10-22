@@ -151,7 +151,7 @@ paths outside this directory.
 - **[README_HOWTO.md](README_HOWTO.md)** — build, run, every run setting the
   drivers take, the ionizing band, the stochastic-heating solvers, and the
   polarized optics.
-- [`docs/astrodust_sed_report.pdf`](docs/astrodust_sed_report.pdf) — the astrodust+PAH pipeline, its validation
+- [`docs/astrodust_sed_report.pdf`](docs/astrodust_sed_report.pdf) — the astrodust+PAH emission calculation, its validation
   against the HD23 release, and the resolution of the far-infrared offset.
 - [`docs/SEDust_user_manual.pdf`](docs/SEDust_user_manual.pdf) — the `libsedust.a` API: model builders,
   channels, solver options, and how to link it into an RT code.
@@ -189,4 +189,4 @@ Kwang-il Seon (KASI/UST)
 
 ---
 
-Last updated: 2026-09-08 16:12 KST
+Last updated: 2026-10-22 21:40 KST

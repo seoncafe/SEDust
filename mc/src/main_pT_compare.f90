@@ -19,7 +19,7 @@ program main_pT_compare
    !     T_hi          = 3000.0
    !   /
 
-   use, intrinsic :: omp_lib
+   use omp_lib
    use constants,         only: wp
    use radfield,          only: J_Mathis
    use p_sub,             only: calc_P, calc_Teq
@@ -125,7 +125,7 @@ program main_pT_compare
    end select
    if (trim(pop) == 'pah') comp_for_mc = 'pah'
 
-   ! Load all pipeline data
+   ! Load the optics, size grid and enthalpies (sed_init)
    call sed_init(trim(qtable_path), NT_init, T_lo, T_hi)
    write(*,'(a,i0,a,i0,a,i0)') '  loaded NLAM=', NLAM, '  NA=', NA, '  NT=', NT_init
 
@@ -146,7 +146,13 @@ program main_pT_compare
          end if
       end do
 
-      ! Pull this grain's Cabs, kappB, H, kappCMB depending on population
+      ! Pull this grain's Cabs, kappB, H, kappCMB depending on population.
+      ! pop = 'pah' takes the f_ion-blended carbonaceous grain (Cabs_pah with
+      ! the kappB_pah_first and kappCMB_pah built on that same Cabs_pah), so
+      ! both solvers see one consistent grain.  It is not a population
+      ! sed_solve_pah solves -- that one runs the neutral and the cation
+      ! separately -- but this program compares two P(T) solvers on the same
+      ! input, which any self-consistent grain serves.
       if (trim(pop) == 'pah') then
          Cabs_grain  = Cabs_pah(:, ja_best)
          kappB_grain = kappB_pah_first(:, ja_best)

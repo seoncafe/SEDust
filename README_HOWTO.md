@@ -206,7 +206,7 @@ they agree cell for cell over the 1129 they share.
 Below 0.0912 um the `_euv` table's wavelengths are the DH21 dielectric
 function's own energy nodes rather than a resampling of them, so every
 absorption edge stays an exact step between adjacent wavelengths instead of
-being averaged into a ramp by a uniform 200-per-decade axis. Counting the edges
+being averaged into a ramp by a uniform axis with 200 samples in each decade. Counting the edges
 takes a threshold and the answer moves with it: 23 places where k jumps by more
 than 0.5% across a pair of nodes closer than 5e-4 in relative energy, 14 of them
 closer than 1e-4. The largest jumps are +211% at Fe K (7124 eV), +131% at O K
@@ -396,10 +396,18 @@ driven by a photon flux the field does not carry.** The same clamp made the
 integral run backwards when the gap exceeded the grid's range, subtracting a
 rate instead of adding none.
 
-Both limits now come from the field — `hardest_photon_energy`, the same routine
-the enthalpy ceiling uses — and the band is skipped outright when the gap is
-harder than the hardest photon. The sample count follows the band's width
-instead of being a flat 51 points.
+Before the finite-bin update, both limits came from the field through
+`hardest_photon_energy`, the routine the enthalpy ceiling uses, and the band
+was skipped when the gap was
+harder than the hardest photon. The sample count followed the band's width
+instead of being a flat 51 points. Since 2026-10-21 there is no separate
+highest-bin sampling: every upward rate, the top bin's included, is the
+bin-overlap construction of Draine & Li (2001) eqs. 15–16 and 28, integrated
+in closed form over the represented field support and interpolant. This
+uses the existing GD enthalpy grid and cooling: its geometric bin boundaries
+do not generally make `H(T)` the arithmetic bin centers defined in DL01
+Sec. 4.1. It is not the complete DL01 statistical treatment
+(`docs/CHANGES.md`).
 
 **This changed all three models shipped at the time**, and for Zubko it has nothing to do
 with the astrodust table: that model's grid has always started at 1e-3 um, so it

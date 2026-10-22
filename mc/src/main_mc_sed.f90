@@ -16,7 +16,7 @@ program main_mc_sed
    !     T_hi         = 3000.0
    !   /
 
-   use, intrinsic :: omp_lib
+   use omp_lib
    use constants,         only: wp
    use radfield,          only: J_Mathis
    use sed_astrodust_mod, only: sed_init, NLAM, lam

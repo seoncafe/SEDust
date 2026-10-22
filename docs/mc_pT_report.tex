@@ -47,10 +47,11 @@ build an emergent SED.  The SED builder exposes a runtime flag
 ($\texttt{=\,F}$), small (stochastic) grains use the Monte Carlo
 engine while large (equilibrium) grains use the analytic
 \texttt{calc\_Teq} solver -- the same hybrid logic the production
-pipeline uses, but with MC replacing the
+solver uses, but with MC replacing the
 \citet{GuhathakurtaDraine1989} matrix solver in the stochastic
 branch.  In this mode the MC-based SED reproduces the production
-\texttt{sed\_solve} output to within $1$--$3\%$ in every band, once
+\texttt{sed\_solve} output to within $0.3\%$ in every band from 5 to
+\SI{3000}{\micro\meter} and lies $4\%$ below it in 1--\SI{5}{\micro\meter}, once
 three corrections are applied to the SED builder: (i) a
 fractional-temperature cap on the linearized cooling step, which keeps
 the super-linear $T^4$ cooling from over-populating the hot tail of
@@ -67,8 +68,8 @@ $\lambda_c(a) = hc / (\delta T_{\rm thresh}\,\Teq\,\Ctot(\Teq))$
 $\lambda_c=1000\,\mu$m: without it the single-photon temperature jumps for
 large grains are too small to keep the trajectory near $\Teq$ and the
 FIR is under-predicted by $\sim 30\%$.  With all corrections the all-MC
-SED is indistinguishable from the default mode (both within $1$--$3\%$
-of the reference) and the single-grain $T_{\rm rad}^{\rm MC}/\Teq$ ratio
+SED is indistinguishable from the default mode (both within $0.3\%$
+of the reference from 5 to \SI{3000}{\micro\meter}) and the single-grain $T_{\rm rad}^{\rm MC}/\Teq$ ratio
 stays within $\pm 3\%$ across $a \in [0.03, 5]\,\mu$m.  A second
 runtime flag,
 \texttt{mc\_engine}, selects between the original fixed-grid histogram
@@ -104,7 +105,7 @@ $+8.4\%$. The PIIM Figs.~24.5/24.6 reproductions
 against \texttt{sed\_solve} (Figure~\ref{fig:sed_compare}), and the
 single-grain $P(T)$ comparisons (Figures~\ref{fig:pT_ad},
 \ref{fig:pT_pah}, \ref{fig:pT_large}) have all been regenerated with
-the new default and the adaptive two-pass MC engine; the $1$--$3\%$
+the new default and the adaptive two-pass MC engine; the
 MC-vs-reference agreement is invariant to the choice of dilution
 factor because both sides shift together.
 
@@ -145,7 +146,7 @@ There are two standard ways to obtain $P(T)$:
   state.
 \end{enumerate}
 The matrix method is more efficient and is what the production
-astrodust pipeline uses (\texttt{p\_sub.f90::calc\_P}).  The MC method
+astrodust solver uses (\texttt{p\_sub.f90::calc\_P}).  The MC method
 is conceptually simpler, has fewer numerical knobs, and provides a
 useful independent cross-check.  This document records the MC
 implementation kept under \verb|SEDust/mc/| and its validation.
@@ -363,7 +364,7 @@ forward Euler step, also subject to the $f_{\rm cap}$ cap.
 The implementation lives under \verb|SEDust/mc/| and is split
 into small modules that each do one thing.  Throughout, cgs units
 are used (erg, cm, s) except that wavelength is in $\umc$ to match
-the rest of the astrodust pipeline.
+the rest of the astrodust code.
 
 \begin{itemize}
 \item \verb|mc_heatcap.f90|: enthalpy $E_{\rm grain}(T,a)$ and heat
@@ -413,7 +414,7 @@ the rest of the astrodust pipeline.
 
 \item \verb|main_mc_sed.f90|: size-distribution SED driver
   (\verb|main_mc_sed.x|).  Reads a namelist, calls \verb|sed_init|
-  from the astrodust pipeline to load the grain Q table, size
+  from the astrodust code to load the grain Q table, size
   distribution, and PAH cross sections, then loops via \verb|mc_sed|.
   It calls \verb|sed_init| without the optional \verb|lam_min|, so the
   wavelength grid is the plain T-matrix $Q$-table grid
@@ -454,7 +455,7 @@ closer to unity.
 For the size-distribution SED builder (\verb|main_mc_sed.x|) on the
 HD23 astrodust+PAH size distribution at $\log U=0.20$ ($U=1.585$), the
 default-mode population-summed trajectory ratios are now
-$E_{\rm emit}/E_{\rm abs} = 1.001$ (astrodust) and $1.000$ (PAH).  The
+$E_{\rm emit}/E_{\rm abs} = 1.000$ (astrodust) and $1.000$ (PAH).  The
 fractional-temperature step cap (Eq.~\ref{eq:stepcap}) removed the
 $\sim 10\%$ deficit ($0.90$/$0.93$) that the uncapped linearized
 integrator produced in earlier versions.  Independently of the raw
@@ -535,7 +536,7 @@ J_\lambda \;+\!\!= \; (dn/N_H)_j \cdot \Cabs(\lambda, a_j) \cdot
 where $w_i$ is the time spent in histogram bin $i$ (with center
 $T_{{\rm mid},i}$) accumulated by the MC.  Summing over both grain
 populations (astrodust + PAH) and applying the same final unit
-conversion as the production pipeline,
+conversion as the production solver,
 $\lambda I_\lambda = \lambda J_\lambda \times 10^{-3}$, gives the
 final SED in erg s$^{-1}$ cm$^{-2}$ sr$^{-1}$ H$^{-1}$.
 
@@ -576,7 +577,7 @@ brought the integrated PAH power from $1.15\times$ the matrix-solver
 reference (raw midpoint histogram, half-life step) to $1.005\times$.
 
 \paragraph{Charge-resolved PAH populations.}
-The production pipeline treats PAHs as a blend of two charge states,
+The production solver treats PAHs as a blend of two charge states,
 neutral and cation, mixed by an ionization fraction $f_{\rm ion}(a)$;
 the two have markedly different cross sections in the near-IR (the
 cation carries a \citet{Mattioda2005} NIR continuum that the neutral
@@ -609,7 +610,7 @@ the cost of the dynamic schedule with variable work per grain.
 \section{Comparison with the Guhathakurta--Draine matrix solver}\label{sec:compare}
 
 We compare \verb|main_mc_sed.x| against the production astrodust
-pipeline \verb|calc_sed.x astrodust|.  Both implementations read the
+solver \verb|calc_sed.x astrodust|.  Both implementations read the
 same Q table (\verb|q_astrodust_P0.20_Fe0.00_1.400.dat|), the same
 HD23 size distribution (\verb|size_dist.f90|), the same
 Mathis ISRF at $\log U=0.20$, and the same Stage 2 astrodust
@@ -638,7 +639,7 @@ grains are handled:
 \centering
 \includegraphics[width=\linewidth]{figs/sed_mc_vs_ref.pdf}
 \caption{Two MC-pT solver modes versus the production astrodust
-  pipeline, for the HD23 astrodust+PAH model in the Mathis ISRF at
+  solver, for the HD23 astrodust+PAH model in the Mathis ISRF at
   $\log U=0.20$, Stage 2 enthalpy. Both modes use the adaptive 2pass
   histogram engine, the integrator step cap (\S\ref{sec:algo}), the
   single-grain energy-conservation rescale and charge-resolved PAH
@@ -649,8 +650,11 @@ grains are handled:
   Top: $\lambda I_\lambda/N_H$. Bottom: ratio of each mode to the
   reference (note the expanded $0.8$--$1.2$ vertical scale). The
   default mode (blue dashed) and the all-MC mode (red dotted) are
-  indistinguishable and both match the reference to within $1$--$3\%$
-  in every band (NIR $0.97$, MIR $1.01$, FIR $1.00$, sub-mm $0.99$);
+  indistinguishable; both match the reference to within $0.3\%$ from 5 to
+  \SI{3000}{\micro\meter} and lie $4\%$ low in the NIR (default mode,
+  band-integrated $\int \lambda I_\lambda\,d\ln\lambda$ on the MC grid,
+  2026-10-22: NIR 1--5\,$\mu$m $0.959$, MIR 5--30\,$\mu$m $0.998$,
+  FIR 30--300\,$\mu$m $1.001$, sub-mm 300--3000\,$\mu$m $1.002$);
   the dip below $1\,\mu$m is at the optical/far-NIR edge, $\sim 5$
   decades below the peak and carrying negligible power. The
   $\sim 30\%$ all-MC FIR underprediction of earlier versions --- from
@@ -664,8 +668,8 @@ Figure~\ref{fig:sed_compare} shows both modes against the reference.
 In the default mode, MC handles 78 stochastic grains and
 \texttt{calc\_Teq} handles 89 equilibrium grains (out of 167 total
 across the two populations); the resulting SED matches the
-production \texttt{sed\_solve} output to within $1$--$3\%$ in every
-band.  In the \verb|use_mc_for_large_grain=T| mode, all 167 grains go
+production \texttt{sed\_solve} output to within $0.3\%$ from 5 to
+\SI{3000}{\micro\meter} and lies $4\%$ below it in the NIR.  In the \verb|use_mc_for_large_grain=T| mode, all 167 grains go
 through MC and --- with the integrator and SED-builder fixes described
 below --- the SED is essentially identical to the default mode
 (band ratios agree to $< 0.5\%$ between the two modes).  This was not
@@ -704,7 +708,7 @@ large equilibrium grains).
   this over-predicts the mid-IR by up to $\sim 20\%$.  The fractional
   step cap $f_{\rm cap}=0.05$ (Eq.~\ref{eq:stepcap}) removes it; with
   the cap the raw trajectory energy ratio is
-  $E_{\rm emit}/E_{\rm abs} = 1.001$ (astrodust) and $1.000$ (PAH) in
+  $E_{\rm emit}/E_{\rm abs} = 1.000$ (astrodust) and $1.000$ (PAH) in
   the default mode, compared with $0.90$/$0.93$ for the uncapped
   integrator.  (In the all-MC mode the raw ratio is $0.97$/$1.00$, the
   residual $\sim 3\%$ astrodust deficit coming from the large grains
@@ -721,7 +725,7 @@ large equilibrium grains).
 
 With all three corrections (plus the charge-resolved PAH of
 \S\ref{sec:charge_rescale}, which fixes the near-IR), the all-MC mode
-reproduces the analytic-large-grain reference to the same $1$--$3\%$ as
+reproduces the analytic-large-grain reference as closely as
 the default mode (Figure~\ref{fig:sed_compare}).  The earlier
 characterization of the all-MC bias as ``an inherent bias of the
 linearized integrator'' was correct for the uncapped step but is no
@@ -738,8 +742,7 @@ longer the operating regime.
   (single-threaded) and the result reproduces the production SED.
 \item[All-MC (\texttt{T}).]  Now a valid cross-check rather than a
   diagnostic-only mode: with the corrections of
-  \S\ref{sec:energy_fix} it reproduces the reference to the same
-  $1$--$3\%$ as the default mode.  The default mode is still preferred
+  \S\ref{sec:energy_fix} it reproduces the reference as closely as the default mode.  The default mode is still preferred
   for production only because it is cheaper --- the analytic $\Teq$
   solver replaces an MC trajectory for each of the $\sim 90$
   equilibrium grains at no loss of accuracy (those grains are
@@ -1006,7 +1009,7 @@ $a=0.03\,\mu$m to 0.22 at $a=5\,\mu$m. With the adaptive
 $\lambda_c$ the ratio is $1.00 \pm 0.03$ across the entire size
 range; combined with the integrator step cap and the single-grain
 energy-conservation rescale (\S\ref{sec:energy_fix}), the all-MC SED
-then matches the production reference to $1$--$3\%$ in every band
+then matches the production reference as closely as the default mode
 (Figure~\ref{fig:sed_compare}, red dotted curve).
 
 \begin{figure}[ht]

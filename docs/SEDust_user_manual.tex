@@ -1644,7 +1644,7 @@ at O\,K (538), $+67\%$ at Fe\,L (724), $+30\%$ at C\,K (291), $+27\%$ at Si\,K
 (1846) and $+26\%$ at Mg\,K (1311). Counting them takes a threshold, and the
 answer moves with it: 23 places where $k$ jumps by more than $0.5\%$ across a
 pair closer than $5\times10^{-4}$, of which 14 are closer than $10^{-4}$. A
-uniform 200-per-decade axis would average every one of them into a ramp.
+uniform axis with 200 samples in each decade would average every one of them into a ramp.
 Reusing the nodes
 keeps every edge an exact step between adjacent grid points, and makes the
 refractive index at each point the tabulated one rather than an interpolate.
@@ -2053,14 +2053,22 @@ photon more energetic than that bin's gap $\Delta H$. Two things went wrong.
       adding none.
 \end{itemize}
 
-Both limits now come from \code{hardest\_photon\_energy}, and the band is
-skipped when $\Delta H$ exceeds the hardest photon. The sample count follows the
-band's width (\code{NWAV\_MIN}, \code{NWAV\_MAX}, \code{DLNWAV\_TARGET} in
-\code{p\_sub.f90}) instead of being fixed, so the step is bounded whatever the
+Before the finite-bin update, both limits came from
+\code{hardest\_photon\_energy}, and the band was skipped when $\Delta H$
+exceeded the hardest photon. The sample count followed the band's width (\code{NWAV\_MIN}, \code{NWAV\_MAX}, \code{DLNWAV\_TARGET} in
+\code{p\_sub.f90}) instead of being fixed, so the step was bounded whatever the
 band. Re-running the old grid with only the ghost removed and then only the
 sampling changed separates the two: the sampling moves nothing at all
 ($0.0000\%$), which says the flat 51 points had already converged once the
-limits were right; the ghost carries the entire change.
+limits were right; the ghost carries the entire change. (Since 2026-10-21
+there is no separate highest-bin sampling: every upward rate, the top bin's
+included, uses the bin-overlap construction of Draine \& Li (2001)
+eqs.~15--16 and~28, integrated in closed form over the represented field
+support and interpolant;
+\code{NWAV\_MIN}, \code{NWAV\_MAX} and \code{DLNWAV\_TARGET} are gone.) The
+existing GD enthalpy grid and cooling are retained. Geometric bin boundaries
+do not generally make $H(T)$ the arithmetic bin centers defined in DL01
+Sec.~4.1; this is not the complete DL01 statistical treatment.
 
 \textbf{All three models shipped at the time moved}, and Zubko's move has nothing to do with
 the astrodust table --- its grid has always begun at $10^{-3}$\um, so it carried
@@ -2076,27 +2084,26 @@ photons that were not in the field}, in the top enthalpy bin of every
 stochastically heated grain. Comparisons against those products have to account
 for it.
 
-\paragraph{Why $10^{-12}$ of the peak, and not simply $J_\lambda>0$.} Exact
-zeros must be excluded --- \code{J\_Mathis} returns exactly zero below
-$0.0912$\um\ --- but an exact positivity test is too fragile: a host that hands
-over denormal or roundoff-level residue in its unilluminated bins would push the
-ceiling back up by orders of magnitude. A component a fraction $10^{-12}$ below
-the peak of $J_\lambda$ contributes at most that fraction of the photon
-absorption rate; allowing two decades for the run of $C_{\rm abs}$ across the
-illuminated band, the enthalpy states it could populate carry probability
-$\lesssim10^{-10}$ of the peak, at or below the $10^{-13}$ tail level
-(\code{PMIN\_UP}, \code{PMIN\_UP\_QM}) at which both solvers already truncate
-the window. Such a component cannot change a resolved excursion, and $10^{-12}$
-still sits eighteen decades above the residue it is meant to reject.
+\paragraph{Why $10^{-12}$ of the peak, and not simply $J_\lambda>0$.}
+The relative floor rejects denormal or roundoff residue that could otherwise
+set an excessive initial enthalpy bound. It is a numerical convention, not
+a universal physical error bound. A relative intensity alone does not bound
+absorbed power: the cross sections, wavelength intervals, and photon-energy
+weights matter. The earlier estimate of a $10^{-10}$ absorption scale from
+a $10^{-12}$ intensity and a factor $10^2$ in cross section did not bound a
+temperature probability; $10^{-10}$ also exceeds the $10^{-13}$ tail
+criterion. Assess any excluded weak hard component using the actual
+absorbed-power integral and resolve it if physically significant.
 
-\medskip
-\noindent The error is one-sided on purpose. Both refinement loops \emph{expand} the
-window while the top bin is still populated, so an underestimated ceiling is
-corrected as the loop runs; the guarded contraction can stop short of where it
-began, so an overestimate is not corrected at all. \code{MAX\_ITER = 10} bounds
-the correction in either direction. Overestimating is therefore the dangerous
-direction, which is why the threshold is set high enough to reject junk rather
-than as low as floating point allows.
+The window can expand when its upper state remains populated, recovering
+an underestimated initial bound. Guarded contraction and finite iteration
+limits can leave an excessive initial window. This motivates rejecting
+numerical residue, but it cannot recover photons already excluded from the
+represented continuum support used by the transition rates. That support
+requires two distinct significant wavelength samples; an isolated sample
+has zero represented continuum bandwidth and increments the diagnostic
+\code{isolated\_radiation\_support\_count} through absorption or transition
+checks. A spectral line needs a resolved profile or another representation.
 
 \paragraph{\code{calc\_sed.x zubko} exists to keep this path covered.} The defect
 escaped \code{calc\_sed.x astrodust} and \code{calc\_sed.x dl07} because for those two

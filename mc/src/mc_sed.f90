@@ -5,7 +5,10 @@ module mc_sed
    !
    ! Two populations are computed:
    !   - Astrodust grains    (Cabs, dn_ad, comp = 'ad_s1_c1'|'ad_s1_c2'|'ad_s2')
-   !   - PAH grains          (Cabs_pah, dn_pah, comp = 'pah')
+   !   - PAH grains          (Cabs_cneu/kappB_cneu, dn_cneu and
+   !                          Cabs_cion/kappB_cion, dn_cion, comp = 'pah'),
+   !                          the two charge states solved separately and
+   !                          summed, as sed_solve_pah does
    !
    ! The size loop is OpenMP-parallel.  Each iteration creates its own
    ! grain_t and rng_t (both stack-local in the parallel region), runs
@@ -15,7 +18,6 @@ module mc_sed
    !   lamI_lam_out(:) = lambda * Jout * 1e-3
    ! so that the result can be directly compared with that subroutine.
 
-   use, intrinsic :: omp_lib
    use constants,             only: wp
    use radfield,              only: bbody
    use p_sub,                 only: calc_Teq
@@ -25,11 +27,10 @@ module mc_sed
    use mc_engine,             only: grain_setup_from_cabs, mc_run_engine, &
                                     mc_run_engine_2pass, mc_run_engine_buffered, &
                                     grain_get_QPL
-   use sed_astrodust_mod,     only: sed_init, NLAM, NA, NT, lam, aeff,    &
-                                    dn_ad, dn_pah, Cabs, Cabs_pah, T_first, &
-                                    kappB_first, kappB_pah_first, &
+   use sed_astrodust_mod,     only: NLAM, NA, NT, lam, aeff, T_first, &
+                                    dn_ad, Cabs, kappB_first, &
                                     Cabs_cneu, Cabs_cion, dn_cneu, dn_cion, &
-                                    sed_solve, sed_solve_pah
+                                    kappB_cneu, kappB_cion
    implicit none
    private
    public :: mc_sed_solve_astrodust, mc_sed_solve_pah, mc_sed_solve_total
@@ -49,7 +50,7 @@ contains
       ! (large) grain branch:
       !   use_mc_for_large_grain = .false. (default): equilibrium grains use
       !       calc_Teq -- delta-function emission at Teq, the analytic
-      !       production-pipeline path.
+      !       path sed_solve takes.
       !   use_mc_for_large_grain = .true.: equilibrium grains also use MC.
       ! mc_engine_kind selects which engine handles the MC path:
       !   'fixed'    : mc_run_engine (log grid 2-5000 K, fast, low-resolution
@@ -83,10 +84,15 @@ contains
       real(wp),         intent(out) :: lamI_lam_out(:)
       real(wp), allocatable :: lamI_cion(:)
       allocate(lamI_cion(size(lamI_lam_out)))
-      call mc_sed_loop(Cabs_cneu, dn_cneu, kappB_pah_first, 'pah', J_lam, U_isrf, &
+      ! Each charge state is cooled by the kappB of its own Cabs, as in
+      ! sed_solve_pah; the f_ion-blended kappB_pah_first would set Teq (the
+      ! equilibrium gate, the equilibrium emission and the adaptive DA85
+      ! split) of a grain that absorbs as one charge state and cools as the
+      ! blend.
+      call mc_sed_loop(Cabs_cneu, dn_cneu, kappB_cneu, 'pah', J_lam, U_isrf, &
                        N_events, base_seed, use_mc_for_large_grain, &
                        mc_engine_kind, lamI_lam_out)
-      call mc_sed_loop(Cabs_cion, dn_cion, kappB_pah_first, 'pah', J_lam, U_isrf, &
+      call mc_sed_loop(Cabs_cion, dn_cion, kappB_cion, 'pah', J_lam, U_isrf, &
                        N_events, base_seed + 5000, use_mc_for_large_grain, &
                        mc_engine_kind, lamI_cion)
       lamI_lam_out = lamI_lam_out + lamI_cion
@@ -160,6 +166,16 @@ contains
       real(wp), parameter :: DT_THRESHOLD = 0.01_wp
       real(wp), parameter :: HC_ERG_UM    = 1.98644582e-13_wp  ! h*c in erg*um
       real(wp) :: C_Teq, lam_c_adapt
+      ! Locals of the equilibrium-grain diagnostic and of the single-grain
+      ! spectrum below, private in the parallel region.  They are declared
+      ! here and listed in private(...) rather than declared in BLOCK
+      ! constructs: a BLOCK-local variable inside a default(none) region is
+      ! private only from OpenMP 5.1 on, and ifx rejects it without a clause.
+      real(wp) :: w_sum, T4_sum, Trad_mc
+      integer  :: u_diag
+      real(wp) :: jgrain(NLAM), bol_grey, a_cm2, p_abs_grain, scale_ec
+      real(wp), parameter :: SIGMA_SB = 5.6703744e-5_wp
+      real(wp), parameter :: PI_L = 3.141592653589793238_wp
 
       T_init = 2.725_wp          ! CMB temperature (K)
       N_burn = max(50, N_events / 20)
@@ -192,7 +208,8 @@ contains
       !$omp   private(ja, ilam, ibin, grain, rng, T_edges, dP_dT, dP_dlnT, &
       !$omp          t_total, e_abs_tot, e_emit_tot, Tmid, weight, BB, BB_eq, &
       !$omp          Jout_local, Q_ja, inv_pi_a2, Teq, EEQ, is_log_grid, &
-      !$omp          C_Teq, lam_c_adapt)
+      !$omp          C_Teq, lam_c_adapt, w_sum, T4_sum, Trad_mc, u_diag, &
+      !$omp          jgrain, bol_grey, a_cm2, p_abs_grain, scale_ec)
 
       allocate(Jout_local(NLAM))
       Jout_local = 0.0_wp
@@ -241,7 +258,7 @@ contains
                if (lam_c_adapt < lam(2))      lam_c_adapt = lam(2)
                if (lam_c_adapt > lam(NLAM-1)) lam_c_adapt = lam(NLAM-1)
             else
-               lam_c_adapt = 1000.0_wp     ! fallback to original default
+               lam_c_adapt = 1000.0_wp     ! the fixed DA85 split used before the adaptive one
             end if
 
             call grain_setup_from_cabs(grain, aeff(ja), U_isrf, comp, lam, Q_ja, &
@@ -280,34 +297,30 @@ contains
             ! a side file when running MC-all mode.
             ! for the plot.
             if (use_mc_for_large_grain .and. EEQ >= EEQSS_ERG) then
-               block
-                  real(wp) :: w_sum, T4_sum, Trad_mc
-                  integer  :: u_diag
-                  w_sum  = 0.0_wp
-                  T4_sum = 0.0_wp
-                  do ibin = 1, NHIST_LOC
-                     if (dP_dT(ibin) <= 0.0_wp) cycle
-                     if (is_log_grid) then
-                        Tmid = sqrt(T_edges(ibin) * T_edges(ibin+1))
-                     else
-                        Tmid = 0.5_wp * (T_edges(ibin) + T_edges(ibin+1))
-                     end if
-                     weight = dP_dT(ibin) * (T_edges(ibin+1) - T_edges(ibin))
-                     w_sum  = w_sum  + weight
-                     T4_sum = T4_sum + weight * Tmid**4
-                  end do
-                  if (w_sum > 0.0_wp) then
-                     Trad_mc = (T4_sum / w_sum) ** 0.25_wp
-                     !$omp critical
-                     open(newunit=u_diag, &
-                          file='output/diag_Teq_vs_Trad.dat', &
-                          status='unknown', position='append', action='write')
-                     write(u_diag, '(es14.6,1x,4(es14.6,1x))') &
-                          aeff(ja), Teq, Trad_mc, Trad_mc/Teq, w_sum
-                     close(u_diag)
-                     !$omp end critical
+               w_sum  = 0.0_wp
+               T4_sum = 0.0_wp
+               do ibin = 1, NHIST_LOC
+                  if (dP_dT(ibin) <= 0.0_wp) cycle
+                  if (is_log_grid) then
+                     Tmid = sqrt(T_edges(ibin) * T_edges(ibin+1))
+                  else
+                     Tmid = 0.5_wp * (T_edges(ibin) + T_edges(ibin+1))
                   end if
-               end block
+                  weight = dP_dT(ibin) * (T_edges(ibin+1) - T_edges(ibin))
+                  w_sum  = w_sum  + weight
+                  T4_sum = T4_sum + weight * Tmid**4
+               end do
+               if (w_sum > 0.0_wp) then
+                  Trad_mc = (T4_sum / w_sum) ** 0.25_wp
+                  !$omp critical
+                  open(newunit=u_diag, &
+                       file='output/diag_Teq_vs_Trad.dat', &
+                       status='unknown', position='append', action='write')
+                  write(u_diag, '(es14.6,1x,4(es14.6,1x))') &
+                       aeff(ja), Teq, Trad_mc, Trad_mc/Teq, w_sum
+                  close(u_diag)
+                  !$omp end critical
+               end if
             end if
 
             ! Build the single-grain emission spectrum from the histogram and
@@ -321,42 +334,37 @@ contains
             ! rescale the spectrum to the grey grain absorbed power
             ! (event photons + continuous heating), exactly as the matrix
             ! solver does by construction.
-            block
-               real(wp) :: jgrain(NLAM), bol_grey, a_cm2, p_abs_grain, scale_ec
-               real(wp), parameter :: SIGMA_SB = 5.6703744e-5_wp
-               real(wp), parameter :: PI_L = 3.141592653589793238_wp
-               a_cm2    = (aeff(ja) * 1.0e-4_wp)**2
-               jgrain   = 0.0_wp
-               bol_grey = 0.0_wp
-               do ibin = 1, NHIST_LOC
-                  if (dP_dT(ibin) <= 0.0_wp) cycle
-                  if (is_log_grid) then
-                     Tmid = sqrt(T_edges(ibin) * T_edges(ibin+1))
-                  else
-                     Tmid = 0.5_wp * (T_edges(ibin) + T_edges(ibin+1))
-                  end if
-                  weight = dP_dT(ibin) * (T_edges(ibin+1) - T_edges(ibin))
-                  do ilam = 1, NLAM
-                     jgrain(ilam) = jgrain(ilam) + &
-                        dn_pop(ja) * Cabs_pop(ilam, ja) * bbody(Tmid, lam(ilam)) * weight
-                  end do
-                  bol_grey = bol_grey + weight * 4.0_wp * PI_L * a_cm2 * &
-                             grain_get_QPL(grain, Tmid) * SIGMA_SB * Tmid**4
+            a_cm2    = (aeff(ja) * 1.0e-4_wp)**2
+            jgrain   = 0.0_wp
+            bol_grey = 0.0_wp
+            do ibin = 1, NHIST_LOC
+               if (dP_dT(ibin) <= 0.0_wp) cycle
+               if (is_log_grid) then
+                  Tmid = sqrt(T_edges(ibin) * T_edges(ibin+1))
+               else
+                  Tmid = 0.5_wp * (T_edges(ibin) + T_edges(ibin+1))
+               end if
+               weight = dP_dT(ibin) * (T_edges(ibin+1) - T_edges(ibin))
+               do ilam = 1, NLAM
+                  jgrain(ilam) = jgrain(ilam) + &
+                     dn_pop(ja) * Cabs_pop(ilam, ja) * bbody(Tmid, lam(ilam)) * weight
                end do
-               ! grey absorbed power per unit time (events + continuous)
-               if (t_total > 0.0_wp) then
-                  p_abs_grain = e_abs_tot / t_total + &
-                                4.0_wp * PI_L * a_cm2 * grain%H_cont
-               else
-                  p_abs_grain = 0.0_wp
-               end if
-               if (bol_grey > 0.0_wp) then
-                  scale_ec = p_abs_grain / bol_grey
-               else
-                  scale_ec = 1.0_wp
-               end if
-               Jout_local = Jout_local + scale_ec * jgrain
-            end block
+               bol_grey = bol_grey + weight * 4.0_wp * PI_L * a_cm2 * &
+                          grain_get_QPL(grain, Tmid) * SIGMA_SB * Tmid**4
+            end do
+            ! grey absorbed power per unit time (events + continuous)
+            if (t_total > 0.0_wp) then
+               p_abs_grain = e_abs_tot / t_total + &
+                             4.0_wp * PI_L * a_cm2 * grain%H_cont
+            else
+               p_abs_grain = 0.0_wp
+            end if
+            if (bol_grey > 0.0_wp) then
+               scale_ec = p_abs_grain / bol_grey
+            else
+               scale_ec = 1.0_wp
+            end if
+            Jout_local = Jout_local + scale_ec * jgrain
             if (allocated(grain%lam_grid))  deallocate(grain%lam_grid)
             if (allocated(grain%Q_grid))    deallocate(grain%Q_grid)
             if (allocated(grain%u_lam_grid))deallocate(grain%u_lam_grid)

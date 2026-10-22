@@ -62,11 +62,12 @@ program calc_qtable
    ! which selects between Rayleigh, T-matrix and geometric optics; everything
    ! here is one method over the whole table.
    use, intrinsic :: iso_fortran_env, only: real64
-   use constants,         only: wp, PI
+   use constants,         only: wp
    use dust_model_mod,    only: CHANNEL_NAME_LEN
    use q_silicate_mod,    only: q_silicate_full
    use q_graphite_mod,    only: q_graphite_full
-   use qpah,              only: qpah_dl07, qpah_graphite_source, nc_coeff, nc_integer
+   use qpah,              only: carbonaceous_absorption, qpah_graphite_source, &
+                                nc_coeff, nc_integer
    use grain_dist_mod,    only: gd_apply_d03_reduction
    use zubko_io,          only: read_zubko_optics
    use q_table_mod,       only: load_q_table, n_lam_qt => n_lam, n_aeff_qt => n_aeff, &
@@ -191,7 +192,6 @@ contains
       ! the same 169 radii, which until now were the one part of any model
       ! recomputed at every build with nothing written down.
       real(wp), allocatable :: Qn(:,:), Qi(:,:)
-      real(wp) :: Q1
       integer  :: jw, ja, u1, u2
 
       call load_q_table(F_QT_EUV)
@@ -201,8 +201,10 @@ contains
       nc_integer = .false.
       do ja = 1, n_aeff_qt
          do jw = 1, n_lam_qt
-            call qpah_dl07(0, aeff_qt(ja), lam_qt(jw), Q1);  Qn(jw, ja) = Q1
-            call qpah_dl07(1, aeff_qt(ja), lam_qt(jw), Q1);  Qi(jw, ja) = Q1
+            ! Both charge states share the graphite of the blend, which
+            ! shortward of the PAH cutoff is a D03 Mie: taken once for the pair.
+            call carbonaceous_absorption('dl07', aeff_qt(ja), lam_qt(jw), &
+                                         Qn(jw, ja), Qi(jw, ja))
          end do
       end do
 
@@ -313,8 +315,10 @@ contains
             call q_graphite_full(aeff(ja), lam(jw), Qe, Qs, Qa, g)
             call put_row(u2, lam(jw), aeff(ja), Qe, Qa, Qs, g)
             ge(jw,ja) = Qe;  ga(jw,ja) = Qa;  gs(jw,ja) = Qs;  gg(jw,ja) = g
-            call qpah_dl07(0, aeff(ja), lam(jw), Qn)
-            call qpah_dl07(1, aeff(ja), lam(jw), Qi)
+            ! The carbonaceous blend of this model takes D03 graphite
+            ! ('d03_sphere'), the Mie solved one line up: pass its Q_abs rather
+            ! than solve it again for each charge state.
+            call carbonaceous_absorption('dl07', aeff(ja), lam(jw), Qn, Qi, Qabs_d03 = Qa)
             call put_abs_row(u3, lam(jw), aeff(ja), Qn)
             call put_abs_row(u4, lam(jw), aeff(ja), Qi)
             pn(jw,ja) = Qn;  pc(jw,ja) = Qi
@@ -558,7 +562,7 @@ contains
       real(wp), allocatable, intent(out) :: se(:,:), sa(:,:), ss(:,:), sg(:,:)
       real(wp), allocatable, intent(out) :: ge(:,:), ga(:,:), gs(:,:), gg(:,:)
       real(wp), allocatable, intent(out) :: pe(:,:), pa(:,:), ps(:,:), pg(:,:)
-      real(wp) :: Qe, Qs, Qa, g, Qn
+      real(wp) :: Qe, Qs, Qa, g, Qn, Qi
       integer  :: jw, ja
 
       allocate(se(nw,size(a_sil)), sa(nw,size(a_sil)), ss(nw,size(a_sil)), sg(nw,size(a_sil)))
@@ -575,12 +579,13 @@ contains
             ge(jw,ja) = Qe;  ga(jw,ja) = Qa;  gs(jw,ja) = Qs;  gg(jw,ja) = g
          end do
          do ja = 1, size(a_pah)
-            call qpah_dl07(0, a_pah(ja), lz(jw), Qn)
             ! Scattering from the graphite sphere at the SAME radius the PAH
-            ! table is tabulated on.  Its Q_abs is discarded: the absorption is
-            ! qpah's, which already hands over to graphite shortward of
-            ! 1/17.25 um itself.
+            ! table is tabulated on.  Its Q_abs enters the absorption only
+            ! where the carbonaceous blend takes D03 graphite (shortward of
+            ! 1/17.25 um, or everywhere for 'd03_sphere'); passing it saves
+            ! solving that Mie a second time.  The cation is not tabulated.
             call q_graphite_full(a_pah(ja), lz(jw), Qe, Qs, Qa, g)
+            call carbonaceous_absorption('dl07', a_pah(ja), lz(jw), Qn, Qi, Qabs_d03 = Qa)
             pa(jw,ja) = Qn;  ps(jw,ja) = Qs;  pg(jw,ja) = g
             pe(jw,ja) = Qn + Qs
          end do

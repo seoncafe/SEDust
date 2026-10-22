@@ -217,6 +217,7 @@ contains
       real(wp), allocatable :: a_f(:), l_f(:), qa_f(:,:), qs_f(:,:), gg_f(:,:)
       real(wp), allocatable :: a_h(:), qe_h(:,:), qa_h(:,:), qs_h(:,:), gg_h(:,:)
       real(wp) :: rho_f, rho_h, da, ds, dg
+      real(wp), parameter :: ULP2 = 2.0_wp * epsilon(1.0_wp)
       integer  :: ic, nsize, nwave
       logical  :: ok
 
@@ -238,8 +239,16 @@ contains
          write(*,'(a,a4,a,es9.2,a,es9.2,a,es9.2)') '   ', trim(COMP(ic)), &
               '  max|dQ_abs| ', da, '  max|dQ_sca| ', ds, '  max|dg| ', dg
          ! Stored as written: the product holds these arrays, it does not
-         ! recompute them, so anything but zero is a transcription bug.
-         call fail_if(da /= 0.0_wp .or. ds /= 0.0_wp .or. dg /= 0.0_wp, &
+         ! recompute them, so a transcription bug is the only way for them to
+         ! differ by more than the decimal-to-binary conversion of the text.
+         ! That conversion is allowed two units in the last place: a compiler's
+         ! formatted input need not round correctly, and IFX 2026.1 reads 2 of
+         ! the 145321 rows of suvSil_121_1201.dat (9.34281E-26, 1.38828E-18)
+         ! one ulp away from the correctly rounded value that gfortran and the
+         ! product hold.
+         call fail_if(any(abs(qa_h - qa_f) > ULP2 * abs(qa_f)) .or. &
+                      any(abs(qs_h - qs_f) > ULP2 * abs(qs_f)) .or. &
+                      any(abs(gg_h - gg_f) > ULP2 * abs(gg_f)), &
                       'zubko zda: /qtable/'//trim(COMP(ic))//' is not the file', 0)
          deallocate(a_f, l_f, qa_f, qs_f, gg_f, a_h, qe_h, qa_h, qs_h, gg_h)
       end do

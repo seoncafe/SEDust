@@ -1,16 +1,17 @@
 module radfield
    ! Radiation-field constructors and Planck-function utilities for the
    ! astrodust SED solver.
-   ! (J_Mathis, J_diluted_bbody, calc_bbody, bbody) — verbatim except for
-   ! moving them out of read_data into a dedicated module and using the
-   ! shared `wp` from constants.
+   ! A prepared wavelength grid reuses Planck coefficients across temperatures.
 
-   use, intrinsic :: iso_fortran_env, only: real64
+   use, intrinsic :: iso_fortran_env, only: real64, int64
    use constants, only: wp
    implicit none
    private
    public :: J_Mathis, J_diluted_bbody, calc_bbody, bbody
-   public :: hardest_photon_energy
+   public :: planck_grid_t, prepare_planck_grid
+   public :: hardest_photon_energy, radiation_field_support, J_REL_FLOOR
+   public :: isolated_radiation_support_count, RADIATION_SUPPORT_OK, &
+             RADIATION_SUPPORT_EMPTY, RADIATION_SUPPORT_ISOLATED
    public :: cmb_temperature
    ! Toggle for Draine's 2008.02.02 correction of the Mathis 4000K
    ! dilution factor (1e-13 -> 1.65e-13) and the modern CMB temperature
@@ -34,11 +35,28 @@ module radfield
    ! difference in the grains that sit exactly at the switch-over.
    real(wp), parameter :: hc_erg_um = 6.62606957e-27_wp * 2.99792458e10_wp * 1.0e4_wp
 
-   ! Fraction of peak J_lambda below which a spectral component is treated as
-   ! carrying no photons at all; see hardest_photon_energy.
+   ! Relative intensity threshold for the outer field-support bounds.
+   ! Interior samples are retained; see hardest_photon_energy.
    real(wp), parameter :: J_REL_FLOOR = 1.0e-12_wp
 
+   integer, parameter :: RADIATION_SUPPORT_OK = 0
+   integer, parameter :: RADIATION_SUPPORT_EMPTY = 1
+   integer, parameter :: RADIATION_SUPPORT_ISOLATED = 2
+   ! Counts absorption/transition checks rejected for zero bandwidth, not fields
+   ! or grains. Read this cumulative diagnostic before/after a solve to detect
+   ! an unresolved single-sample field. Pure support/photon queries do not
+   ! increment it. Do not reset it during active calls.
+   integer(int64), save :: isolated_radiation_support_count = 0_int64
+
    logical, save :: use_mathis_corrected = .true.
+
+   ! Coefficients shared by all temperatures on one wavelength grid. The
+   ! components are private so a prepared grid remains internally consistent.
+   type :: planck_grid_t
+      private
+      real(wp), allocatable :: lambda_m(:), numerator(:)
+      logical :: ascending_positive = .false.
+   end type planck_grid_t
 
 contains
 
@@ -124,15 +142,88 @@ contains
    end subroutine J_diluted_bbody
 
 
-   subroutine calc_bbody(T, lambda_um, spec)
+   subroutine prepare_planck_grid(lambda_um, grid)
+      real(wp), intent(in) :: lambda_um(:)
+      type(planck_grid_t), intent(out) :: grid
+      integer :: i, n
+
+      n = size(lambda_um)
+      allocate(grid%lambda_m(n), grid%numerator(n))
+      grid%ascending_positive = all(lambda_um > 0.0_wp)
+      do i = 2, n
+         if (lambda_um(i) < lambda_um(i-1)) grid%ascending_positive = .false.
+      end do
+      do i = 1, n
+         grid%lambda_m(i) = lambda_um(i) * 1.0e-6_wp
+         grid%numerator(i) = 0.0_wp
+         if (lambda_um(i) > 0.0_wp) &
+            grid%numerator(i) = hc2 / grid%lambda_m(i)**5
+      end do
+   end subroutine prepare_planck_grid
+
+
+   subroutine calc_bbody(T, lambda_um, spec, grid)
       real(wp), intent(in)  :: T, lambda_um(:)
       real(wp), intent(out) :: spec(:)
-      integer :: i
-      do i = 1, size(lambda_um)
-         spec(i) = bbody(T, lambda_um(i))
-      end do
-   end subroutine calc_bbody
+      type(planck_grid_t), optional, intent(in) :: grid
+      integer :: i, first, low, high, mid, n
+      real(wp) :: x
 
+      if (.not. present(grid)) then
+         do i = 1, size(lambda_um)
+            spec(i) = bbody(T, lambda_um(i))
+         end do
+         return
+      end if
+      if (.not. allocated(grid%lambda_m) .or. &
+          .not. allocated(grid%numerator)) &
+         error stop 'calc_bbody: unprepared Planck grid'
+      n = size(lambda_um)
+      if (size(grid%lambda_m) /= n .or. size(grid%numerator) /= n .or. &
+          size(spec) < n) error stop 'calc_bbody: grid size mismatch'
+      if (T <= 0.0_wp) then
+         spec(1:n) = 0.0_wp
+         return
+      end if
+
+      if (grid%ascending_positive) then
+         ! On an ascending positive grid x decreases with wavelength. Find the
+         ! first x < 700 in logarithmic time, keeping bbody's x arithmetic.
+         low = 1
+         high = n + 1
+         do while (low < high)
+            mid = low + (high - low)/2
+            x = hc_kB / (T*grid%lambda_m(mid))
+            if (x >= 700.0_wp) then
+               low = mid + 1
+            else
+               high = mid
+            end if
+         end do
+         first = low
+         if (first > 1) spec(1:first-1) = 0.0_wp
+         do i = first, n
+            x = hc_kB / (T*grid%lambda_m(i))
+            if (x < 1.0e-4_wp) then
+               spec(i) = grid%numerator(i) / (2.0_wp * exp(0.5_wp*x) * sinh(0.5_wp*x))
+            else
+               spec(i) = grid%numerator(i) / (exp(x) - 1.0_wp)
+            end if
+         end do
+      else
+         spec(1:n) = 0.0_wp
+         do i = 1, n
+            if (lambda_um(i) <= 0.0_wp) cycle
+            x = hc_kB / (T*grid%lambda_m(i))
+            if (x >= 700.0_wp) cycle
+            if (x < 1.0e-4_wp) then
+               spec(i) = grid%numerator(i) / (2.0_wp * exp(0.5_wp*x) * sinh(0.5_wp*x))
+            else
+               spec(i) = grid%numerator(i) / (exp(x) - 1.0_wp)
+            end if
+         end do
+      end if
+   end subroutine calc_bbody
 
    pure function bbody(T, lambda_um) result(B)
       ! Planck function B_lambda(T), evaluated stably across the tail. The
@@ -187,49 +278,85 @@ contains
       ! caller need not convert. lam_um must be in um. The array order is
       ! irrelevant; every point is examined.
       !
-      ! Significance threshold. Exact zeros must be excluded (J_Mathis returns
-      ! exactly 0 below 0.0912 um), but an exact `> 0` test is too fragile: a
-      ! host that hands over a field carrying denormal or roundoff-level
-      ! residue in its unilluminated bins would push the bound back up by
-      ! orders of magnitude. A component a fraction J_REL_FLOOR = 1e-12 below
-      ! the peak of J_lambda contributes at most that fraction of the photon
-      ! absorption rate; allowing two decades for the wavelength dependence of
-      ! C_abs over the illuminated band, the enthalpy states it could populate
-      ! carry probability <~ 1e-10 of the peak, at or below the 1e-13 tail
-      ! level (PMIN_UP, PMIN_UP_QM) at which both stochastic solvers already
-      ! truncate the enthalpy window. Such a component therefore cannot change
-      ! a resolved excursion, and 1e-12 sits 18 decades above the residue it is
-      ! meant to reject.
-      ! The error is deliberately one-sided. Both refinement loops EXPAND the
-      ! window when the top bin is still populated, so an underestimate of the
-      ! bound costs iterations and is recovered; their contraction is guarded
-      ! (umax > 1.02*umaxlo, umax > 1.01*ub(jcut)) and capped at MAX_ITER, so an
-      ! overestimate is not. The threshold is set high enough to reject junk for
-      ! that reason.
+      ! Significance threshold rationale. An exact J > 0 test lets denormal
+      ! or roundoff residue at the short-wavelength end set the hardest
+      ! photon and unnecessarily enlarge a fixed-count enthalpy grid. The
+      ! relative floor 1e-12 rejects such exterior residue while retaining
+      ! the continuum samples above it. For example, residue at 1e-30 of
+      ! the peak is separated from the floor by eighteen orders of magnitude.
+      ! This is a numerical convention, not a universal physical error bound.
       !
-      ! Returns 0 when the field is zero (or non-positive) everywhere. Callers
-      ! wrap the result in max() against their own floor, so 0 selects that
-      ! floor and no special case is needed at the call site.
+      ! The original estimate allowed a factor 1e2 variation in C_abs and
+      ! associated a 1e-12 intensity component with a 1e-10 absorption scale.
+      ! That estimate also needs comparable wavelength and photon-energy
+      ! weights. It does not bound a probability, and 1e-10 exceeds the
+      ! 1e-13 temperature-tail criterion. Significant weak hard components
+      ! must be resolved; the excluded absorbed power must be checked with
+      ! the actual cross sections and wavelength intervals.
+      !
+      ! The one-sided window argument concerns the INITIAL enthalpy bound:
+      ! the narrowing loops expand when the upper state remains populated,
+      ! so a low initial estimate can be recovered. Contraction from a high
+      ! estimate requires both umax > 1.02*umaxlo and the populated-tail
+      ! condition umax > 1.01*U(jcut) (ub in the QM solver). Finite iteration
+      ! limits can therefore leave an excessive window after numerical residue.
+      ! That argument motivates rejecting residue; it cannot recover photons
+      ! excluded from the represented field support in the transition rates.
+      !
+      ! The shared continuum support needs two distinct significant wavelength
+      ! samples. An isolated sample returns zero here and in absorption and
+      ! is classified as isolated by radiation_field_support. Absorption and
+      ! transition callers increment isolated_radiation_support_count. A line
+      ! needs a resolved profile; this pure photon-bound query does not warn.
       real(wp), intent(in) :: lam_um(:)   ! [um]
       real(wp), intent(in) :: J_lam(:)    ! J_lambda, arbitrary units
       real(wp) :: u_photon                ! [erg]
 
-      real(wp) :: j_floor, lam_short
-      integer  :: i, n
+      integer :: first, last
 
+      call radiation_field_support(lam_um, J_lam, first, last)
       u_photon = 0.0_wp
-      n = min(size(lam_um), size(J_lam))
-      if (n < 1) return
-
-      j_floor = J_REL_FLOOR * maxval(J_lam(1:n))
-      if (j_floor <= 0.0_wp) return       ! field everywhere zero or non-positive
-
-      lam_short = huge(1.0_wp)
-      do i = 1, n
-         if (J_lam(i) > j_floor .and. lam_um(i) > 0.0_wp) &
-            lam_short = min(lam_short, lam_um(i))
-      end do
-      if (lam_short < huge(1.0_wp)) u_photon = hc_erg_um / lam_short
+      if (first > 0) u_photon = hc_erg_um / lam_um(first)
    end function hardest_photon_energy
+
+
+   pure subroutine radiation_field_support(lambda, Jfield, first, last, status)
+      ! Significant continuum endpoints, independent of array order. Indices
+      ! refer to the shortest and longest accepted wavelengths. Integration
+      ! callers additionally require a positive, strictly increasing grid.
+      ! Interior zero samples remain part of the represented continuum.
+      real(wp), intent(in) :: lambda(:), Jfield(:)
+      integer, intent(out) :: first, last
+      integer, optional, intent(out) :: status
+      real(wp) :: peak, floor
+      integer :: k, n
+
+      first = 0
+      last = 0
+      if (present(status)) status = RADIATION_SUPPORT_EMPTY
+      n = min(size(lambda), size(Jfield))
+      if (n == 0) return
+      peak = maxval(Jfield(1:n))
+      if (peak <= 0.0_wp) return
+      floor = J_REL_FLOOR * peak
+      do k = 1, n
+         if (.not. (Jfield(k) > floor .and. lambda(k) > 0.0_wp)) cycle
+         if (first == 0) then
+            first = k
+            last = k
+         else
+            if (lambda(k) < lambda(first)) first = k
+            if (lambda(k) > lambda(last)) last = k
+         end if
+      end do
+      if (first == 0) return
+      if (lambda(first) == lambda(last)) then
+         first = 0
+         last = 0
+         if (present(status)) status = RADIATION_SUPPORT_ISOLATED
+         return
+      end if
+      if (present(status)) status = RADIATION_SUPPORT_OK
+   end subroutine radiation_field_support
 
 end module radfield
