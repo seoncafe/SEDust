@@ -35,6 +35,19 @@
 
 \section{Introduction}
 
+\paragraph{Status of the measurements (2026-10-22).}
+The emission comparisons, energy budgets and timings in this memo were
+re-measured on 2026-10-22 after the Draine \& Li (2001) bin-overlap upward
+rates and the common radiation support of this branch (2026-10-21): the 71
+\texttt{sed/output/sed\_*.dat} products were regenerated with gfortran, and
+every number that depends on them was recomputed from them with
+\texttt{docs/make\_figs.py} and the same band and energy-budget conventions
+as before. A statement that describes an earlier state of the code is
+marked as such where it occurs. The median residual of astrodust S1\_C1
+against HD23 in the 30--300\,$\mu$m band moved by $+0.20$ percentage
+points; the largest change among the band medians quoted here is $0.68$
+points (Ad + PAH, 1--5\,$\mu$m).
+
 This memo documents the construction of an astrodust thermal emission
 calculation that reproduces the Hensley \& Draine (2023, ApJ 948, 55;
 hereafter HD23) ``astrodust'' model from first principles, working
@@ -51,7 +64,7 @@ The calculation consists of five phases:
         \SIrange{1e-4}{3.981e4}{\micro\meter}) producing
         \Qabs($\lambda, a$), \Qsca($\lambda, a$), and the asymmetry
         parameter $g$. Longward of \SI{0.0912}{\micro\meter} the axis is
-        DH21a's own 200-per-decade grid, 1129 points. Shortward of it
+        DH21a's own grid with 200 samples in each decade, 1129 points. Shortward of it
         the axis is the DH21 dielectric function's own energy nodes,
         632 points from \SIrange{14.0}{12398}{\electronvolt}, so the
         absorption edges tabulated there stay exact steps between
@@ -82,18 +95,19 @@ prototyping.
 The optical-depth acceptance criterion is met to within 0.5\%; the
 polarization check matches the HD23 release to within 0.07\% in every wavelength band
 (both essentially perfect reproductions). The SED comparison
-falls $7.6\%$ below the HD23 release in the
+falls $7.4\%$ below the HD23 release in the
 \SIrange[range-phrase=--,range-units=single]{30}{300}{\micro\meter}
-FIR-peak band (median relative residual; $10.1\%$ at the
+FIR-peak band (median relative residual; $9.8\%$ at the
 \SI{133}{\micro\meter} peak itself) after applying the corrected
 Mathis 4000\,K dilution factor (1.65$\times 10^{-13}$ instead of the
 literal Mathis~1983 $1\times 10^{-13}$; the original-Mathis variant
-gives $14.3\%$). This residual is now \emph{resolved}
+gives $14.2\%$). This residual is now \emph{resolved}
 (\S\ref{sec:phaseE-resolution}): an energy-budget audit shows the HD23
 \emph{release} is internally inconsistent --- its emitted
 \texttt{irem} tables radiate 9.3\% (astrodust) and 3.2\% (PAH) more
 than its own released \Cabs\ absorb from the same field --- whereas our
-calculation conserves energy to 0.15\%. The deficit equals HD23's own
+calculation conserves energy to 0.05\% (emitted over absorbed power of the
+whole astrodust + PAH model at $\log U = 0.2$, 1.0005). The deficit equals HD23's own
 emitted-vs-absorbed excess; its component-dependence rules out a
 heating-field / $U$-convention offset and points to an
 internal-vs-released cross-section vintage difference.
@@ -642,11 +656,14 @@ emission at the wide-grid \Teq.
 \subsection{Performance}
 
 A full single-cell solve (\texttt{sed\_init} once, 3 enthalpy stages
-$\times$ 1 \texttt{sed\_solve} + 1 \texttt{sed\_solve\_pah}) takes
-$\sim 2$~seconds total on Apple Silicon, of which init is the bulk
-(building $\kappa_B$ once for both AD and PAH). For a 3D-RT use case
-\texttt{sed\_init} runs once per process; cost per cell is
-$\sim 0.5$~s.
+$\times$ 1 \texttt{sed\_solve} + 1 \texttt{sed\_solve\_pah}),
+\texttt{./calc\_sed.x astrodust}, takes 2.02~s of wall time (median of
+three runs, 2026-10-22) on one thread of an Intel Xeon Gold 6254 (3.1\,GHz),
+gfortran \texttt{-O3}. Through the library, \texttt{build\_dust('astrodust')}
+on the 1129-wavelength grid takes 0.72~s once per process, and one
+\texttt{dust\_emission} call for a cell (all populations, NT = 200, the
+default heuristic solver) takes 0.98~s. The heuristic solver runs the grains
+serially, so the time does not change with the number of OpenMP threads.
 
 
 \section{SED verification}
@@ -670,9 +687,9 @@ heating ($U = 1.585$) for the current production (corrected
 Mathis 4000\,K dilution, see \S\ref{sec:phaseE-residual-analysis}).
 Top: our three enthalpy stages (S1\_C1, S1\_C2, S2) overlaid on HD23
 \texttt{astrodust\_irem.dat}. Bottom: relative residual in percent.
-The FIR peak shape is recovered; a $10.1\%$ systematic
+The FIR peak shape is recovered; a $9.8\%$ systematic
 under-prediction persists at the \SI{133}{\micro\meter} peak (down
-from $18.2\%$ before the Mathis correction), and the
+from $18.0\%$ before the Mathis correction), and the
 \SI{<5}{\micro\meter} range
 over-predicts by a few-times factor (a PAH-deficit issue;
 see Sect.~\ref{sec:pah}).}
@@ -686,28 +703,28 @@ arrow is the original-Mathis variant, retained as
 state):
 \begin{itemize}
   \item \textbf{300--3000\,$\mu$m} (sub-mm): mean $|$rel$|$ 3.3\%
-        (was 6.1\%), median $-3.07\%$ (was $-5.53\%$), max 5.6\%
-        (was 10.1\%) --- within sub-mm acceptance.
-  \item \textbf{30--300\,$\mu$m} (FIR peak): mean $|$rel$|$ 10.5\%
-        (was 15.6\%), median $-7.57\%$ (was $-14.33\%$), max 23.3\%
-        (was 21.9\%). The max is not at the peak: it sits at
+        (was 6.0\%), median $-3.00\%$ (was $-5.48\%$), max 5.4\%
+        (was 10.0\%) --- within sub-mm acceptance.
+  \item \textbf{30--300\,$\mu$m} (FIR peak): mean $|$rel$|$ 10.3\%
+        (was 15.5\%), median $-7.37\%$ (was $-14.18\%$), max 23.3\%
+        (was 21.5\%). The max is not at the peak: it sits at
         \SI{35}{\micro\meter}, on the short-wavelength shoulder where
         stochastically heated small grains dominate and where the
         corrected Mathis field raises our curve above HD23; at the
-        \SI{133}{\micro\meter} peak itself the residual is $-10.06\%$.
+        \SI{133}{\micro\meter} peak itself the residual is $-9.80\%$.
         All three stages show the same peak systematic
-        ($-10.06\%$, $-10.76\%$, $-11.20\%$ for S1\_C1, S1\_C2, S2),
+        ($-9.80\%$, $-10.47\%$, $-10.86\%$ for S1\_C1, S1\_C2, S2),
         indicating that the issue is in the equilibrium emission
         (independent of enthalpy), not in stochastic heating.
         The residual narrowed when we adopted the corrected
         Mathis 4000\,K dilution
         (see \S\ref{sec:phaseE-residual-analysis}, \emph{``Mathis
         4000\,K dilution correction''}).
-  \item \textbf{5--30\,$\mu$m} (mid-IR): mean $|$rel$|$ 6.2\%, median
-        $+1.79\%$, max 17.7\% --- within the $\le 30\%$ acceptance.
-  \item \textbf{$>3000$\,$\mu$m} (mm): mean $|$rel$|$ 2.2\%
-        (was 3.9\%), median $-2.14\%$ (was $-3.87\%$), max 2.4\%.
-  \item \textbf{$<5$\,$\mu$m}: over-prediction by $4.2\times$
+  \item \textbf{5--30\,$\mu$m} (mid-IR): mean $|$rel$|$ 6.0\%, median
+        $+1.53\%$, max 17.1\% --- within the $\le 30\%$ acceptance.
+  \item \textbf{$>3000$\,$\mu$m} (mm): mean $|$rel$|$ 2.1\%
+        (was 3.9\%), median $-2.09\%$ (was $-3.84\%$), max 2.3\%.
+  \item \textbf{$<5$\,$\mu$m}: over-prediction by $4.3\times$
         at $\lambda = 1\,\mu$m. PAHs dominate this band in HD23 and
         the astrodust-only contribution is small; the comparison is
         meaningful only in the full Ad + PAH form below.
@@ -1082,11 +1099,11 @@ largest grain sizes.
 The full-calculation effect for the headline comparison (Stage S1\_C1
 vs HD23 \texttt{astrodust\_irem.dat} at $\log U = 0.20$) is
 summarised in Table~\ref{tab:mathis_c}: the FIR-peak deficit moves
-from $-14.33\%$ to $-7.57\%$, sub-mm from $-5.53\%$ to $-3.07\%$,
-and the mm-band from $-3.87\%$ to $-2.14\%$. The PAH 30--300\,$\mu$m
-band, the most discrepant of the well-behaved bands at $-8.16\%$,
-closes to $-3.67\%$. Stages S1\_C2 and S2 show the same pattern
-(FIR moves to $-7.71\%$ and $-7.95\%$ respectively).
+from $-14.18\%$ to $-7.37\%$, sub-mm from $-5.48\%$ to $-3.00\%$,
+and the mm-band from $-3.84\%$ to $-2.09\%$. The PAH 30--300\,$\mu$m
+band, the most discrepant of the well-behaved bands at $-8.17\%$,
+closes to $-3.68\%$. Stages S1\_C2 and S2 show the same pattern
+(FIR moves to $-7.47\%$ and $-7.66\%$ respectively).
 
 \begin{table}[h]
 \centering
@@ -1094,11 +1111,11 @@ closes to $-3.67\%$. Stages S1\_C2 and S2 show the same pattern
 \toprule
 band ($\mu$m)              & original Mathis & production (corrected) & shift \\
 \midrule
-30--300 (FIR peak)         & $-14.33\%$ & $-7.57\%$  & $+6.76$\,pp \\
-300--3000 (sub-mm)         & $-5.53\%$  & $-3.07\%$  & $+2.46$\,pp \\
-$>3000$ (mm)               & $-3.87\%$  & $-2.14\%$  & $+1.73$\,pp \\
+30--300 (FIR peak)         & $-14.18\%$ & $-7.37\%$  & $+6.81$\,pp \\
+300--3000 (sub-mm)         & $-5.48\%$  & $-3.00\%$  & $+2.48$\,pp \\
+$>3000$ (mm)               & $-3.84\%$  & $-2.09\%$  & $+1.75$\,pp \\
 \midrule
-PAH 30--300                & $-8.16\%$  & $-3.67\%$  & $+4.49$\,pp \\
+PAH 30--300                & $-8.17\%$  & $-3.68\%$  & $+4.49$\,pp \\
 \bottomrule
 \end{tabular}
 \caption{Median relative residual (ours~$-$~HD23)/HD23 for Stage
@@ -1122,10 +1139,13 @@ whose Gaussian factor is $\exp[-(0.1x)^2]$ and not $\exp(-0.1x^2)$,
 raises the PAH SED by $0.99\%$ bolometrically and lifts the PAH
 30--300\,$\mu$m median by $+0.76$\,pp on its own (from $-4.43\%$ to
 $-3.67\%$), the remainder of that row's shift coming from the
-enthalpy correction.
+enthalpy correction. The table was re-measured once more on 2026-10-22,
+after the bin-overlap upward rates of Draine \& Li (2001) replaced the
+point-sampled ones; that moved the four rows from $-14.33/-7.57$,
+$-5.53/-3.07$, $-3.87/-2.14$ and $-8.16/-3.67\%$ to the values shown.
 
 This closes roughly half of the historical FIR deficit. The
-remaining $7.6\%$ is too small to be another order-of-magnitude
+remaining $7.4\%$ is too small to be another order-of-magnitude
 typo, and is small enough to be consistent with either HD23 using a
 slightly different normalization of the Mathis field (e.g., a
 different interpretation of $\log U = 0.20$, see candidate~(i) in
@@ -1178,22 +1198,25 @@ $P_{\rm em}/P_{\rm abs}$ & ours$/P_{\rm abs}$ & ours/HD23 \\
 astrodust & $2.724\times10^{-24}$ & $2.977\times10^{-24}$ &
 \textbf{1.093} & 0.999 & 0.914 \\
 PAH       & $2.003\times10^{-24}$ & $2.067\times10^{-24}$ &
-\textbf{1.032} & 0.993 & 0.963 \\
+\textbf{1.032} & 0.993 & 0.962 \\
 \bottomrule
 \end{tabular}
 \caption{Energy budget per H at $\log U = 0.20$. The HD23 release
 emits $9.3\%$ (astrodust) and $3.2\%$ (PAH) more than its own released
-\Cabs\ absorb; our calculation conserves to $0.15\%$
-(ours$/P_{\rm abs} = 0.999$).}
+\Cabs\ absorb; our calculation conserves to $0.05\%$ against its own
+absorbed power, and gives ours$/P_{\rm abs} = 0.999$ against the
+released \Cabs. Our emitted powers integrate the regenerated
+\texttt{sed\_astrodust\_S1.dat} and \texttt{sed\_astrodust\_PAH.dat} on
+the HD23 wavelength grid (2026-10-22).}
 \label{tab:ad_energy}
 \end{table}
 
 The ratio $P_{\rm em}/P_{\rm abs}$ is constant in $U$ (a pure
 amplitude factor). Our calculation, run with the release-consistent
-\Cabs, conserves energy to $0.15\%$ and therefore lands exactly at
+\Cabs, conserves energy to $0.05\%$ and therefore lands at
 ours/HD23 $= 0.914$, matching the emergent SED itself, which
-integrates to $0.911\times$ HD23 over
-\SIrange{0.1}{3000}{\micro\meter} and $0.905\times$ over
+integrates to $0.914\times$ HD23 over
+\SIrange{0.1}{3000}{\micro\meter} and $0.908\times$ over
 \SIrange{60}{300}{\micro\meter} --- i.e.\ \emph{the long-standing
 FIR-peak ``deficit'' equals HD23's own emitted-vs-absorbed excess},
 not an error in our calculation. Because the excess is
@@ -1206,7 +1229,7 @@ the same internal-vs-released vintage phenomenon documented for
 DL07spec and the \texttt{iout} files. This retires candidates~(i) and
 (iii) above: the residual is not a \Teq, grid, or size-sampling error
 on our side. After removing the 1.093 amplitude the astrodust residual
-is flat to $\pm 2\%$ over \SIrange{60}{300}{\micro\meter}, consistent
+is flat to $\pm 3.3\%$ over \SIrange{60}{300}{\micro\meter}, consistent
 with an amplitude-type (abundance or \Cabs-scale) inconsistency rather
 than a heating-side one.
 
@@ -1405,7 +1428,7 @@ the 300--3000\,$\mu$m PAH-only band ratio is $0.61$ for the D03 sphere,
 $0.99$ for the D16 sphere and $1.05$ for the D16 spheroid. On the total
 the choice matters much less, because the astrodust population carries
 that band --- the residual at the \SI{130}{\micro\meter} FIR peak moves
-only from $-12.3\%$ (D03 sphere) to $-9.8\%$ (D16 sphere) and $-9.5\%$
+only from $-12.0\%$ (D03 sphere) to $-9.5\%$ (D16 sphere) and $-9.3\%$
 (D16 spheroid), and the $+34\%$ spike near \SI{15}{\micro\meter} is in
 all three.}
 \label{fig:d16_swap}
@@ -1422,11 +1445,11 @@ $\log U = 0.20$):
 \toprule
 band ($\mu$m) & D03 sphere & D16 sphere & D16 spheroid & notes \\
 \midrule
-optical ($\lambda < 1$\,$\mu$m)         & 0.55 & 0.66 & 0.57 & absolute $\sim 10^{-28}$, negligible vs total \\
-NIR (1--5\,$\mu$m)                      & 0.77 & 1.03 & 0.88 & PAH-feature region \\
+optical ($\lambda < 1$\,$\mu$m)         & 0.55 & 0.67 & 0.57 & absolute $\sim 10^{-28}$, negligible vs total \\
+NIR (1--5\,$\mu$m)                      & 0.76 & 1.02 & 0.88 & PAH-feature region \\
 PAH features (5--15\,$\mu$m)            & 0.92 & 0.91 & 0.92 & dominated by DL07 Drude profiles \\
-mid-IR (15--60\,$\mu$m)                 & 1.19 & 1.06 & 1.05 & \\
-FIR (60--300\,$\mu$m)                   & 0.75 & 0.96 & 0.98 & D03 keeps the original 25\% deficit \\
+mid-IR (15--60\,$\mu$m)                 & 1.18 & 1.06 & 1.05 & \\
+FIR (60--300\,$\mu$m)                   & 0.75 & 0.95 & 0.98 & D03 keeps the original 25\% deficit \\
 sub-mm (300--3000\,$\mu$m)              & 0.61 & \textbf{0.99} & 1.05 & D16 sphere essentially zero residual \\
 TOTAL (0.1--3000\,$\mu$m)               & 0.96 & 0.97 & 0.97 & global agreement preserved \\
 \bottomrule
@@ -1448,7 +1471,7 @@ The 40\% sub-mm under-prediction reported above (D03 sphere column)
 is fully closed by the D16 swap; the residual $\sim 1\%$ in the sub-mm
 band is within the expected DL07-vs-HD23 calibration noise. What is
 left is in the PAH features themselves --- the 5--\SI{15}{\micro\meter}
-band integrates $9\%$ low while the NIR sits $3\%$ high --- a
+band integrates $9\%$ low while the NIR sits $2\%$ high --- a
 cross-section issue independent of the graphite source
 (\autoref{sec:pah_feature_residual}).
 
@@ -1460,7 +1483,7 @@ PAH residual decomposed into (i)~a smooth NIR continuum, which then
 carried a $-15\%$ NIR-band deficit, and (ii)~a feature-by-feature
 strength mismatch independent of the graphite source. Part~(i) no
 longer holds: the 1--\SI{5}{\micro\meter} band now integrates to
-$1.03\times$ HD23 rather than under-predicting it. Part~(ii) remains,
+$1.02\times$ HD23 rather than under-predicting it. Part~(ii) remains,
 and the numbers below are a measurement of the present production code
 against HD23 \texttt{PAH\_irem.dat} at $\log U = 0.20$, printed by
 \texttt{docs/make\_figs.py} alongside \autoref{fig:sed_total}. A
@@ -1481,7 +1504,7 @@ feature & band ($\mu$m) & ours / HD23 & \\
 \midrule
 \SI{3.3}{\micro\meter} aromatic C--H stretch  & 3.256--3.344   & 0.79 & largest deficit \\
 \SI{6.2}{\micro\meter} C--C stretch           & 6.033--6.407   & 0.89 & \\
-\SI{7.7}{\micro\meter} C--C complex           & 6.482--8.352   & 0.88 & modes $j = 11$--13 \\
+\SI{7.7}{\micro\meter} C--C complex           & 6.482--8.352   & 0.87 & modes $j = 11$--13 \\
 \SI{8.6}{\micro\meter} C--H in-plane bend     & 8.274--8.946   & 0.79 & \\
 \SI{11.3}{\micro\meter} C--H out-of-plane     & 10.967--11.693 & 0.87 & modes $j = 17, 18$ \\
 12.0--\SI{12.7}{\micro\meter} duo/trio        & 11.450--13.150 & 0.93 & modes $j = 19$--21 \\
@@ -2031,19 +2054,18 @@ to $5.4\%$, at $-0.08\%$ in total emitted energy
 (\texttt{docs/EUV\_EXTENSION\_HOST\_REGRESSION.md}).
 
 \medskip
-\noindent The $10^{-12}$ floor is there to reject denormal and roundoff residue
-in the unilluminated bins of a field handed over by a host, which an
-exact $J_\lambda>0$ test would accept. It is a safe place to cut: a
-component that far below the peak contributes at most that fraction of
-the photon absorption rate, and allowing two decades for the run of
-$C_{\rm abs}$ across the illuminated band, the enthalpy states it could
-populate hold probability $\lesssim10^{-10}$ of the peak --- below the
-$10^{-13}$ level at which both solvers already truncate the window. The
-one-sidedness is deliberate: the loops widen a window that is too
-narrow but are guarded against narrowing one that is too wide, so an
-overestimated bound leaves the bins coarse where an underestimated one
-is corrected as the loop runs. The ten-iteration cap bounds the
-correction either way.
+\noindent The $10^{-12}$ relative intensity floor rejects numerical residue that could
+set an excessive initial enthalpy bound. It is not a physical error bound:
+absorption depends on the actual cross sections, wavelength intervals, and
+photon-energy weights. In particular, an estimated $10^{-10}$ absorption
+scale does not bound a temperature probability and exceeds, rather than
+falls below, the $10^{-13}$ tail criterion. Significant weak hard components
+must be resolved. Window expansion can recover an underestimated initial
+bound but cannot restore photons excluded from the represented field
+support in the transition rates. The support requires two distinct
+significant wavelength samples; a spectral line needs a resolved profile
+or a different representation. These limitations follow the current
+\texttt{radfield.f90} support definition.
 
 \medskip
 \noindent Nothing in the tree ran the emission solvers on a model whose optics
@@ -2218,24 +2240,24 @@ $\tau_{\rm Ad}/N_H$ vs \texttt{extinction.dat}       & all $\lambda$         & 0
 $\tau^{\rm sca}_{\rm Ad}/N_H$ vs \texttt{scattering.dat} & all $\lambda$    & 0.68\% \\
 $|p^{\max}|/N_H$ vs \texttt{polarized\_extinction.dat}   & all $\lambda$    & 0.07\% \\
 PAH peak position vs \texttt{PAH\_irem.dat}              & \SI{7.67}{\micro\meter} vs \SI{7.69}{\micro\meter}    & two sig figs \\
-PAH total (0.1--3000\,$\mu$m)                          & integrated            & 0.966$\times$ HD23 \\
+PAH total (0.1--3000\,$\mu$m)                          & integrated            & 0.965$\times$ HD23 \\
 PAH sub-mm (300--3000\,$\mu$m)                         & integrated            & 0.988$\times$ HD23 \\
 \Teq\ vs independent bisection solver (167 grains)       & all $a$               & 0.14\% rms \\
-SED Ad vs \texttt{astrodust\_irem.dat}                   & 30--300\,$\mu$m median & 7.57\% (under) \\
-SED Ad vs \texttt{astrodust\_irem.dat}                   & \SI{133}{\micro\meter} peak & 10.06\% (under) \\
-SED Ad total (0.1--3000\,$\mu$m)                         & integrated            & 0.911$\times$ HD23 \\
+SED Ad vs \texttt{astrodust\_irem.dat}                   & 30--300\,$\mu$m median & 7.37\% (under) \\
+SED Ad vs \texttt{astrodust\_irem.dat}                   & \SI{133}{\micro\meter} peak & 9.80\% (under) \\
+SED Ad total (0.1--3000\,$\mu$m)                         & integrated            & 0.914$\times$ HD23 \\
 \bottomrule
 \end{tabularx}
 
 The astrodust extinction, scattering, and polarized extinction are
 reproduced essentially exactly. The two thermal-emission observables
-integrate to $0.911\times$ (astrodust) and $0.966\times$ (PAH) the
+integrate to $0.914\times$ (astrodust) and $0.965\times$ (PAH) the
 released totals, both in the direction and of the size that
 Table~\ref{tab:ad_energy} attributes to the release itself. The
-headline FIR-peak deficit -- $14.33\%$ with the original Mathis
-field, $7.57\%$ in the current production after the corrected
+headline FIR-peak deficit -- $14.18\%$ with the original Mathis
+field, $7.37\%$ in the current production after the corrected
 Mathis 4000\,K dilution factor is applied (median over
-30--\SI{300}{\micro\meter}; $10.06\%$ at the \SI{133}{\micro\meter}
+30--\SI{300}{\micro\meter}; $9.80\%$ at the \SI{133}{\micro\meter}
 peak) -- and the corresponding PAH residual ($\sim 40\%$ originally in
 sub-mm, $1.2\%$ now in sub-mm and $3.1\%$ under in 30--\SI{300}{\micro\meter}) have been
 the focus of an
@@ -2308,28 +2330,28 @@ candidate:
         value as the production default in our
         \texttt{radfield.f90~::~J\_Mathis} (toggle
         \texttt{use\_mathis\_corrected = .true.}) shifts the
-        S1\_C1 FIR-peak residual from $-14.33\%$ to $-7.57\%$
-        (Table~\ref{tab:mathis_c}); sub-mm from $-5.53\%$ to
-        $-3.07\%$; mm from $-3.87\%$ to $-2.14\%$. The PAH
-        30--300\,$\mu$m band closes from $-8.16\%$ to $-3.67\%$.
+        S1\_C1 FIR-peak residual from $-14.18\%$ to $-7.37\%$
+        (Table~\ref{tab:mathis_c}); sub-mm from $-5.48\%$ to
+        $-3.00\%$; mm from $-3.84\%$ to $-2.09\%$. The PAH
+        30--300\,$\mu$m band closes from $-8.17\%$ to $-3.68\%$.
         The original-Mathis variant remains reproducible via
         \texttt{./calc\_sed.x astrodust mathis\_orig}.
 \end{itemize}
 
-The remaining $7.57\%$ astrodust FIR-peak deficit (and
+The remaining $7.37\%$ astrodust FIR-peak deficit (and
 $2$--$3\%$ sub-mm / mm deficit) was subsequently \emph{resolved}
 by an energy-budget audit (\S\ref{sec:phaseE-resolution},
 Table~\ref{tab:ad_energy}): the HD23 \emph{release} radiates $9.3\%$
 (astrodust) and $3.2\%$ (PAH) more than its own released \Cabs\
 absorb from the same field, whereas our calculation conserves energy to
-$0.15\%$. The deficit therefore equals HD23's own emitted-vs-absorbed
+$0.05\%$. The deficit therefore equals HD23's own emitted-vs-absorbed
 excess, not an error on our side, and this rules out \emph{both}
 candidates raised above. Candidate~(i), a $U_{\rm Mathis}$ /
 heating-field convention offset, cannot produce a
 \emph{component-dependent} excess ($9.3\%$ astrodust vs.\ $3.2\%$
 PAH) --- it would shift both components equally. Candidate~(ii), a
 \Teq/size-sampling difference on our side, is excluded because the
-calculation conserves energy to $0.15\%$ when run against the
+calculation conserves energy to $0.05\%$ when run against the
 release-consistent \Cabs. The residual is an amplitude-type
 inconsistency pointing to the internal \Cabs\ (or abundance
 normalization) used for the \texttt{irem} tables exceeding what the
@@ -2378,9 +2400,11 @@ production method is unaffected.
 
 The two-step solver API (\texttt{sed\_init} once, \texttt{sed\_solve}
 per cell) is exercised end-to-end and is ready to be embedded in a 3D
-radiative-transfer driver. Memory cost per process is $\sim 5$~MB;
-wall-clock time per cell is $\sim 0.5$~s on Apple Silicon for the full
-three-enthalpy-stage AD + PAH solve. The same model object now also
+radiative-transfer driver. Memory cost per process is $\sim 5$~MB.
+On one thread of an Intel Xeon Gold 6254, one \texttt{dust\_emission}
+call for a cell takes 0.98~s and the full three-enthalpy-stage AD + PAH
+solve of \texttt{./calc\_sed.x astrodust}, initialization included,
+2.02~s (2026-10-22; see the Performance subsection). The same model object now also
 supplies the transport optics (\texttt{dust\_extinction}), and the
 wavelength grid now reaches into the ionizing band
 (\S\ref{sec:euv}) --- with the two caveats recorded there: the

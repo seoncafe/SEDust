@@ -1308,10 +1308,11 @@ photon more energetic than that bin's gap $\Delta H$. Two things went wrong.
       adding none.
 \end{itemize}
 
-Both limits now come from \code{hardest\_photon\_energy}, and the band is
-skipped when $\Delta H$ exceeds the hardest photon. The sample count follows the
-band's width (\code{NWAV\_MIN}, \code{NWAV\_MAX}, \code{DLNWAV\_TARGET} in
-\code{p\_sub.f90}) instead of being fixed, so the step is bounded whatever the
+Before the finite-bin update, both limits came from
+\code{hardest\_photon\_energy}, and the band was skipped when $\Delta H$
+exceeded the hardest photon. The sample count followed the band's width
+(\code{NWAV\_MIN}, \code{NWAV\_MAX}, \code{DLNWAV\_TARGET} in
+\code{p\_sub.f90}) instead of being fixed, so the step was bounded whatever the
 band. Re-running the old grid with only the ghost removed and then only the
 sampling changed separates the two: the sampling moves nothing at all
 ($0.0000\%$), which says the flat 51 points had already converged once the
@@ -1339,23 +1340,30 @@ for it.
 zeros must be excluded --- \code{J\_Mathis} returns exactly zero below
 $0.0912$\um\ --- but an exact positivity test is too fragile: a host that hands
 over denormal or roundoff-level residue in its unilluminated bins would push the
-ceiling back up by orders of magnitude. A component a fraction $10^{-12}$ below
-the peak of $J_\lambda$ contributes at most that fraction of the photon
-absorption rate; allowing two decades for the run of $C_{\rm abs}$ across the
-illuminated band, the enthalpy states it could populate carry probability
-$\lesssim10^{-10}$ of the peak, at or below the $10^{-13}$ tail level
-(\code{PMIN\_UP}, \code{PMIN\_UP\_QM}) at which both solvers already truncate
-the window. Such a component cannot change a resolved excursion, and $10^{-12}$
-still sits eighteen decades above the residue it is meant to reject.
+ceiling back up by orders of magnitude. The relative floor rejects that
+residue. It is a numerical convention, not a physical error bound: a relative
+intensity alone does not bound absorbed power, which depends on the cross
+sections, the wavelength intervals and the photon-energy weights. (An earlier
+version of this paragraph estimated a $10^{-10}$ absorption scale from a
+$10^{-12}$ intensity and two decades in $C_{\rm abs}$ and placed it below the
+$10^{-13}$ tail criterion, \code{PMIN\_UP} and \code{PMIN\_UP\_QM}; it is
+above it, and the estimate did not bound a temperature probability.) A weak
+hard component that is excluded must be assessed with the actual
+absorbed-power integral and resolved if it is physically significant.
 
 \medskip
-\noindent The error is one-sided on purpose. Both refinement loops \emph{expand} the
-window while the top bin is still populated, so an underestimated ceiling is
-corrected as the loop runs; the guarded contraction can stop short of where it
-began, so an overestimate is not corrected at all. \code{MAX\_ITER = 10} bounds
-the correction in either direction. Overestimating is therefore the dangerous
-direction, which is why the threshold is set high enough to reject junk rather
-than as low as floating point allows.
+\noindent Both refinement loops \emph{expand} the window while the top bin is
+still populated, so an underestimated ceiling is corrected as the loop runs;
+the guarded contraction can stop short of where it began, so an overestimate
+is not corrected at all, and \code{MAX\_ITER = 10} bounds the correction in
+either direction. This is why the floor rejects numerical residue rather than
+sitting as low as floating point allows. Expansion cannot recover photons
+excluded from the represented continuum support that the transition rates
+integrate. That support needs two distinct significant wavelength samples; an
+isolated sample has zero represented bandwidth and increments
+\code{isolated\_radiation\_support\_count} through the absorption and
+transition checks. A spectral line needs a resolved profile or another
+representation.
 
 \paragraph{\code{calc\_sed.x zubko} exists to keep this path covered.} The defect
 escaped \code{calc\_sed.x astrodust} and \code{calc\_sed.x dl07} because for those two

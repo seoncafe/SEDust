@@ -189,9 +189,11 @@ contains
       ! leave P(nT) negligible.  The steady state then emits
       ! 4 pi sum_(u>=2) P(u) [kappB(u) - kappCMB] = (1 - P(nT)) times that
       ! power, an identity of the recursion.  What finite bins still
-      ! approximate is the uniform spread within a bin and the cooling
-      ! difference quotient, so the emitted spectrum's shape must be checked
-      ! by refining the enthalpy grid.  A field that absorbs nothing leaves
+      ! approximate is the uniform spread within a bin, the cooling
+      ! difference quotient and the representative energy H_u of a bin (not
+      ! DL01's arithmetic center; see upward_absorption_rates), so the
+      ! emitted spectrum's shape must be checked by refining the enthalpy
+      ! grid.  A field that absorbs nothing leaves
       ! P(1) = 1.
       real(wp), intent(in)    :: lambda(:), Cabs(:), Jfield(:)
       real(wp), intent(in)    :: T(:), kappB(:), H(:)
@@ -279,7 +281,27 @@ contains
       ! edge at the geometric mean sqrt(H_u H_(u+1)) of adjacent enthalpies and
       ! the two outer edges one half step beyond the end points, so the width
       ! dH_u agrees with GD89's H_u ln(H_(u+1)/H_(u-1))/2 to second order in
-      ! the step.  With g(E) dE = 4 pi Cabs J_lambda dlambda, the power
+      ! the step.
+      !
+      ! Approximation: the representative energy of bin u is the grid enthalpy
+      ! H_u, at which T(u), kappB(u) and the cooling difference quotient are
+      ! defined, and H_u - H_l is the energy of a transition.  DL01 Sec. 4.1
+      ! instead takes E_u = (E_u,min + E_u,max)/2.  On a grid given in advance
+      ! these cannot both hold with contiguous bins unless it is uniform; the
+      ! geometric edges center H_u in ln H.  With r- = H_u/H_(u-1) and
+      ! r+ = H_(u+1)/H_u, the arithmetic center is
+      !    H_u (r-^(-1/2) + r+^(1/2))/2
+      !      = H_u [1 + (ln r+ - ln r-)/4 + (ln r)^2/8 + ...],
+      ! where the first term vanishes on a uniform ln H grid and is of second
+      ! order where the spacing in ln H varies smoothly, as it does on H(T).
+      ! The relative offset (ln r)^2/8 is 1.2e-5 at r = 1.01, 1.1e-3 at
+      ! r = 1.1, 4.2e-3 at r = 1.2 and 2.1e-2 at r = 1.5.  It leaves the energy
+      ! budget exact (absorption and cooling use the same H), shifts each
+      ! rate by a relative amount of that order, and falls quadratically when
+      ! the enthalpy grid is refined; that refinement check (see calc_P) is
+      ! what bounds it for a given window.
+      !
+      ! With g(E) dE = 4 pi Cabs J_lambda dlambda, the power
       ! absorbed per unit photon energy, eq. (15) is
       !    A(u, l) = [int Phi_ul(E) g(E) dE] / (H_u - H_l),
       ! where Phi_ul(E) = dH_u G_ul(E) is the fraction of a grain spread

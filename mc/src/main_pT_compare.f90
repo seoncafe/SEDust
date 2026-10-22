@@ -19,7 +19,7 @@ program main_pT_compare
    !     T_hi          = 3000.0
    !   /
 
-   use, intrinsic :: omp_lib
+   use omp_lib
    use constants,         only: wp
    use radfield,          only: J_Mathis
    use p_sub,             only: calc_P, calc_Teq

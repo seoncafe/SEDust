@@ -10,6 +10,14 @@
 # dependency outside the SEDust tree.
 
 FC       = gfortran
+# Compiler family, as in ../tmatrix/Makefile: only the flag spellings differ.
+# On the oneAPI releases installed here `ifort` is the IFX compiler.  Set
+# FC_FAMILY on the command line for a wrapper whose name hides the compiler.
+ifneq (,$(filter ifort ifx mpiifort mpiifx,$(notdir $(FC))))
+   FC_FAMILY ?= intel
+else
+   FC_FAMILY ?= gnu
+endif
 # Warning set: -Wall -Wextra minus a few false-positive categories.
 #   compare-reals: intended sentinel / exactly-0 / NaN comparisons (documented).
 #   unused-dummy-argument: kept to preserve shared interfaces.
@@ -23,7 +31,7 @@ WARN     = -Wall -Wextra -Wno-compare-reals -Wno-unused-dummy-argument \
 # products by default.  make HDF5=0 compiles the HDF5 paths out and the
 # readers fall back to the text products.
 HDF5        ?= 1
-ifeq ($(FC),ifort)
+ifeq ($(FC_FAMILY),intel)
    HDF5_PREFIX ?= /data/opt/hdf5_intel
 else
    HDF5_PREFIX ?= /data/opt/hdf5_gfortran
@@ -39,6 +47,12 @@ endif
 
 FFLAGS   = -O2 -ffree-line-length-none -cpp $(WARN) $(H5FLAGS)
 OMPFLAGS = -fopenmp
+# Intel spellings (see ../sed/build_lib.sh): -fpp, -qopenmp, -recursive, and
+# -fp-model precise in place of Intel's default -fp-model fast.
+ifeq ($(FC_FAMILY),intel)
+   FFLAGS   = -O2 -fpp -fp-model precise -recursive $(H5FLAGS)
+   OMPFLAGS = -qopenmp
+endif
 
 SED_DIR = ../sed/src
 

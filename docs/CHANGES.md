@@ -4,6 +4,43 @@ A dated record of code and documentation changes, newest first. Each entry names
 the files it touches and, where a change moves numbers, states the measurement
 that was made on the tree itself.
 
+## 2026-10-22
+
+### Products and reports re-measured after the bin-overlap rates
+
+The 71 `sed/output/sed_*.dat` products still predated the 2026-10-21 rates.
+They were regenerated with this tree's code (gfortran; 66 change, the five
+`equil` products are byte-identical) and are byte-identical to the v1.20
+products regenerated the same day. `docs/astrodust_sed_report.tex` was
+re-measured from them with `docs/make_figs.py` (S1_C1 against HD23, 30-300 um
+median -7.57% -> -7.37%, peak -10.06% -> -9.80%; Table mathis_c, the energy
+budget, the Ad + PAH tables, conclusions; timings on a Xeon Gold 6254, one
+thread: `build_dust` 0.72 s, one `dust_emission` 0.98 s, `calc_sed.x astrodust`
+2.02 s), and two claims wrong before the change were corrected (residual after
+the 1.093 amplitude flat to +-3.3%, not +-2%; MC report band ratios NIR 0.959,
+MIR 0.998, FIR 1.001, sub-mm 1.002, not "1-3% in every band"). The tracked MC
+products and the four MC figures were regenerated.
+
+### Intel Fortran builds
+
+`sed/Makefile`, `mc/Makefile`: compiler family detection (`ifort`, `ifx`,
+`mpiifort`, `mpiifx`) with the Intel flags of `sed/build_lib.sh`.
+`mc/src/main_mc_sed.f90`, `main_pT_compare.f90`: `use omp_lib` (IFX provides no
+intrinsic `omp_lib`). `mc/src/mc_sed.f90`: the BLOCK-local variables of the
+parallel region are declared at routine scope and listed in `private`.
+`sed/src/check_build_dust.f90`: the ZDA round-trip check allows two ulps,
+because IFX 2026.1 reads 2 of the 145321 rows of `suvSil_121_1201.dat` one ulp
+from the correctly rounded value. With IFX 2026.1.0 all `sed/` targets and `mc/`
+build and the read-only checks pass.
+
+### Other corrections
+
+`sed/src/p_sub.f90` (comments): the bin representative energy H_u versus DL01
+Sec. 4.1 and its validity range. `pyutil/sed_from_cabs.py`: `calc_P` and the
+absorption integral follow `p_sub.f90` (192 cases: upward rates bit-identical,
+P to 2.5e-14). `docs/SEDust_user_manual.tex`: the 1e-12 support-floor paragraph
+no longer places 1e-10 below 1e-13. `sed/tests/*.sh` are executable.
+
 ## 2026-10-21
 
 ### Upward transition rates from the Draine & Li (2001) bin overlap

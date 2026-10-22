@@ -857,7 +857,7 @@ contains
       log_kappB_cion = log(max(kappB_cion, tiny(0.0_wp)))
       ! Restore the f_ion-blended Cabs_pah/kappB_pah/kappCMB_pah.  Nothing in
       ! the library reads them after this point; mc/src/main_pT_compare.f90
-      ! and mc/src/mc_sed.f90 do.
+      ! does (mc/src/mc_sed.f90 uses the charge-state arrays instead).
       call build_Cabs_pah(Qabs_cneu, Qabs_cion)
       deallocate(Qabs_cneu, Qabs_cion)
       call build_kappB_pah()

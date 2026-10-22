@@ -49,6 +49,16 @@
 #   ./test_h5_storage_policy.x         # HDF5 storage precision policy
 
 FC      = gfortran
+# Compiler family, as in ../tmatrix/Makefile: only the flag spellings differ.
+# An Intel build links ../tmatrix/libtmatrix.a, which must be built with the
+# same compiler: cd ../tmatrix && make FC=ifort libtmatrix.a
+# On the oneAPI releases installed here `ifort` is the IFX compiler.  Set
+# FC_FAMILY on the command line for a wrapper whose name hides the compiler.
+ifneq (,$(filter ifort ifx mpiifort mpiifx,$(notdir $(FC))))
+   FC_FAMILY ?= intel
+else
+   FC_FAMILY ?= gnu
+endif
 
 # ---- HDF5 -------------------------------------------------------------
 # The optics products (kext curves, Q tables, and in v1.20 the polarized
@@ -62,7 +72,7 @@ FC      = gfortran
 # The prefix must hold include/hdf5.mod built by THIS compiler -- a .mod from
 # another gfortran release is not readable, which is the usual failure here.
 HDF5        ?= 1
-ifeq ($(FC),ifort)
+ifeq ($(FC_FAMILY),intel)
    HDF5_PREFIX ?= /data/opt/hdf5_intel
 else
    HDF5_PREFIX ?= /data/opt/hdf5_gfortran
@@ -103,6 +113,14 @@ FFLAGS += -fopenmp
 # is broken today; stating it keeps the reentrancy of a threaded path from
 # resting on that side effect.
 FFLAGS += -frecursive
+# Intel spellings of the same flags, as build_lib.sh uses them: -fpp for -cpp,
+# -qopenmp, and -recursive for -frecursive (not a no-op on Intel, see above).
+# -fp-model precise because Intel otherwise defaults to -fp-model fast, which
+# the T-matrix convergence test linked into calc_sed.x and calc_kext.x does
+# not tolerate (see build_lib.sh).
+ifeq ($(FC_FAMILY),intel)
+   FFLAGS = -O3 -fpp -fp-model precise -qopenmp -recursive $(H5FLAGS)
+endif
 
 # ---- T-matrix library, for the astrodust EUV band only ---------------
 # The astrodust model's extreme-ultraviolet band (a lam_min shorter than the Q
