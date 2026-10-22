@@ -73,14 +73,14 @@ endif
 # another gfortran release is not readable, which is the usual failure here.
 HDF5        ?= 1
 ifeq ($(FC_FAMILY),intel)
-   HDF5_PREFIX ?= /data/opt/hdf5_intel
+   HDF5_PREFIX ?= /opt/hdf5_intel
 else
-   HDF5_PREFIX ?= /data/opt/hdf5_gfortran
+   HDF5_PREFIX ?= /opt/hdf5_gfortran
 endif
 ifneq ($(HDF5),0)
    H5FLAGS = -DSEDUST_HDF5 -I$(HDF5_PREFIX)/include
    H5LIBS  = $(HDF5_PREFIX)/lib/libhdf5_fortran.a $(HDF5_PREFIX)/lib/libhdf5.a \
-             -lsz -lz -ldl -lm
+             -lsz -lz -ldl
 else
    H5FLAGS =
    H5LIBS  =
