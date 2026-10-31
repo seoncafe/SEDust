@@ -30,13 +30,13 @@ program calc_sed
    !     lambda[um]  total  PAH  graphite  silicate
    !   sed_themis[_<tag>].dat, sed_g18d[_<tag>].dat
    !     lambda[um]  total  <one column per DustEM grain population>
-   ! all in erg s^-1 cm^-2 sr^-1 H^-1 (the HD23 / DL07 convention).
+   ! all in erg s^-1 sr^-1 H^-1 (the HD23 / DL07 convention).
    !
    ! This is the emission counterpart of calc_kext.x, which does the size
    ! integral for the transport optics of the same models.
    !====================================================================
-   use constants,         only: wp
-   use radfield,          only: J_Mathis, hardest_photon_energy
+   use constants,         only: wp, ev2erg, hc_evum
+   use radfield,          only: hardest_photon_energy
    use sed_astrodust_mod, only: sed_init, sed_solve, sed_solve_pah, &
                                 sed_solve_qm_batch, stoch_method, NLAM, lam, &
                                 sed_init_dl07, sed_solve_dl07, &
@@ -51,7 +51,8 @@ program calc_sed
                                 read_run_option, check_run_options, &
                                 run_options_tag, report_run_options, &
                                 write_run_option_usage, T_HARD_EUV, W_HARD_EUV
-   use sed_apply_options, only: apply_run_options, add_hard_euv_component
+   use sed_apply_options, only: apply_run_options, evaluate_radiation_field, &
+                                add_hard_euv_component
    ! The astrodust EUV band, when one is asked for, is solved on the oblate
    ! spheroid of the Q table rather than on a volume-equivalent sphere.  That
    ! calculation is a separate module so that the library links without the
@@ -175,6 +176,35 @@ program calc_sed
 
 contains
 
+   function radiation_field_name() result(name)
+      character(len=16) :: name
+      if (opt%hd23) then
+         name = 'HD23 ISRF'
+      else
+         name = 'Mathis ISRF'
+      end if
+   end function radiation_field_name
+
+
+   subroutine write_radiation_field(lam_um, J_lam)
+      ! Record the spectrum actually supplied to the emission solver.
+      real(wp), intent(in) :: lam_um(:), J_lam(:)
+      character(len=192) :: fname
+      integer :: k, u
+      fname = trim(tagged('field_'//trim(model)))//'.dat'
+      open(newunit=u, file=trim(fname), status='replace', action='write')
+      write(u,'(a,a)') '# radiation field = ', trim(radiation_field_name())
+      write(u,'(a,es17.9)') '# U = ', U_field
+      if (opt%hard_euv_field) write(u,'(a,es12.4,a,es12.4)') &
+           '# below Lyman limit: diluted blackbody T = ', T_HARD_EUV, ' K, W = ', W_HARD_EUV
+      write(u,'(a)') '# columns: lambda [um]  J_lambda [W m^-3 sr^-1]'
+      do k = 1, size(lam_um)
+         write(u,'(es16.8,1x,es24.16e3)') lam_um(k), J_lam(k)
+      end do
+      close(u)
+      write(*,'(a,a)') ' radiation field: ', trim(fname)
+   end subroutine write_radiation_field
+
    ! ===================================================================
    subroutine print_usage()
       write(*,'(a)') ' usage:'
@@ -226,7 +256,7 @@ contains
 
    ! ===================================================================
    subroutine solve_astrodust()
-      ! Hensley & Draine (2023) astrodust + PAH, for a single Mathis-ISRF cell,
+      ! Hensley & Draine (2023) astrodust + PAH, for one illuminated cell,
       ! solved for the two enthalpy stages (S1, S2) and the PAH population.
       real(wp), allocatable :: J_lam(:), lamI_lam(:)
       character(len=192)    :: stem
@@ -237,7 +267,7 @@ contains
       call report_header('Hensley & Draine (2023) astrodust + PAH SED')
       write(*,'(a,a)')    ' Q table     : ', F_QT_AD
       write(*,'(a)')      ' size_dist   : HD23 eqs. (17), (24), analytic'
-      write(*,'(a,f8.3)') ' U_mathis    : ', U_field
+      write(*,'(a,f8.3)') ' U (field)   : ', U_field
       write(*,'(a,i0)')   ' NT (T grid) : ', NT_IN
       call apply_run_options(opt)
       write(*,'(a,a)')    ' PAH graphite: ', trim(qpah_graphite_source)
@@ -257,22 +287,25 @@ contains
       write(*,'(a)') ''
 
       allocate(J_lam(NLAM), lamI_lam(NLAM))
-      call J_Mathis(U_field, lam, J_lam)
+      call evaluate_radiation_field(opt, U_field, lam, J_lam)
       if (opt%hard_euv_field) call add_hard_euv_component(lam, J_lam)
+      call write_radiation_field(lam, J_lam)
 
       if (trim(stoch_method) == 'qm') then
          ! QM batch mode: all 4 grain types (S1, S2, PAH-neutral, PAH-cation)
          ! are processed in one parallel region for maximum thread utilisation.
          block
             real(wp), allocatable :: lamI_stages(:,:), lamI_pah_b(:)
+            integer :: cooling_counts(3,4)
             allocate(lamI_stages(NLAM, 2), lamI_pah_b(NLAM))
             write(*,'(a)') ' solving all stages (QM batch) ...'
-            call sed_solve_qm_batch(J_lam, lamI_stages, lamI_pah_b)
+            call sed_solve_qm_batch(J_lam, lamI_stages, lamI_pah_b, cooling_counts)
             do is = 1, 2
                call write_astrodust_stage(trim(stem), trim(STAGES(is)), &
-                                          lamI_stages(:, is), .false.)
+                                          lamI_stages(:, is), .false., cooling_counts(:,is))
             end do
-            call write_astrodust_stage(trim(stem), 'PAH', lamI_pah_b, .true.)
+            call write_astrodust_stage(trim(stem), 'PAH', lamI_pah_b, .true., &
+                                       cooling_counts(:,3), cooling_counts(:,4))
             deallocate(lamI_stages, lamI_pah_b)
          end block
       else
@@ -294,10 +327,11 @@ contains
    end subroutine solve_astrodust
 
 
-   subroutine write_astrodust_stage(stem, stage, lamI, is_pah)
+   subroutine write_astrodust_stage(stem, stage, lamI, is_pah, actual_counts, cation_counts)
       character(len=*), intent(in) :: stem, stage
       real(wp),         intent(in) :: lamI(:)
       logical,          intent(in) :: is_pah
+      integer, optional, intent(in) :: actual_counts(3), cation_counts(3)
       integer :: uu, kk
       character(len=224) :: fn
       fn = trim(stem)//'_'//trim(stage)//'.dat'
@@ -305,13 +339,22 @@ contains
       ! The intensity is written out rather than quoted from the default, so
       ! that a logU= run does not claim the production value it did not use.
       if (is_pah) then
-         write(uu,'(a,f0.3)') '# DH21 PAH SED for Mathis ISRF, U = ', U_field
+         write(uu,'(a,f0.3)') '# DH21 PAH SED for '//trim(radiation_field_name())//', U = ', U_field
          write(uu,'(a)') '# DL07 PAH cross sections, neutral + cation mixed by f_ion(a)'
       else
-         write(uu,'(a,f0.3)') '# DH21 astrodust SED for Mathis ISRF, U = ', U_field
+         write(uu,'(a,f0.3)') '# DH21 astrodust SED for '//trim(radiation_field_name())//', U = ', U_field
          write(uu,'(a,a)') '# Enthalpy stage: ', trim(stage)
       end if
-      write(uu,'(a)') '# columns: lambda[um]    lambda*I_lambda / N_H [erg s^-1 cm^-2 sr^-1 H^-1]'
+      if (opt%hd23) write(uu,'(a,a)') '# solver = ', trim(stoch_method)
+      if (present(actual_counts)) then
+         if (is_pah) then
+            call write_qm_cooling_counts(uu, 'PAH-neutral', actual_counts)
+            if (present(cation_counts)) call write_qm_cooling_counts(uu, 'PAH-cation', cation_counts)
+         else
+            call write_qm_cooling_counts(uu, trim(stage), actual_counts)
+         end if
+      end if
+      write(uu,'(a)') '# columns: lambda[um]    lambda*I_lambda / N_H [erg s^-1 sr^-1 H^-1]'
       ! e3 on the intensity: carried into the EUV and X-ray, lambda*I_lambda
       ! underflows to subnormals (~1e-320) on the Wien side of a 20 K grain, and
       ! a two-digit exponent field drops the E there -- Fortran writes
@@ -325,6 +368,14 @@ contains
       write(*,'(a,a)') 'wrote ', trim(fn)
    end subroutine write_astrodust_stage
 
+   subroutine write_qm_cooling_counts(unit, label, counts)
+      integer, intent(in) :: unit, counts(3)
+      character(len=*), intent(in) :: label
+      ! Successful QM solves only; equilibrium grains and GD refusals are excluded.
+      write(unit,'(a,a,3(a,i0))') '# actual QM cooling ', trim(label), &
+           ': dbcon=', counts(1), ' dbdis=', counts(2), ' stati=', counts(3)
+   end subroutine write_qm_cooling_counts
+
 
    ! ===================================================================
    subroutine solve_dl07()
@@ -332,7 +383,7 @@ contains
       ! WD01 size distributions.  Reproduces the DL07spec reference spectra
       ! at U = 1.
       real(wp), allocatable :: J_lam(:), lamI_tot(:), lamI_sil(:), lamI_carb(:)
-      integer  :: sd_index, k, u
+      integer  :: sd_index, k, u, cooling_counts(3,2)
       logical  :: own_optics
       character(len=192) :: fname
 
@@ -381,7 +432,7 @@ contains
       call report_header('Draine & Li (2007) silicate + carbonaceous SED')
       write(*,'(a,a)')   ' submodel      : ', trim(submodel)
       write(*,'(a,i0)')  ' WD01 index    : ', sd_index
-      write(*,'(a,f8.3)')' U (Mathis)    : ', U_field
+      write(*,'(a,f8.3)')' U (field)     : ', U_field
       write(*,'(a,a)')   ' graphite      : ', trim(qpah_graphite_source)
       write(*,'(a,a)')   ' PAH xsec      : ', trim(opt%pah_xsec)
       if (own_optics) write(*,'(a)') ' optics        : solved from the'// &
@@ -402,21 +453,27 @@ contains
       write(*,'(a,i0,a)') ' sed_init_dl07 done. NLAM=', NLAM, '.'
 
       allocate(J_lam(NLAM), lamI_tot(NLAM), lamI_sil(NLAM), lamI_carb(NLAM))
-      call J_Mathis(U_field, lam, J_lam)
+      call evaluate_radiation_field(opt, U_field, lam, J_lam)
       if (opt%hard_euv_field) call add_hard_euv_component(lam, J_lam)
+      call write_radiation_field(lam, J_lam)
 
       write(*,'(a)') ' solving DL07 SED (silicate + carbonaceous) ...'
-      call sed_solve_dl07(J_lam, lamI_tot, lamI_sil, lamI_carb)
+      call sed_solve_dl07(J_lam, lamI_tot, lamI_sil, lamI_carb, cooling_counts)
 
       open(newunit=u, file=trim(fname), status='replace', action='write')
       ! f5.2 holds every intensity the reference runs use; a field scaled far
       ! up by logU= would fill it with asterisks, so that one takes an exponent.
       if (U_field < 1000.0_wp) then
          write(u,'(a,a,a,f5.2)')  '# DL07 model SED (this work), ', trim(submodel), &
-              ', Mathis ISRF U = ', U_field
+              ', '//trim(radiation_field_name())//' U = ', U_field
       else
          write(u,'(a,a,a,es10.3)')'# DL07 model SED (this work), ', trim(submodel), &
-              ', Mathis ISRF U = ', U_field
+              ', '//trim(radiation_field_name())//' U = ', U_field
+      end if
+      if (opt%hd23) write(u,'(a,a)') '# solver = ', trim(stoch_method)
+      if (trim(stoch_method) == 'qm') then
+         call write_qm_cooling_counts(u, 'silicate', cooling_counts(:,1))
+         call write_qm_cooling_counts(u, 'carbonaceous', cooling_counts(:,2))
       end if
       ! Name the graphite the blend actually took, so a sensitivity run does
       ! not carry the model's own choice in its header.
@@ -430,7 +487,7 @@ contains
          write(u,'(a,a)') '# carbonaceous absorption vintage: ', trim(opt%pah_xsec)
       write(u,'(a)') '# PAH ionization computed via WD01b grain charging (pah_ionfrac)'
       write(u,'(a)') '# columns: lambda[um]  lamI_total/NH  lamI_sil/NH  lamI_carb/NH'
-      write(u,'(a)') '#          [erg s^-1 cm^-2 sr^-1 H^-1]'
+      write(u,'(a)') '#          [erg s^-1 sr^-1 H^-1]'
       ! e3 on the intensities: on a grid carried into the EUV, lambda*I_lambda
       ! underflows to subnormals, and a two-digit exponent field drops the E
       ! there (4.29970510-319), which readers outside Fortran cannot parse.
@@ -455,16 +512,16 @@ contains
       ! graphite sphere.
       type(dust_model_t)    :: m
       real(wp), allocatable :: J_lam(:), lamI_tot(:), lamI_chan(:,:)
+      integer, allocatable :: cooling_counts(:,:)
       integer  :: k, ic, u, status
       character(len=192) :: fname
 
       fname = trim(tagged('sed_mrn'))//'.dat'
 
       call report_header('Mathis, Rumpl & Nordsieck (1977) graphite + silicate emission')
-      write(*,'(a,f8.3)') ' U (Mathis)    : ', U_field
-      ! Before the build: the field convention fixes the CMB temperature that
-      ! goes into the cooling term, and the solver choice is stamped on the
-      ! model.
+      write(*,'(a,f8.3)') ' U (field)     : ', U_field
+      ! Apply before building because the solver choice is stored in the model.
+      ! The complete illuminating field supplies any CMB heating.
       call apply_run_options(opt)
       call report_run_options(opt)
       write(*,'(a,a)')    ' output file   : ', trim(fname)
@@ -481,11 +538,13 @@ contains
            ',  grid = ', m%lam(1), ' to ', m%lam(m%NLAM), ' um'
 
       allocate(J_lam(m%NLAM), lamI_tot(m%NLAM), lamI_chan(m%NLAM, m%n_channel))
-      call J_Mathis(U_field, m%lam, J_lam)
+      call evaluate_radiation_field(opt, U_field, m%lam, J_lam)
       if (opt%hard_euv_field) call add_hard_euv_component(m%lam, J_lam)
+      call write_radiation_field(m%lam, J_lam)
 
       write(*,'(a)') ' solving MRN SED (graphite + silicate) ...'
-      call dust_emission(m, J_lam, lamI_tot, lamI_chan, status)
+      allocate(cooling_counts(3,m%n_channel))
+      call dust_emission(m, J_lam, lamI_tot, lamI_chan, status, actual_counts=cooling_counts)
       if (status /= 0) then
          write(*,'(a,i0)') ' calc_sed: dust_emission failed, status = ', status
          stop 1
@@ -496,21 +555,26 @@ contains
       ! up by logU= would fill it with asterisks, so that one takes an exponent.
       if (U_field < 1000.0_wp) then
          write(u,'(a,f5.2)')  '# MRN (1977) model SED (this work),'// &
-              ' Mathis ISRF U = ', U_field
+              ' '//trim(radiation_field_name())//' U = ', U_field
       else
          write(u,'(a,es10.3)')'# MRN (1977) model SED (this work),'// &
-              ' Mathis ISRF U = ', U_field
+              ' '//trim(radiation_field_name())//' U = ', U_field
       end if
       write(u,'(a)') '# graphite + silicate spheres, dn/da = A_i a^-3.5,'// &
            ' 0.005 - 0.25 um, Mie on the D03 dielectric functions'
       write(u,'(a)') '# normalization: Draine & Lee (1984), log10 A ='// &
            ' -25.16 (graphite), -25.11 (silicate) [cm^2.5/H]'
       write(u,'(a,a)') '# solver = ', trim(m%stoch_method)
+      if (trim(m%stoch_method) == 'qm') then
+         do ic = 1, m%n_channel
+            call write_qm_cooling_counts(u, trim(m%channel_name(ic)), cooling_counts(:,ic))
+         end do
+      end if
       if (opt%hard_euv_field) write(u,'(a,es10.3,a,es10.3)') &
            '# artificial hard component below the Lyman limit: W*B_lambda(T), T = ', &
            T_HARD_EUV, ' K, W = ', W_HARD_EUV
       write(u,'(a)') '# columns: lambda[um]  lamI_total/NH  lamI_GRA/NH  lamI_SIL/NH'
-      write(u,'(a)') '#          [erg s^-1 cm^-2 sr^-1 H^-1]'
+      write(u,'(a)') '#          [erg s^-1 sr^-1 H^-1]'
       ! e3 on the intensities: carried into the EUV, lambda*I_lambda underflows
       ! to subnormals and a two-digit exponent field drops the E there
       ! (4.29970510-319), which readers outside Fortran cannot parse.
@@ -522,7 +586,7 @@ contains
       write(*,'(a,a)') ' wrote ', trim(fname)
       write(*,'(a)') ' calc_sed: done.'
 
-      deallocate(J_lam, lamI_tot, lamI_chan)
+      deallocate(J_lam, lamI_tot, lamI_chan, cooling_counts)
    end subroutine solve_mrn
 
 
@@ -542,16 +606,16 @@ contains
       ! running both is that regression.
       type(dust_model_t)    :: m
       real(wp), allocatable :: J_lam(:), lamI_tot(:), lamI_chan(:,:)
+      integer, allocatable :: cooling_counts(:,:)
       integer  :: k, ic, u, status
       character(len=192) :: fname
 
       fname = trim(tagged('sed_zubko'))//'.dat'
 
       call report_header('Zubko/ZDA BARE-GR-S dust emission')
-      write(*,'(a,f8.3)') ' U (Mathis)    : ', U_field
-      ! Before the build: the field convention fixes the CMB temperature that
-      ! goes into the cooling term, and the solver choice is stamped on the
-      ! model.
+      write(*,'(a,f8.3)') ' U (field)     : ', U_field
+      ! Apply before building because the solver choice is stored in the model.
+      ! The complete illuminating field supplies any CMB heating.
       call apply_run_options(opt)
       call report_run_options(opt)
       write(*,'(a,a)')    ' output file   : ', trim(fname)
@@ -567,12 +631,14 @@ contains
            ',  grid = ', m%lam(1), ' to ', m%lam(m%NLAM), ' um'
 
       allocate(J_lam(m%NLAM), lamI_tot(m%NLAM), lamI_chan(m%NLAM, m%n_channel))
-      call J_Mathis(U_field, m%lam, J_lam)
+      call evaluate_radiation_field(opt, U_field, m%lam, J_lam)
       if (opt%hard_euv_field) call add_hard_euv_component(m%lam, J_lam)
+      call write_radiation_field(m%lam, J_lam)
       call report_field_extent(m%lam, J_lam)
 
       write(*,'(a)') ' solving Zubko SED (PAH + graphite + silicate) ...'
-      call dust_emission(m, J_lam, lamI_tot, lamI_chan, status)
+      allocate(cooling_counts(3,m%n_channel))
+      call dust_emission(m, J_lam, lamI_tot, lamI_chan, status, actual_counts=cooling_counts)
       if (status /= 0) then
          write(*,'(a,i0)') ' calc_sed: dust_emission failed, status = ', status
          stop 1
@@ -583,17 +649,22 @@ contains
       ! up by logU= would fill it with asterisks, so that one takes an exponent.
       if (U_field < 1000.0_wp) then
          write(u,'(a,f5.2)')  '# Zubko/ZDA BARE-GR-S model SED (this work),'// &
-              ' Mathis ISRF U = ', U_field
+              ' '//trim(radiation_field_name())//' U = ', U_field
       else
          write(u,'(a,es10.3)')'# Zubko/ZDA BARE-GR-S model SED (this work),'// &
-              ' Mathis ISRF U = ', U_field
+              ' '//trim(radiation_field_name())//' U = ', U_field
       end if
       write(u,'(a,a)')    '# solver = ', trim(m%stoch_method)
+      if (trim(m%stoch_method) == 'qm') then
+         do ic = 1, m%n_channel
+            call write_qm_cooling_counts(u, trim(m%channel_name(ic)), cooling_counts(:,ic))
+         end do
+      end if
       if (opt%hard_euv_field) write(u,'(a,es10.3,a,es10.3)') &
            '# artificial hard component below the Lyman limit: W*B_lambda(T), T = ', &
            T_HARD_EUV, ' K, W = ', W_HARD_EUV
       write(u,'(a)') '# columns: lambda[um]  lamI_total/NH  lamI_PAH/NH  lamI_GRA/NH  lamI_SIL/NH'
-      write(u,'(a)') '#          [erg s^-1 cm^-2 sr^-1 H^-1]'
+      write(u,'(a)') '#          [erg s^-1 sr^-1 H^-1]'
       ! e3 on the intensities: this model's optics grid already starts at
       ! 1e-3 um (1.24 keV), where lambda*I_lambda underflows to subnormals, and
       ! a two-digit exponent field drops the E there (4.29970510-319), which
@@ -606,7 +677,7 @@ contains
       write(*,'(a,a)') ' wrote ', trim(fname)
       write(*,'(a)') ' calc_sed: done.'
 
-      deallocate(J_lam, lamI_tot, lamI_chan)
+      deallocate(J_lam, lamI_tot, lamI_chan, cooling_counts)
    end subroutine solve_zubko
 
 
@@ -628,6 +699,7 @@ contains
       character(len=*), intent(in) :: grain_path, data_dir, stem, title
       type(dust_model_t)    :: m
       real(wp), allocatable :: J_lam(:), lamI_tot(:), lamI_chan(:,:)
+      integer, allocatable :: cooling_counts(:,:)
       integer  :: k, ic, u, status
       character(len=192) :: fname
       character(len=256) :: gmiss
@@ -639,7 +711,7 @@ contains
       fname = trim(tagged('sed_'//trim(stem)))//'.dat'
 
       call report_header(trim(title)//' dust emission')
-      write(*,'(a,f8.3)') ' U (Mathis)    : ', U_field
+      write(*,'(a,f8.3)') ' U (field)     : ', U_field
       call apply_run_options(opt)
       call report_run_options(opt)
       write(*,'(a,a)')    ' output file   : ', trim(fname)
@@ -666,12 +738,14 @@ contains
            ',  grid = ', m%lam(1), ' to ', m%lam(m%NLAM), ' um'
 
       allocate(J_lam(m%NLAM), lamI_tot(m%NLAM), lamI_chan(m%NLAM, m%n_channel))
-      call J_Mathis(U_field, m%lam, J_lam)
+      call evaluate_radiation_field(opt, U_field, m%lam, J_lam)
       if (opt%hard_euv_field) call add_hard_euv_component(m%lam, J_lam)
+      call write_radiation_field(m%lam, J_lam)
       call report_field_extent(m%lam, J_lam)
 
       write(*,'(a,i0,a)') ' solving the SED over ', m%n_channel, ' grain populations ...'
-      call dust_emission(m, J_lam, lamI_tot, lamI_chan, status)
+      allocate(cooling_counts(3,m%n_channel))
+      call dust_emission(m, J_lam, lamI_tot, lamI_chan, status, actual_counts=cooling_counts)
       if (status /= 0) then
          write(*,'(a,i0)') ' calc_sed: dust_emission failed, status = ', status
          stop 1
@@ -680,12 +754,17 @@ contains
       open(newunit=u, file=trim(fname), status='replace', action='write')
       if (U_field < 1000.0_wp) then
          write(u,'(a,a,f5.2)') '# ', trim(title)//' model SED (this work),'// &
-              ' Mathis ISRF U = ', U_field
+              ' '//trim(radiation_field_name())//' U = ', U_field
       else
          write(u,'(a,a,es10.3)') '# ', trim(title)//' model SED (this work),'// &
-              ' Mathis ISRF U = ', U_field
+              ' '//trim(radiation_field_name())//' U = ', U_field
       end if
       write(u,'(a,a)')    '# solver = ', trim(m%stoch_method)
+      if (trim(m%stoch_method) == 'qm') then
+         do ic = 1, m%n_channel
+            call write_qm_cooling_counts(u, trim(m%channel_name(ic)), cooling_counts(:,ic))
+         end do
+      end if
       if (opt%hard_euv_field) write(u,'(a,es10.3,a,es10.3)') &
            '# artificial hard component below the Lyman limit: W*B_lambda(T), T = ', &
            T_HARD_EUV, ' K, W = ', W_HARD_EUV
@@ -694,7 +773,7 @@ contains
          cols = trim(cols)//'  lamI_'//trim(m%channel_name(ic))//'/NH'
       end do
       write(u,'(a)') trim(cols)
-      write(u,'(a)') '#          [erg s^-1 cm^-2 sr^-1 H^-1]'
+      write(u,'(a)') '#          [erg s^-1 sr^-1 H^-1]'
       ! e3 on the intensities: this grid starts at 0.04 um, where lambda*I_lambda
       ! underflows to subnormals and a two-digit exponent field drops the E.
       do k = 1, m%NLAM
@@ -705,7 +784,7 @@ contains
       write(*,'(a,a)') ' wrote ', trim(fname)
       write(*,'(a)') ' calc_sed: done.'
 
-      deallocate(J_lam, lamI_tot, lamI_chan)
+      deallocate(J_lam, lamI_tot, lamI_chan, cooling_counts)
    end subroutine solve_dustem
 
 
@@ -716,15 +795,14 @@ contains
       ! the second; for the Zubko model the first is 91 times larger unless
       ! 'euv' is set, which is the whole content of the regression.
       real(wp), intent(in) :: lam_m(:), J_lam(:)
-      real(wp), parameter  :: ERG2EV = 1.0_wp / 1.602176565e-12_wp
       real(wp) :: u_field
       u_field = hardest_photon_energy(lam_m, J_lam)
       write(*,'(a,es11.4,a,es12.5,a)') ' optics grid short end : ', lam_m(1), &
-           ' um  ->  ', 1.23984193_wp / lam_m(1), ' eV'
+           ' um  ->  ', hc_evum / lam_m(1), ' eV'
       write(*,'(a,es12.5,a)')          ' hardest photon in the field:   ', &
-           u_field * ERG2EV, ' eV'
+           u_field / ev2erg, ' eV'
       write(*,'(a,es12.5,a)')          ' single-photon bound in use :   ', &
-           max(13.6_wp / ERG2EV, u_field) * ERG2EV, ' eV'
+           max(13.6_wp * ev2erg, u_field) / ev2erg, ' eV'
    end subroutine report_field_extent
 
 end program calc_sed

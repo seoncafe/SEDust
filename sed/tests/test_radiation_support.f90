@@ -1,11 +1,11 @@
 program test_radiation_support
-   use constants, only: wp
+   use constants, only: wp, hc_ergum
    use radfield, only: hardest_photon_energy, radiation_field_support, &
       isolated_radiation_support_count, RADIATION_SUPPORT_ISOLATED, &
       RADIATION_SUPPORT_EMPTY, RADIATION_SUPPORT_OK
    use p_sub, only: radiation_absorption, p_sub_setup, calc_P, calc_Teq
    implicit none
-   real(wp), parameter :: hc=6.62606957e-27_wp*2.99792458e10_wp*1e4_wp
+   real(wp), parameter :: hc=hc_ergum
    real(wp) :: lam(5), cross(5), field(5), t(2), cooling(2), h(2)
    real(wp) :: p(2), lnp(2), reference(2), reference_log(2), teq, expected, integral
    integer :: first, last, support_status

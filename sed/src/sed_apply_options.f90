@@ -7,7 +7,7 @@ module sed_apply_options
    ! solver and no radiation field, and would otherwise have to drag both in to
    ! get the shared command line.
    use constants,              only: wp
-   use radfield,               only: use_mathis_corrected, bbody
+   use radfield,               only: use_mathis_corrected, J_Mathis, J_HD23, bbody
    use sed_astrodust_mod,      only: stoch_method, use_induced_emission, &
                                      gd_photon_cutoff
    use stoch_qm_mod,           only: qm_method, qm_nstate_default, qm_nisrf_max
@@ -17,17 +17,15 @@ module sed_apply_options
                                      LAM_LYMAN_UM
    implicit none
    private
-   public :: apply_run_options, add_hard_euv_component
+   public :: apply_run_options, evaluate_radiation_field, add_hard_euv_component
 
 contains
 
    subroutine apply_run_options(o)
-      ! Push the settings into the module state the solver reads.  Call it
-      ! BEFORE the model is built: the radiation-field convention fixes the CMB
-      ! temperature that goes into the cooling term, and the graphite source
-      ! fixes the optics of the xi blend, both of which are built once.  A
-      ! program that applies it afterwards would evaluate one convention's
-      ! field against the other's cooling term.
+      ! Apply settings before building the model: the graphite choice fixes
+      ! the absorption cross sections and the model stores its solver choice.
+      ! Any CMB is part of the supplied radiation field, not an extra cooling
+      ! subtraction in the production emission solver.
       type(run_options_t), intent(in) :: o
 
       if (o%ax_field) use_mathis_corrected = .not. o%mathis_orig
@@ -48,10 +46,22 @@ contains
    end subroutine apply_run_options
 
 
+   subroutine evaluate_radiation_field(o, U, lam, J_lam)
+      ! Select the illuminating spectrum from this run's explicit field option.
+      type(run_options_t), intent(in) :: o
+      real(wp), intent(in) :: U, lam(:)
+      real(wp), intent(out) :: J_lam(:)
+      if (o%hd23) then
+         call J_HD23(U, lam, J_lam)
+      else
+         call J_Mathis(U, lam, J_lam)
+      end if
+   end subroutine evaluate_radiation_field
+
+
    subroutine add_hard_euv_component(lam, J_lam)
-      ! Replace the band below the Lyman limit -- where the Mathis field is
-      ! identically zero -- by a diluted 1e5 K blackbody, so that the field
-      ! really does carry photons above 13.6 eV.
+      ! Replace the band below the Lyman limit by a diluted 1e5 K
+      ! blackbody, so that the field carries photons above 13.6 eV.
       real(wp), intent(in)    :: lam(:)      ! [um]
       real(wp), intent(inout) :: J_lam(:)
       integer :: k

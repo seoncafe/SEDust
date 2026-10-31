@@ -1,4 +1,8 @@
 module stoch_qm_mod
+   ! PARAB_INTERPL is the Aigen Li / B. T. Draine routine transcribed from
+   ! BDraine_src/src/parab_interpl.f (2000-11-13 history entry). It retains
+   ! its original algorithm for state-density interpolation. Radiative
+   ! rates instead use the separate nonnegative_rf_cabs scheme.
    !--------------------------------------------------------------------
    ! Quantum-mechanical stochastic heating solver implementing Draine's
    ! 'dbdis' (thermal-discrete) method
@@ -9,9 +13,9 @@ module stoch_qm_mod
    !   - Heating transitions (photon absorption): upward rates A_{fi}
    !   - Thermal cooling transitions: downward rates A_{fi} using
    !     Planck emission at the upper bin temperature T_i (thermal-
-   !     discrete method, DL01 Section 8.2).
+   !     discrete method, DL01 Section 6.1).
    !   - Intrabin transitions (self-transition correction)
-   !   - BiCG sparse linear solver for the transition matrix equation
+   !   - Steady state by GTH state reduction (direct, cancellation-free)
    !   - Emission from P(state) using the thermal-discrete Planck formula:
    !     sum_J P(J) * B_lam(T_J) * Cabs * 8*pi/lam^4
    !
@@ -31,18 +35,28 @@ module stoch_qm_mod
    !            a feasible state count, so it is used for PAH grains with
    !            a <= 25 A and reverts to 'dbdis' elsewhere.
    !
+   ! The bins use the solver's own vibrational-mode enthalpy (see
+   ! T_from_U_bisect), not the model's H(T).  A grain is solved only when
+   ! the UMIN/UMAX window converges and the spectrum emits the absorbed
+   ! power; otherwise qm_solve_grain says why through `status`.
+   !
    ! Units: internally CGS (wavelengths cm, energies erg, cross sections
    ! cm^2, radiation field c*u_lambda erg/cm^3/s). The public API
    ! converts from/to our SI/um convention at the entry/exit points.
    !--------------------------------------------------------------------
-   use constants, only: wp
+   use constants, only: wp, pi, c, hc, h_planck, k_boltz, ev2erg, hc_k
+   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
    implicit none
    private
 
    ! Public API
    public :: qm_solve_grain   ! single-grain QM P(state) solver + emission
    public :: qm_nstate_default
-   public :: qm_nisrf_max     ! ISRF downsampling cap for the transition matrix
+   public :: qm_nisrf_max     ! transition-matrix wavelengths (0 = the full field grid)
+   public :: qm_status_name   ! name of a qm_solve_grain status code
+   public :: QM_SOLVED, QM_INVALID_INPUT, QM_NO_STEADY_STATE, &
+             QM_WINDOW_NOT_CONVERGED, QM_ENERGY_NOT_CONSERVED, QM_ATOM_COUNT_CAP, &
+             QM_INVALID_RATE, QM_STATUS_MAX
    public :: qm_method        ! 'dbdis' (thermal-discrete, production),
                               ! 'dbcon' (thermal-continuous / GD
                               ! nearest-neighbour collapse), or
@@ -57,32 +71,78 @@ module stoch_qm_mod
    ! `verbose` field so the library path stays silent by default.
    logical, save :: qm_verbose = .true.
 
-   ! Runtime-settable convention knobs (Draine's production settings: 500 bins, full
-   ! 2500-point ISRF grid -- no downsampling).
+   ! Runtime-settable sizes (Draine's production settings: 500 bins and the
+   ! full field grid). qm_nisrf_max = 0 uses the full heating field; N >= 2
+   ! below the field count coarsens photon absorption to N points, keeping
+   ! its tabulated absorbed power. Cooling always uses the full opacity
+   ! grid, shared with the emitted spectrum.
    integer :: qm_nstate_default = 200  ! enthalpy bins
-   integer :: qm_nisrf_max      = 200  ! max ISRF wavelengths for transition matrix
+   integer :: qm_nisrf_max      = 0    ! heating-field wavelengths
 
-   ! CGS physical constants (matching Draine's published values)
-   real(wp), parameter :: HC_CGS  = 6.62607d-27 * 2.99792d10   ! h*c (erg*cm)
-   real(wp), parameter :: H_CGS   = 6.62607d-27                ! h (erg*s)
-   real(wp), parameter :: C_CGS   = 2.99792d10                 ! c (cm/s)
-   real(wp), parameter :: KB_CGS  = 1.38065d-16                ! k_B (erg/K)
-   real(wp), parameter :: PI_CGS  = 3.141593d0
-   real(wp), parameter :: EV2ERG  = 1.60218d-12                ! eV -> erg
+   ! qm_solve_grain status codes
+   integer, parameter :: QM_SOLVED               = 0
+   integer, parameter :: QM_INVALID_INPUT        = 1
+   integer, parameter :: QM_ATOM_COUNT_CAP       = 2  ! explicit modes needed, natom > NATOM_QM_MAX
+   integer, parameter :: QM_NO_STEADY_STATE      = 3
+   integer, parameter :: QM_WINDOW_NOT_CONVERGED = 4  ! UMIN/UMAX still moving after MAX_ITER
+   integer, parameter :: QM_ENERGY_NOT_CONSERVED = 5  ! |P_em/P_abs - 1| > 5%
+
+   integer, parameter :: QM_INVALID_RATE = 6  ! negative or nonfinite physical rate
+   integer, parameter :: QM_STATUS_MAX = QM_INVALID_RATE
+
+   ! Physical constants (cgs: hc, h_planck, c, k_boltz, ev2erg, hc_k) are the
+   ! exact SI values of the constants module.
 
    ! Simpson integration tolerance
    real(wp), parameter :: EPS_SIMP = 1.0d-3
+   ! Thermal cooling integrals stop at E1 + N_KT*kT (see simpson_therm_cooling)
+   real(wp), parameter :: N_KT = 60.0_wp
 
-   ! Threshold for sparse matrix storage
-   real(wp), parameter :: SPARSE_THRESH = 1.0d-90
 
 contains
 
    !====================================================================
-   ! 1. Parabolic interpolation (3-point Lagrange)
-   !    Parabolic interpolation, following Draine's method.
+   ! Nonnegative spectral interpolation for radiative transition rates.
+   ! Each interval uses a convex combination of its nonnegative endpoint
+   ! samples. Unlike a three-point parabola, this is continuous at every
+   ! node and cannot create negative absorption or radiation between nodes.
+   ! The original Aigen Li / B. T. Draine PARAB_INTERPL
+   ! (BDraine_src/src/parab_interpl.f) is not used for rates.
    !====================================================================
-   subroutine parab_interp(x, y, n, t, z)
+   subroutine nonnegative_rf_cabs(wl_cm, nisrf, isrf_wl, isrf, cabs_arr, &
+                             crssct, radfld)
+      integer, intent(in) :: nisrf
+      real(wp), intent(in) :: wl_cm
+      real(wp), intent(in) :: isrf_wl(nisrf), isrf(nisrf), cabs_arr(nisrf)
+      real(wp), intent(out) :: crssct, radfld
+      integer :: left, right, mid
+      real(wp) :: fraction
+
+      if (wl_cm < isrf_wl(1)) then
+         crssct = cabs_arr(1)
+         radfld = 0.0_wp
+      else if (wl_cm > isrf_wl(nisrf)) then
+         crssct = cabs_arr(nisrf) * (isrf_wl(nisrf) / wl_cm)**2
+         radfld = 0.0_wp
+      else
+         left = 1
+         right = nisrf
+         do while (right - left > 1)
+            mid = (left + right) / 2
+            if (wl_cm < isrf_wl(mid)) then
+               right = mid
+            else
+               left = mid
+            end if
+         end do
+         fraction = (wl_cm - isrf_wl(left)) / (isrf_wl(right) - isrf_wl(left))
+         crssct = (1.0_wp - fraction) * cabs_arr(left) + fraction * cabs_arr(right)
+         radfld = (1.0_wp - fraction) * isrf(left) + fraction * isrf(right)
+      end if
+   end subroutine nonnegative_rf_cabs
+
+
+   subroutine parab_interpl(x, y, n, t, z)
       implicit none
       integer,  intent(in)  :: n
       real(wp), intent(in)  :: x(n), y(n), t
@@ -130,32 +190,27 @@ contains
          end do
          z = z + s * y(i)
       end do
-   end subroutine parab_interp
-
+   end subroutine parab_interpl
 
    !====================================================================
-   ! 2. Interpolate radiation field and cross sections at wavelength
-   !    Helper used by all heating/cooling integrands
+   ! 2b. Smallest spacing between neighbouring field-grid photon energies
+   !     hc/lambda_k on [ea, eb] (eb - ea when no grid interval meets it):
+   !     the step a quadrature must reach before a zero sum can be read as a
+   !     zero integrand.
    !====================================================================
-   subroutine interp_rf_cabs(wl_cm, nisrf, isrf_wl, isrf, cabs_arr, &
-                             crssct, radfld)
-      implicit none
-      integer,  intent(in)  :: nisrf
-      real(wp), intent(in)  :: wl_cm
-      real(wp), intent(in)  :: isrf_wl(nisrf), isrf(nisrf), cabs_arr(nisrf)
-      real(wp), intent(out) :: crssct, radfld
-
-      if (wl_cm >= isrf_wl(1) .and. wl_cm <= isrf_wl(nisrf)) then
-         call parab_interp(isrf_wl, cabs_arr, nisrf, wl_cm, crssct)
-         call parab_interp(isrf_wl, isrf,     nisrf, wl_cm, radfld)
-      else if (wl_cm < isrf_wl(1)) then
-         crssct = cabs_arr(1)
-         radfld = 0.0_wp
-      else
-         crssct = cabs_arr(nisrf) * (isrf_wl(nisrf) / wl_cm)**2
-         radfld = 0.0_wp
-      end if
-   end subroutine interp_rf_cabs
+   pure function photon_grid_spacing(ea, eb, nisrf, isrf_wl) result(de_min)
+      real(wp), intent(in) :: ea, eb
+      integer,  intent(in) :: nisrf
+      real(wp), intent(in) :: isrf_wl(nisrf)
+      real(wp) :: de_min, e_hi, e_lo
+      integer  :: k
+      de_min = eb - ea
+      do k = 1, nisrf - 1
+         e_hi = hc / isrf_wl(k)
+         e_lo = hc / isrf_wl(k + 1)
+         if (e_hi >= ea .and. e_lo <= eb) de_min = min(de_min, e_hi - e_lo)
+      end do
+   end function photon_grid_spacing
 
 
    !====================================================================
@@ -170,7 +225,7 @@ contains
 
       real(wp) :: e_ph, e1, e2, e3, e4, dui, duf
 
-      e_ph = HC_CGS / wl_cm
+      e_ph = hc / wl_cm
 
       ! For cooling: initial bin [UIA,UIB] is UPPER, final [UFA,UFB] is LOWER
       ! Energy released = U_initial - U_final, so photon energies span:
@@ -226,9 +281,9 @@ contains
       hf = 0.0_wp
       if (e_ph == 0.0_wp) return
 
-      wl = HC_CGS / e_ph
-      call interp_rf_cabs(wl, nisrf, isrf_wl, isrf, cabs_arr, crssct, radfld)
-      radfld_e = radfld * wl**2 / (H_CGS * C_CGS)
+      wl = hc / e_ph
+      call nonnegative_rf_cabs(wl, nisrf, isrf_wl, isrf, cabs_arr, crssct, radfld)
+      radfld_e = radfld * wl**2 / (h_planck * c)
 
       if (e1 /= e2) then
          if (e_ph < e1) then
@@ -273,9 +328,9 @@ contains
       hf = 0.0_wp
       if (e_ph == 0.0_wp) return
 
-      wl = HC_CGS / e_ph
-      call interp_rf_cabs(wl, nisrf, isrf_wl, isrf, cabs_arr, crssct, radfld)
-      cradfld_e = radfld * wl**2 / (H_CGS * C_CGS)
+      wl = hc / e_ph
+      call nonnegative_rf_cabs(wl, nisrf, isrf_wl, isrf, cabs_arr, crssct, radfld)
+      cradfld_e = radfld * wl**2 / (h_planck * c)
 
       if (e_ph < ec) then
          hf = crssct * cradfld_e * (e_ph - e1) / (ec - e1)
@@ -301,9 +356,9 @@ contains
       hf = 0.0_wp
       if (e_ph == 0.0_wp) return
 
-      wl = HC_CGS / e_ph
-      call interp_rf_cabs(wl, nisrf, isrf_wl, isrf, cabs_arr, crssct, radfld)
-      cradfld_e = radfld * wl**2 / (H_CGS * C_CGS)
+      wl = hc / e_ph
+      call nonnegative_rf_cabs(wl, nisrf, isrf_wl, isrf, cabs_arr, crssct, radfld)
+      cradfld_e = radfld * wl**2 / (h_planck * c)
       hf = (1.0_wp - e_ph / dui) * crssct * cradfld_e
    end function intrabin_heating_funct
 
@@ -329,9 +384,9 @@ contains
       cf = 0.0_wp
       if (e_ph == 0.0_wp) return
 
-      wl = HC_CGS / e_ph
-      call interp_rf_cabs(wl, nisrf, isrf_wl, isrf, cabs_arr, crssct, radfld)
-      radfld_e = radfld * wl**2 / (HC_CGS * C_CGS)
+      wl = hc / e_ph
+      call nonnegative_rf_cabs(wl, nisrf, isrf_wl, isrf, cabs_arr, crssct, radfld)
+      radfld_e = radfld * wl**2 / (hc * c)
 
       if (e1 /= e2) then
          if (e_ph < e1) then
@@ -350,15 +405,15 @@ contains
             glu_e = 0.0_wp
          end if
          cf = glu_e * (e_ph**3) * crssct * &
-              (8.0_wp * PI_CGS / (H_CGS * HC_CGS**2)) * &
-              (1.0_wp + HC_CGS**3 / (8.0_wp * PI_CGS * e_ph**3) * radfld_e)
+              (8.0_wp * pi / (h_planck * hc**2)) * &
+              (1.0_wp + hc**3 / (8.0_wp * pi * e_ph**3) * radfld_e)
       else
          if (e_ph < e1 .or. e_ph >= e4) then
             cf = 0.0_wp
          else
             cf = (e_ph**3) * crssct * &
-                 (8.0_wp * PI_CGS / (H_CGS * HC_CGS**2)) * &
-                 (1.0_wp + HC_CGS**3 / (8.0_wp * PI_CGS * e_ph**3) * radfld_e)
+                 (8.0_wp * pi / (h_planck * hc**2)) * &
+                 (1.0_wp + hc**3 / (8.0_wp * pi * e_ph**3) * radfld_e)
          end if
       end if
    end function stat_cooling_funct
@@ -380,13 +435,13 @@ contains
       cf = 0.0_wp
       if (e_ph == 0.0_wp) return
 
-      wl = HC_CGS / e_ph
-      call interp_rf_cabs(wl, nisrf, isrf_wl, isrf, cabs_arr, crssct, radfld)
-      radfld_e = radfld * wl**2 / (HC_CGS * C_CGS)
+      wl = hc / e_ph
+      call nonnegative_rf_cabs(wl, nisrf, isrf_wl, isrf, cabs_arr, crssct, radfld)
+      radfld_e = radfld * wl**2 / (hc * c)
 
-      cf = (8.0_wp * PI_CGS / (H_CGS * HC_CGS**2)) * &
+      cf = (8.0_wp * pi / (h_planck * hc**2)) * &
            (1.0_wp - e_ph / dui) * (e_ph**3) * crssct * &
-           (1.0_wp + HC_CGS**3 / (8.0_wp * PI_CGS * e_ph**3) * radfld_e)
+           (1.0_wp + hc**3 / (8.0_wp * pi * e_ph**3) * radfld_e)
    end function intrabin_stat_cooling_funct
 
 
@@ -415,8 +470,8 @@ contains
          rate_heating = 0.0_wp; return
       end if
 
-      elow_cut = HC_CGS / isrf_wl(nisrf)
-      eupp_cut = HC_CGS / isrf_wl(1)
+      elow_cut = hc / isrf_wl(nisrf)
+      eupp_cut = hc / isrf_wl(1)
 
       e1 = max(min(e1, eupp_cut), elow_cut)
       e2 = max(min(e2, eupp_cut), elow_cut)
@@ -443,7 +498,12 @@ contains
          t2 = (t1 + hstep * p) / 2.0_wp
          s2 = (4.0_wp * t2 - t1) / 3.0_wp
          if (abs(s1) > 0.0_wp .and. abs((s2 - s1) / s1) < EPS_SIMP) exit
-         if (abs(s1) == 0.0_wp .and. abs(s2) == 0.0_wp) exit
+         if (abs(s1) == 0.0_wp .and. abs(s2) == 0.0_wp) then
+            ! A zero sum is accepted only once the samples resolve the
+            ! field grid on this interval; a coarser sampling can step over
+            ! a band of nonzero field (e.g. a field confined to 4.78-13.6 eV).
+            if (hstep <= photon_grid_spacing(e1, e4, nisrf, isrf_wl)) exit
+         end if
          t1 = t2; n = n * 2; hstep = hstep / 2.0_wp; s1 = s2
          if (n > 2**16) exit  ! safety limit
       end do
@@ -463,8 +523,8 @@ contains
       real(wp) :: elow_cut, eupp_cut, emin, hstep, t1, t2, s1, s2, p, xval
       integer  :: n, k
 
-      elow_cut = HC_CGS / isrf_wl(nisrf)
-      eupp_cut = HC_CGS / isrf_wl(1)
+      elow_cut = hc / isrf_wl(nisrf)
+      eupp_cut = hc / isrf_wl(1)
 
       emin = e1_in
       if (emin < elow_cut) emin = elow_cut
@@ -487,7 +547,12 @@ contains
          t2 = (t1 + hstep * p) / 2.0_wp
          s2 = (4.0_wp * t2 - t1) / 3.0_wp
          if (abs(s1) > 0.0_wp .and. abs((s2 - s1) / s1) < EPS_SIMP) exit
-         if (abs(s1) == 0.0_wp .and. abs(s2) == 0.0_wp) exit
+         if (abs(s1) == 0.0_wp .and. abs(s2) == 0.0_wp) then
+            ! A zero sum is accepted only once the samples resolve the
+            ! field grid on this interval; a coarser sampling can step over
+            ! a band of nonzero field (e.g. a field confined to 4.78-13.6 eV).
+            if (hstep <= photon_grid_spacing(emin, eupp_cut, nisrf, isrf_wl)) exit
+         end if
          t1 = t2; n = n * 2; hstep = hstep / 2.0_wp; s1 = s2
          if (n > 2**16) exit
       end do
@@ -510,8 +575,8 @@ contains
       rate_heating = 0.0_wp
       if (dui <= 0.0_wp) return
 
-      elow_cut = HC_CGS / isrf_wl(nisrf)
-      eupp_cut = HC_CGS / isrf_wl(1)
+      elow_cut = hc / isrf_wl(nisrf)
+      eupp_cut = hc / isrf_wl(1)
       if (elow_cut > dui) return
 
       ea = elow_cut
@@ -533,7 +598,12 @@ contains
          t2 = (t1 + hstep * p) / 2.0_wp
          s2 = (4.0_wp * t2 - t1) / 3.0_wp
          if (abs(s1) > 0.0_wp .and. abs((s2 - s1) / s1) < EPS_SIMP) exit
-         if (abs(s1) == 0.0_wp .and. abs(s2) == 0.0_wp) exit
+         if (abs(s1) == 0.0_wp .and. abs(s2) == 0.0_wp) then
+            ! A zero sum is accepted only once the samples resolve the
+            ! field grid on this interval; a coarser sampling can step over
+            ! a band of nonzero field (e.g. a field confined to 4.78-13.6 eV).
+            if (hstep <= photon_grid_spacing(ea, eb, nisrf, isrf_wl)) exit
+         end if
          t1 = t2; n = n * 2; hstep = hstep / 2.0_wp; s1 = s2
          if (n > 2**16) exit
       end do
@@ -555,8 +625,8 @@ contains
       real(wp) :: elow_cut, eupp_cut, hstep, t1, t2, s1, s2, p, xval
       integer  :: n, k
 
-      elow_cut = HC_CGS / isrf_wl(nisrf)
-      eupp_cut = HC_CGS / isrf_wl(1)
+      elow_cut = hc / isrf_wl(nisrf)
+      eupp_cut = hc / isrf_wl(1)
 
       e1_io = max(min(e1_io, eupp_cut), elow_cut)
       e2_io = max(min(e2_io, eupp_cut), elow_cut)
@@ -585,7 +655,12 @@ contains
          t2 = (t1 + hstep * p) / 2.0_wp
          s2 = (4.0_wp * t2 - t1) / 3.0_wp
          if (abs(s1) > 0.0_wp .and. abs((s2 - s1) / s1) < EPS_SIMP) exit
-         if (abs(s1) == 0.0_wp .and. abs(s2) == 0.0_wp) exit
+         if (abs(s1) == 0.0_wp .and. abs(s2) == 0.0_wp) then
+            ! A zero sum is accepted only once the samples resolve the
+            ! field grid on this interval; a coarser sampling can step over
+            ! a band of nonzero field (e.g. a field confined to 4.78-13.6 eV).
+            if (hstep <= photon_grid_spacing(e1_io, e4_io, nisrf, isrf_wl)) exit
+         end if
          t1 = t2; n = n * 2; hstep = hstep / 2.0_wp; s1 = s2
          if (n > 2**16) exit
       end do
@@ -607,8 +682,8 @@ contains
       real(wp) :: elow_cut, eupp_cut, hstep, t1, t2, s1, s2, p, xval
       integer  :: n, k
 
-      elow_cut = HC_CGS / isrf_wl(nisrf)
-      eupp_cut = HC_CGS / isrf_wl(1)
+      elow_cut = hc / isrf_wl(nisrf)
+      eupp_cut = hc / isrf_wl(1)
 
       e1_io = max(min(e1_io, eupp_cut), elow_cut)
       e2_io = max(min(e2_io, eupp_cut), elow_cut)
@@ -632,7 +707,12 @@ contains
          t2 = (t1 + hstep * p) / 2.0_wp
          s2 = (4.0_wp * t2 - t1) / 3.0_wp
          if (abs(s1) > 0.0_wp .and. abs((s2 - s1) / s1) < EPS_SIMP) exit
-         if (abs(s1) == 0.0_wp .and. abs(s2) == 0.0_wp) exit
+         if (abs(s1) == 0.0_wp .and. abs(s2) == 0.0_wp) then
+            ! A zero sum is accepted only once the samples resolve the
+            ! field grid on this interval; a coarser sampling can step over
+            ! a band of nonzero field (e.g. a field confined to 4.78-13.6 eV).
+            if (hstep <= photon_grid_spacing(e1_io, e2_io, nisrf, isrf_wl)) exit
+         end if
          t1 = t2; n = n * 2; hstep = hstep / 2.0_wp; s1 = s2
          if (n > 2**16) exit
       end do
@@ -647,7 +727,7 @@ contains
    !
    !     The photon-emission integrand divided by the Planck thermal
    !     factor (exp(E/kT) - 1). This is the 'dbdis' (thermal-discrete)
-   !     method of DL01 Section 8.2: the downward transition rate is set
+   !     method of DL01 Section 6.1: the downward transition rate is set
    !     by the thermal Planck emission at temperature T_i of the upper bin,
    !     from the Planck function at the upper bin temperature.
    !
@@ -671,12 +751,12 @@ contains
       if (e_ph == 0.0_wp) return
       if (t_upper <= 0.0_wp) return
 
-      boltz_arg = e_ph / (KB_CGS * t_upper)
+      boltz_arg = e_ph / (k_boltz * t_upper)
       if (boltz_arg > 500.0_wp) return   ! exp(-500) ~ 0
 
-      wl = HC_CGS / e_ph
-      call interp_rf_cabs(wl, nisrf, isrf_wl, isrf, cabs_arr, crssct, radfld)
-      radfld_e = radfld * wl**2 / (HC_CGS * C_CGS)
+      wl = hc / e_ph
+      call nonnegative_rf_cabs(wl, nisrf, isrf_wl, isrf, cabs_arr, crssct, radfld)
+      radfld_e = radfld * wl**2 / (hc * c)
 
       ! Evaluate G_lu(E) -- overlap function for two bins
       ! Note: for therm_cooling, G_lu convention uses DUF in denominator
@@ -698,16 +778,16 @@ contains
             glu_e = 0.0_wp
          end if
          cf = glu_e * (e_ph**3) * crssct * &
-              (8.0_wp * PI_CGS / (H_CGS * HC_CGS**2)) * &
-              (1.0_wp + HC_CGS**3 / (8.0_wp * PI_CGS * e_ph**3) * radfld_e) / &
+              (8.0_wp * pi / (h_planck * hc**2)) * &
+              (1.0_wp + hc**3 / (8.0_wp * pi * e_ph**3) * radfld_e) / &
               (exp(boltz_arg) - 1.0_wp)
       else
          if (e_ph < e1 .or. e_ph >= e4) then
             cf = 0.0_wp
          else
             cf = (e_ph**3) * crssct * &
-                 (8.0_wp * PI_CGS / (H_CGS * HC_CGS**2)) * &
-                 (1.0_wp + HC_CGS**3 / (8.0_wp * PI_CGS * e_ph**3) * radfld_e) / &
+                 (8.0_wp * pi / (h_planck * hc**2)) * &
+                 (1.0_wp + hc**3 / (8.0_wp * pi * e_ph**3) * radfld_e) / &
                  (exp(boltz_arg) - 1.0_wp)
          end if
       end if
@@ -733,16 +813,16 @@ contains
       if (e_ph == 0.0_wp) return
       if (t_upper <= 0.0_wp) return
 
-      boltz_arg = e_ph / (KB_CGS * t_upper)
+      boltz_arg = e_ph / (k_boltz * t_upper)
       if (boltz_arg > 500.0_wp) return
 
-      wl = HC_CGS / e_ph
-      call interp_rf_cabs(wl, nisrf, isrf_wl, isrf, cabs_arr, crssct, radfld)
-      radfld_e = radfld * wl**2 / (HC_CGS * C_CGS)
+      wl = hc / e_ph
+      call nonnegative_rf_cabs(wl, nisrf, isrf_wl, isrf, cabs_arr, crssct, radfld)
+      radfld_e = radfld * wl**2 / (hc * c)
 
-      cf = (8.0_wp * PI_CGS / (H_CGS * HC_CGS**2)) * &
+      cf = (8.0_wp * pi / (h_planck * hc**2)) * &
            (1.0_wp - e_ph / dui) * (e_ph**3) * crssct * &
-           (1.0_wp + HC_CGS**3 / (8.0_wp * PI_CGS * e_ph**3) * radfld_e) / &
+           (1.0_wp + hc**3 / (8.0_wp * pi * e_ph**3) * radfld_e) / &
            (exp(boltz_arg) - 1.0_wp)
    end function intrabin_therm_cooling_funct
 
@@ -761,11 +841,11 @@ contains
       real(wp), intent(in)    :: isrf_wl(nisrf), isrf(nisrf), cabs_arr(nisrf)
       real(wp), intent(out)   :: rate_cooling
 
-      real(wp) :: hstep, t1, t2, s1, s2, p, xval
+      real(wp) :: hstep, t1, t2, s1, s2, p, xval, ekt, eup
       integer  :: n, k
 
       ! Short-circuit if E1 > 20*kT (thermal emission negligible)
-      if (e1_io > 20.0_wp * KB_CGS * t_upper) then
+      if (e1_io > 20.0_wp * k_boltz * t_upper) then
          rate_cooling = 0.0_wp; return
       end if
 
@@ -773,13 +853,28 @@ contains
          rate_cooling = 0.0_wp; return
       end if
 
-      n = 1
-      hstep = e4_io - e1_io
-      t1 = 0.5_wp * hstep * ( &
-           therm_cooling_funct(e1_io, t_upper, nisrf, isrf_wl, isrf, cabs_arr, &
-                               e1_io, e2_io, e3_io, e4_io, dui, duf) + &
-           therm_cooling_funct(e4_io, t_upper, nisrf, isrf_wl, isrf, cabs_arr, &
-                               e1_io, e2_io, e3_io, e4_io, dui, duf))
+      ! The integrand carries 1/(exp(E/kT) - 1) and peaks a few kT above
+      ! E1, while [E1, E4] can be hundreds of kT wide (a bin wider than the
+      ! photons that cool it).  The range is therefore cut at E1 + N_KT*kT
+      ! and the first grid has a step no wider than kT, so the peak is
+      ! always sampled.  Truncation error: beyond E1 + N_KT*kT the integrand
+      ! falls as x**m exp(-x) (x = E/kT), with m = 3 from E^3, plus 1 from
+      ! the linear overlap ramp, plus the power with which Cabs rises toward
+      ! short wavelengths (2 in the far infrared).  For m <= 7 the omitted
+      ! fraction, Gamma(m+1, x1+N_KT)/Gamma(m+1, x1), is below 1e-17 at
+      ! N_KT = 60 for every x1 = E1/kT in [0, 20] (the short-circuit above).
+      ekt  = k_boltz * t_upper
+      eup  = min(e4_io, e1_io + N_KT * ekt)
+      n    = max(1, 2**ceiling(log(max((eup - e1_io) / ekt, 1.0_wp)) / log(2.0_wp)))
+      hstep = (eup - e1_io) / real(n, wp)
+      t1 = 0.0_wp
+      do k = 0, n
+         xval = e1_io + real(k, wp) * hstep
+         t1 = t1 + merge(0.5_wp, 1.0_wp, k == 0 .or. k == n) * &
+              therm_cooling_funct(xval, t_upper, nisrf, isrf_wl, isrf, cabs_arr, &
+                                  e1_io, e2_io, e3_io, e4_io, dui, duf)
+      end do
+      t1 = t1 * hstep
       s1 = t1
       do
          p = 0.0_wp
@@ -790,6 +885,8 @@ contains
          end do
          t2 = (t1 + hstep * p) / 2.0_wp
          s2 = (4.0_wp * t2 - t1) / 3.0_wp
+         ! A zero sum on a grid finer than kT is a zero integrand (e.g. no
+         ! absorption cross section at these photon energies).
          if (abs(s1) > 0.0_wp .and. abs((s2 - s1) / s1) < EPS_SIMP) exit
          if (abs(s1) == 0.0_wp .and. abs(s2) == 0.0_wp) exit
          t1 = t2; n = n * 2; hstep = hstep / 2.0_wp; s1 = s2
@@ -813,11 +910,11 @@ contains
       real(wp), intent(in)    :: isrf_wl(nisrf), isrf(nisrf), cabs_arr(nisrf)
       real(wp), intent(out)   :: rate_cooling
 
-      real(wp) :: hstep, t1, t2, s1, s2, p, xval
+      real(wp) :: hstep, t1, t2, s1, s2, p, xval, ekt, eup
       integer  :: n, k
 
       ! Short-circuit if E1 > 20*kT
-      if (e1_io > 20.0_wp * KB_CGS * t_upper) then
+      if (e1_io > 20.0_wp * k_boltz * t_upper) then
          rate_cooling = 0.0_wp; return
       end if
 
@@ -825,11 +922,20 @@ contains
          rate_cooling = 0.0_wp; return
       end if
 
-      n = 1
-      hstep = e2_io - e1_io
-      t1 = 0.5_wp * hstep * ( &
-           intrabin_therm_cooling_funct(e1_io, dui, t_upper, nisrf, isrf_wl, isrf, cabs_arr) + &
-           intrabin_therm_cooling_funct(e2_io, dui, t_upper, nisrf, isrf_wl, isrf, cabs_arr))
+      ! Same peak-resolving range and first step as simpson_therm_cooling
+      ! (cut at E1 + N_KT*kT, first step <= kT); the extra factor
+      ! (1 - E/DUI) <= 1 only lowers the omitted tail.
+      ekt  = k_boltz * t_upper
+      eup  = min(e2_io, e1_io + N_KT * ekt)
+      n    = max(1, 2**ceiling(log(max((eup - e1_io) / ekt, 1.0_wp)) / log(2.0_wp)))
+      hstep = (eup - e1_io) / real(n, wp)
+      t1 = 0.0_wp
+      do k = 0, n
+         xval = e1_io + real(k, wp) * hstep
+         t1 = t1 + merge(0.5_wp, 1.0_wp, k == 0 .or. k == n) * &
+              intrabin_therm_cooling_funct(xval, dui, t_upper, nisrf, isrf_wl, isrf, cabs_arr)
+      end do
+      t1 = t1 * hstep
       s1 = t1
       do
          p = 0.0_wp
@@ -840,6 +946,7 @@ contains
          t2 = (t1 + hstep * p) / 2.0_wp
          s2 = (4.0_wp * t2 - t1) / 3.0_wp
          if (abs(s1) > 0.0_wp .and. abs((s2 - s1) / s1) < EPS_SIMP) exit
+         ! A zero sum on a grid finer than kT is a zero integrand.
          if (abs(s1) == 0.0_wp .and. abs(s2) == 0.0_wp) exit
          t1 = t2; n = n * 2; hstep = hstep / 2.0_wp; s1 = s2
          if (n > 2**16) exit
@@ -984,11 +1091,11 @@ contains
    !====================================================================
    subroutine calc_therm_cooling_afi(ibin, ti, ui, uia, uib, &
                                      fbin, uf, ufa, ufb, &
-                                     delta_u2, nstate, &
+                                     delta_u2, &
                                      nisrf, isrf_wl, isrf, cabs_arr, &
                                      afi_cooling)
       implicit none
-      integer,  intent(in)  :: ibin, fbin, nstate, nisrf
+      integer,  intent(in)  :: ibin, fbin, nisrf
       real(wp), intent(in)  :: ti, ui, uia, uib
       real(wp), intent(in)  :: uf, ufa, ufb, delta_u2
       real(wp), intent(in)  :: isrf_wl(nisrf), isrf(nisrf), cabs_arr(nisrf)
@@ -1061,26 +1168,31 @@ contains
    !====================================================================
    subroutine build_transition_matrix(nstate, u, ua, ub, lngu, t_bins, &
                                       nisrf, isrf_wl, isrf, cabs_arr, &
-                                      method, amatrix, pstate_gd)
+                                      method, ncool, cooling_wl, cooling_field, cooling_cabs, &
+                                      amatrix, negative_count, rates_ok)
       implicit none
-      integer,  intent(in)  :: nstate, nisrf
+      integer,  intent(in)  :: nstate, nisrf, ncool
+      real(wp), intent(in) :: cooling_wl(ncool), cooling_field(ncool), cooling_cabs(ncool)
+      integer, intent(out) :: negative_count
+      logical, intent(out) :: rates_ok
       real(wp), intent(in)  :: u(nstate), ua(nstate), ub(nstate), lngu(nstate)
       real(wp), intent(in)  :: t_bins(nstate)
       real(wp), intent(in)  :: isrf_wl(nisrf), isrf(nisrf), cabs_arr(nisrf)
       character(len=*), intent(in) :: method   ! 'dbdis', 'dbcon' or 'stati'
                                                ! (thread-private)
       real(wp), intent(out) :: amatrix(nstate, nstate)
-      real(wp), intent(out) :: pstate_gd(nstate) ! Guhathakurta-Draine preconditioner
 
       integer  :: ibin, fbin
       real(wp) :: afi_val, adiag, elow_lim, eupp_lim
       real(wp) :: delta_u2
 
       amatrix = 0.0_wp
+      negative_count = 0
+      rates_ok = .true.
 
       ! Pre-compute photon energy limits from the ISRF wavelength range
-      elow_lim = HC_CGS / isrf_wl(nisrf)   ! lowest photon energy
-      eupp_lim = HC_CGS / isrf_wl(1)       ! highest photon energy
+      elow_lim = hc / isrf_wl(nisrf)   ! lowest photon energy
+      eupp_lim = hc / isrf_wl(1)       ! highest photon energy
 
       ! ---- UPWARD (heating) transitions: ibin -> fbin, fbin > ibin ----
       ! These are identical for all methods (dbdis/dbcon/stati).
@@ -1101,6 +1213,7 @@ contains
                                  fbin, u(fbin), ua(fbin), ub(fbin), &
                                  nstate, nisrf, isrf_wl, isrf, cabs_arr, &
                                  afi_val)
+            if (afi_val < 0.0_wp) negative_count = negative_count + 1
             amatrix(fbin, ibin) = afi_val
          end do
       end do
@@ -1129,23 +1242,29 @@ contains
                                           lngu(ibin), &
                                           fbin, u(fbin), ua(fbin), ub(fbin), &
                                           lngu(fbin), &
-                                          nisrf, isrf_wl, isrf, cabs_arr, &
+                                          ncool, cooling_wl, cooling_field, cooling_cabs, &
                                           afi_val)
             else
                ! Thermal-discrete (dbdis): Planck-suppressed beyond ~20kT,
                ! so distant downward transitions are negligible and skipped.
-               if (ua(ibin) - ub(fbin) > 20.0_wp * KB_CGS * t_bins(ibin)) exit
+               if (ua(ibin) - ub(fbin) > 20.0_wp * k_boltz * t_bins(ibin)) exit
 
                call calc_therm_cooling_afi(ibin, t_bins(ibin), &
                                            u(ibin), ua(ibin), ub(ibin), &
                                            fbin, u(fbin), ua(fbin), ub(fbin), &
-                                           delta_u2, nstate, &
-                                           nisrf, isrf_wl, isrf, cabs_arr, &
+                                           delta_u2, &
+                                           ncool, cooling_wl, cooling_field, cooling_cabs, &
                                            afi_val)
             end if
+            if (afi_val < 0.0_wp) negative_count = negative_count + 1
             amatrix(fbin, ibin) = afi_val
          end do
       end do
+
+      ! Inspect every physical rate before continuous-cooling collapse can
+      ! hide a negative component. Preserve the count and refuse the solve.
+      rates_ok = negative_count == 0 .and. all(ieee_is_finite(amatrix))
+      if (.not. rates_ok) return
 
       ! ---- dbcon collapse: lump all downward rates into nearest neighbour ----
       ! Following Draine's method. For each upper
@@ -1173,206 +1292,91 @@ contains
          end do
          amatrix(ibin, ibin) = -adiag
       end do
-
-      pstate_gd = 0.0_wp
    end subroutine build_transition_matrix
 
 
    !====================================================================
-   ! 13. Sparse matrix routines + BiCG solver
-   !     Biconjugate-gradient sparse solver.
+   ! 13. Steady state of the transition matrix by GTH state reduction.
+   !
+   !     AMATRIX(F,I) (F /= I) is the rate of the transition I -> F; the
+   !     steady state solves sum_I A(F,I) P(I) = 0 with sum P = 1.  The
+   !     Grassmann-Taksar-Heyman elimination (Grassmann, Taksar & Heyman
+   !     1985, Operations Research 33, 1107; bibliographic details not
+   !     checked against the published article) removes the states from
+   !     the top down, redistributing the flow through each removed state
+   !     over its exits.  It uses only the off-diagonal rates and adds
+   !     nonnegative numbers, so no cancellation occurs however widely the
+   !     rates differ (they span ~16 decades in a hard field); Gaussian
+   !     elimination on A, or an iterative solver, loses that accuracy.
+   !     Cost: n^3/3 multiply-adds and one n x n work array.
+   !
+   !     Returns ok = .false. when a state that is entered has no exit to
+   !     the states below it (no steady state exists on this bin set).
    !====================================================================
-
-   ! Convert dense matrix to sparse row-indexed storage. ok=.false. signals a
-   ! storage overflow (more off-diagonal entries than nmax); the caller then
-   ! treats the grain as unsolved and falls back to the GD solver.
-   subroutine dense_to_sparse(a, n, thresh, nmax, sa, ija, ok)
+   subroutine stationary_distribution_gth(n, amatrix, p, ok)
       implicit none
-      integer,  intent(in)  :: n, nmax
-      real(wp), intent(in)  :: a(n, n), thresh
-      real(wp), intent(out) :: sa(nmax)
-      integer,  intent(out) :: ija(nmax)
+      integer,  intent(in)  :: n
+      real(wp), intent(in)  :: amatrix(n, n)
+      real(wp), intent(out) :: p(n)
       logical,  intent(out) :: ok
-      integer :: i, j, k
+
+      real(wp), allocatable :: r(:,:)     ! r(i,j) = rate i -> j
+      real(wp) :: s
+      real(wp), parameter :: BIG = 1.0e150_wp
+      integer  :: i, j, k
 
       ok = .true.
-      ! Diagonal
+      allocate(r(n, n))
       do j = 1, n
-         sa(j) = a(j, j)
-      end do
-      ija(1) = n + 2
-      k = n + 1
-      do i = 1, n
-         do j = 1, n
-            if (abs(a(i, j)) >= thresh .and. i /= j) then
-               k = k + 1
-               if (k > nmax) then
-                  if (qm_verbose) &
-                     write(*,'(a,i0,a,i0)') 'stoch_qm: sparse overflow k=', k, ' nmax=', nmax
+         do i = 1, n
+            if (i == j) then
+               r(i, j) = 0.0_wp
+            else
+               ! A negative physical rate is not assumed to be round-off.
+               if (.not. ieee_is_finite(amatrix(j, i)) .or. amatrix(j, i) < 0.0_wp) then
                   ok = .false.
+                  p = 0.0_wp
+                  deallocate(r)
                   return
                end if
-               sa(k) = a(i, j)
-               ija(k) = j
+               r(i, j) = amatrix(j, i)
             end if
          end do
-         ija(i + 1) = k + 1
-      end do
-   end subroutine dense_to_sparse
-
-
-   ! Sparse matrix * vector: b = A * x
-   subroutine sp_matvec(nmax, sa, ija, x, b, n)
-      implicit none
-      integer,  intent(in)  :: nmax, n
-      real(wp), intent(in)  :: sa(nmax), x(n)
-      integer,  intent(in)  :: ija(nmax)
-      real(wp), intent(out) :: b(n)
-      integer :: i, k
-
-      do i = 1, n
-         b(i) = sa(i) * x(i)
-         do k = ija(i), ija(i+1) - 1
-            b(i) = b(i) + sa(k) * x(ija(k))
-         end do
-      end do
-   end subroutine sp_matvec
-
-
-   ! Sparse transpose matrix * vector: b = A^T * x
-   subroutine sp_matvec_t(nmax, sa, ija, x, b, n)
-      implicit none
-      integer,  intent(in)  :: nmax, n
-      real(wp), intent(in)  :: sa(nmax), x(n)
-      integer,  intent(in)  :: ija(nmax)
-      real(wp), intent(out) :: b(n)
-      integer :: i, j, k
-
-      do i = 1, n
-         b(i) = sa(i) * x(i)
-      end do
-      do i = 1, n
-         do k = ija(i), ija(i+1) - 1
-            j = ija(k)
-            b(j) = b(j) + sa(k) * x(i)
-         end do
-      end do
-   end subroutine sp_matvec_t
-
-
-   ! Diagonal preconditioner solve: x = b / diag(A)
-   ! Guarded against zero diagonal elements.
-   subroutine sp_diag_solve(nmax, sa, n, b, x)
-      implicit none
-      integer,  intent(in)  :: nmax, n
-      real(wp), intent(in)  :: sa(nmax), b(n)
-      real(wp), intent(out) :: x(n)
-      integer :: i
-      do i = 1, n
-         if (abs(sa(i)) > 0.0_wp) then
-            x(i) = b(i) / sa(i)
-         else
-            x(i) = 0.0_wp
-         end if
-      end do
-   end subroutine sp_diag_solve
-
-
-   ! L2 norm
-   function vec_norm(n, sx) result(snrm)
-      implicit none
-      integer,  intent(in) :: n
-      real(wp), intent(in) :: sx(n)
-      real(wp) :: snrm
-      snrm = sqrt(sum(sx**2))
-   end function vec_norm
-
-
-   ! BiCG solver for sparse system A*x = b
-   ! LINBCG: the Numerical Recipes biconjugate-gradient solver
-   subroutine linbcg(nmax, sa, ija, n, b, x, tol_in, itmax, iter_out, err_out)
-      implicit none
-      integer,  intent(in)    :: nmax, n, itmax
-      real(wp), intent(in)    :: sa(nmax), b(n), tol_in
-      integer,  intent(in)    :: ija(nmax)
-      real(wp), intent(inout) :: x(n)
-      integer,  intent(out)   :: iter_out
-      real(wp), intent(out)   :: err_out
-
-      real(wp), allocatable :: p(:), pp(:), r(:), rr(:), z(:), zz(:)
-      real(wp) :: ak, akden, bk, bkden, bknum, bnrm, &
-                  zm1nrm, znrm
-      real(wp), parameter :: EPS_BCG = 1.0d-14
-      integer :: j, iter
-
-      allocate(p(n), pp(n), r(n), rr(n), z(n), zz(n))
-
-      iter_out = 0
-
-      ! r = b - A*x
-      call sp_matvec(nmax, sa, ija, x, r, n)
-      do j = 1, n
-         r(j) = b(j) - r(j)
-         rr(j) = r(j)
+         r(j, j) = 0.0_wp
       end do
 
-      znrm = 1.0_wp
-      ! ITOL=1: use ||b|| as normalization
-      bnrm = vec_norm(n, b)
-      if (bnrm == 0.0_wp) bnrm = 1.0_wp
-
-      call sp_diag_solve(nmax, sa, n, r, z)
-
-      bkden = 1.0_wp
-      do iter = 1, itmax
-         iter_out = iter
-         zm1nrm = znrm
-         call sp_diag_solve(nmax, sa, n, rr, zz)
-         bknum = 0.0_wp
-         do j = 1, n
-            bknum = bknum + z(j) * rr(j)
-         end do
-         if (iter == 1) then
-            do j = 1, n
-               p(j)  = z(j)
-               pp(j) = zz(j)
-            end do
-         else
-            if (abs(bkden) > 0.0_wp) then
-               bk = bknum / bkden
-            else
-               bk = 0.0_wp
+      do k = n, 2, -1
+         s = sum(r(k, 1:k-1))
+         if (s <= 0.0_wp) then
+            if (any(r(1:k-1, k) > 0.0_wp)) then
+               ok = .false.
+               p = 0.0_wp
+               deallocate(r)
+               return
             end if
-            do j = 1, n
-               p(j)  = bk * p(j)  + z(j)
-               pp(j) = bk * pp(j) + zz(j)
+            cycle            ! never entered: P(k) = 0
+         end if
+         r(1:k-1, k) = r(1:k-1, k) / s
+         do j = 1, k - 1
+            if (r(k, j) == 0.0_wp) cycle
+            do i = 1, k - 1
+               r(i, j) = r(i, j) + r(i, k) * r(k, j)
             end do
-         end if
-         bkden = bknum
-         call sp_matvec(nmax, sa, ija, p, z, n)
-         akden = 0.0_wp
-         do j = 1, n
-            akden = akden + z(j) * pp(j)
          end do
-         if (abs(akden) > 0.0_wp) then
-            ak = bknum / akden
-         else
-            ak = 0.0_wp
-         end if
-         call sp_matvec_t(nmax, sa, ija, pp, zz, n)
-         do j = 1, n
-            x(j)  = x(j)  + ak * p(j)
-            r(j)  = r(j)  - ak * z(j)
-            rr(j) = rr(j) - ak * zz(j)
-         end do
-         call sp_diag_solve(nmax, sa, n, r, z)
-
-         err_out = vec_norm(n, r) / bnrm
-         if (err_out <= tol_in) exit
       end do
 
-      deallocate(p, pp, r, rr, z, zz)
-   end subroutine linbcg
+      ! Back substitution.  P can span more than the double-precision range
+      ! across the bins (a window far below the grain's typical enthalpy),
+      ! so the running values are rescaled whenever one exceeds BIG; the
+      ! states it pushes below the underflow limit carry no probability.
+      p(1) = 1.0_wp
+      do k = 2, n
+         p(k) = sum(p(1:k-1) * r(1:k-1, k))
+         if (p(k) > BIG) p(1:k) = p(1:k) / p(k)
+      end do
+      p = p / sum(p)
+      deallocate(r)
+   end subroutine stationary_distribution_gth
 
 
    !====================================================================
@@ -1476,9 +1480,9 @@ contains
       real(wp) :: beta, djoff, em2d, em3d
       real(wp), parameter :: TD2D = 500.0_wp, TD3D = 1500.0_wp
 
-      ! Convert Debye temperatures to cm^-1 (T / (hc/k) = T / 1.4388 cm^-1)
-      em2d = TD2D / 1.4388_wp
-      em3d = TD3D / 1.4388_wp
+      ! Convert Debye temperatures to cm^-1 (T / (hc/k), hc/k in cm K)
+      em2d = TD2D / hc_k
+      em3d = TD3D / hc_k
 
       nm_2d = 2 * (natom - 2)       ! 2/3 of modes
       nm_3d = natom - 2             ! 1/3 of modes
@@ -1701,7 +1705,7 @@ contains
       real(wp) :: emax_cm1, fac, deltae, e_mid, temp, de2
       integer  :: jemax, jm, dje, je, j, ntotal, jebs
 
-      emax_cm1 = emax_erg / HC_CGS
+      emax_cm1 = emax_erg / hc
 
       jemax = nint(emax_cm1 / de)
       if (jemax < 1) jemax = 1
@@ -1745,7 +1749,7 @@ contains
       end do
 
       ! Cumulative sum and logarithms over the counted part
-      ebs_out = jemax * de * HC_CGS
+      ebs_out = jemax * de * hc
 
       gsum_tmp(0) = gcount(0)
       do je = 1, jemax
@@ -1799,16 +1803,16 @@ contains
             deltae = energy(je) - energy(je - 1)
             ! Exact vibrational mode sum, not the Debye model, so that the
             ! temperature matches the spectrum the count was made from.
-            temp = T_from_U_modes(e_mid * HC_CGS, nmodes, emodes)
+            temp = T_from_U_modes(e_mid * hc, nmodes, emodes)
             if (temp <= 0.0_wp) temp = 1.0_wp
             ! d ln g = dE/kT + d ln(dE), with dE in cm^-1 and T in K, so the
-            ! coefficient is hc/k = 1.43877 cm K.  Draine's dens_states.f
+            ! coefficient is hc/k = 1.43878 cm K.  Draine's dens_states.f
             ! carries 1.48377 here (a digit transposition; every other use of
             ! hc/k in his source is 1.43877).  This branch is never reached
             ! for the grains the exact-statistical path runs on, so the
             ! correction does not change any output of the released solver.
             lng_ext(je) = lng_ext(je - 1) &
-                          + 1.43877_wp * deltae / temp &
+                          + hc_k * deltae / temp &
                           + log(deltae / (energy(je - 1) - energy(je - 2)))
             if ((lng_ext(je) - lngsum(je - 1)) < 100.0_wp) then
                lngsum(je) = lngsum(je - 1) + &
@@ -1846,7 +1850,7 @@ contains
       end if
 
       ! Convert erg -> cm^-1:  1 cm^-1 = hc = 1.98645e-16 erg
-      U_cm1 = U_target / HC_CGS
+      U_cm1 = U_target / hc
 
       ! Bracket: E(T) is monotonically increasing
       T_lo = 0.5_wp
@@ -1875,7 +1879,7 @@ contains
    !====================================================================
    ! 14f2. THERMAL_ENERGY_MODES -- E(T) = sum_j E_j / (exp(E_j/kT) - 1)
    !       over the explicit harmonic mode spectrum.  Energies in cm^-1;
-   !       hc/k = 1.43877 cm K converts a mode energy in cm^-1 to kT.
+   !       hc/k = 1.43878 cm K converts a mode energy in cm^-1 to kT.
    !====================================================================
    function thermal_energy_modes(T, nmodes, emodes) result(Etot)
       implicit none
@@ -1884,7 +1888,7 @@ contains
       real(wp), intent(in) :: emodes(nmodes)
       real(wp) :: Etot
 
-      real(wp), parameter :: hc_over_k = 1.43877_wp   ! cm K
+      real(wp), parameter :: hc_over_k = hc_k   ! cm K
       real(wp) :: x
       integer  :: j
 
@@ -1903,13 +1907,17 @@ contains
    ! 14g. T_FROM_U_BISECT -- invert U(T) -> T for enthalpy bin labeling.
    !      Uses our Debye enthalpy_DL01 via bisection.
    !      U_target is in erg; returned T is in K.
+   ! The QM bin temperatures come from the QM solver's own enthalpy
+   ! (vibrational-mode counting, enthalpy_DL01), not from the model's
+   ! continuous H(T) used by the other solvers. The resulting difference from
+   ! the heuristic/draine solvers (e.g. astrodust S2) is intentional and is NOT
+   ! a solver defect. Do not change this enthalpy to the model H(T).
    !====================================================================
-   function T_from_U_bisect(U_target, grain_type, natom, a_cm) result(T)
+   function T_from_U_bisect(U_target, grain_type, a_cm) result(T)
       use enthalpy, only: enthalpy_DL01
       implicit none
       real(wp),         intent(in) :: U_target, a_cm
       character(len=*), intent(in) :: grain_type
-      integer,          intent(in) :: natom
       real(wp) :: T
 
       real(wp) :: T_lo, T_hi, T_mid, U_mid, R_um
@@ -2074,18 +2082,17 @@ contains
          end do
 
          ! Beyond NSET: first linear then log-spaced to UMAX
-         umax_cm1 = umax / HC_CGS
+         umax_cm1 = umax / hc
          jset = nstate   ! fallback
 
          do i = nset + 1, nstate
             u(i) = u(nset) + (ub(nset) - ua(nset)) * real(i - nset, wp)
-            dlgu = log10(umax_cm1 / u(i)) / real(nstate - i, wp)
-            if (nstate - i > 0 .and. &
-                (u(i) * (10.0_wp**dlgu) - u(i)) > (u(i) - u(i - 1))) then
+            if (i == nstate) then
                jset = i
                exit
             end if
-            if (i == nstate) then
+            dlgu = log10(umax_cm1 / u(i)) / real(nstate - i, wp)
+            if ((u(i) * (10.0_wp**dlgu) - u(i)) > (u(i) - u(i - 1))) then
                jset = i
                exit
             end if
@@ -2128,9 +2135,9 @@ contains
 
          ! Convert from cm^-1 to erg
          do i = 1, nstate
-            u(i)  = u(i)  * HC_CGS
-            ua(i) = ua(i) * HC_CGS
-            ub(i) = ub(i) * HC_CGS
+            u(i)  = u(i)  * hc
+            ua(i) = ua(i) * hc
+            ub(i) = ub(i) * hc
          end do
 
          deallocate(emodes_new)
@@ -2153,11 +2160,14 @@ contains
       end if
 
       ! ---- Step 4: Compute T(U) for each bin ----
-      ! Use the Debye model, for consistency with the GD solver's
-      ! enthalpy_DL01.
+      ! The QM bin temperatures come from the QM solver's own enthalpy
+      ! (vibrational-mode counting, enthalpy_DL01), not from the model's
+      ! continuous H(T) used by the other solvers. The resulting difference from
+      ! the heuristic/draine solvers (e.g. astrodust S2) is intentional and is NOT
+      ! a solver defect. Do not change this enthalpy to the model H(T).
 500   continue
       do i = 1, nstate
-         t_bins(i) = T_from_U_bisect(u(i), grain_type, natom, a_cm)
+         t_bins(i) = T_from_U_bisect(u(i), grain_type, a_cm)
       end do
 
       ! ---- Step 5: Degeneracy ln(g) of each bin ----
@@ -2168,7 +2178,7 @@ contains
       ! Otherwise the bins keep their mode-tracking structure but carry the
       ! Debye-limit degeneracy, which the 'stati' kernel may not use.
       if (de > 0.0_wp) then
-         jemax_est = nint(umax / (HC_CGS * de))
+         jemax_est = nint(umax / (hc * de))
       else
          jemax_est = 0
       end if
@@ -2276,23 +2286,23 @@ contains
          real(wp) :: lngsumua, lngsumub
 
          if (ua_erg <= ebs_val) then
-            nua_idx = nint(ua_erg / (HC_CGS * de_val))
+            nua_idx = nint(ua_erg / (hc * de_val))
             nua_idx = max(0, min(nua_idx, jemax_val))
             lngsumua = lngsum_val(nua_idx)
          else
-            call parab_interp(energy_val(1:jemax_val+1), &
+            call parab_interpl(energy_val(1:jemax_val+1), &
                               lngsum_val(1:jemax_val+1), &
-                              jemax_val + 1, ua_erg / HC_CGS, lngsumua)
+                              jemax_val + 1, ua_erg / hc, lngsumua)
          end if
 
          if (ub_erg <= ebs_val) then
-            nub_idx = nint(ub_erg / (HC_CGS * de_val))
+            nub_idx = nint(ub_erg / (hc * de_val))
             nub_idx = max(0, min(nub_idx, jemax_val))
             lngsumub = lngsum_val(nub_idx)
          else
-            call parab_interp(energy_val(1:jemax_val+1), &
+            call parab_interpl(energy_val(1:jemax_val+1), &
                               lngsum_val(1:jemax_val+1), &
-                              jemax_val + 1, ub_erg / HC_CGS, lngsumub)
+                              jemax_val + 1, ub_erg / hc, lngsumub)
          end if
 
          if ((lngsumub - lngsumua) >= 1.0d-10) then
@@ -2328,7 +2338,7 @@ contains
          nc_real = 472.0d21 * a_cm**3
          natom = max(nint(nc_real), 3)
       case default
-         natom = nint((4.0_wp * PI_CGS / 3.0_wp) * a_cm**3 * &
+         natom = nint((4.0_wp * pi / 3.0_wp) * a_cm**3 * &
                       3.5_wp * 7.0_wp / (172.0_wp * 1.66d-24))
       end select
       natom = max(natom, 3)
@@ -2358,12 +2368,12 @@ contains
    !     kernels (HD23 publishes net emission only).
    !====================================================================
    subroutine qm_emission(nstate, nisrf, isrf_wl_cm, cabs_cm2, &
-                           u, ua, ub, lngu, pstate, t_bins, &
+                           ua, ub, lngu, pstate, t_bins, &
                            method, emission)
       implicit none
       integer,  intent(in)  :: nstate, nisrf
       real(wp), intent(in)  :: isrf_wl_cm(nisrf), cabs_cm2(nisrf)
-      real(wp), intent(in)  :: u(nstate), ua(nstate), ub(nstate)
+      real(wp), intent(in)  :: ua(nstate), ub(nstate)
       real(wp), intent(in)  :: lngu(nstate), pstate(nstate)
       real(wp), intent(in)  :: t_bins(nstate)
       character(len=*), intent(in) :: method   ! 'dbdis', 'dbcon' or 'stati'
@@ -2373,18 +2383,18 @@ contains
       integer  :: i, j, k
       real(wp) :: hnu, term, hcc_val, dj, pref, gkj
 
-      hcc_val = H_CGS * C_CGS * C_CGS   ! h * c^2
+      hcc_val = h_planck * c * c   ! h * c^2
 
       emission = 0.0_wp
 
       do i = 1, nisrf
-         hnu = HC_CGS / isrf_wl_cm(i)
+         hnu = hc / isrf_wl_cm(i)
 
          if (method == 'stati') then
             ! Exact-statistical kernel: degeneracy-weighted, no Planck factor.
             do j = 2, nstate
                if (pstate(j) <= 0.0_wp) cycle
-               pref = (8.0_wp * PI_CGS * hcc_val / isrf_wl_cm(i)**4) &
+               pref = (8.0_wp * pi * hcc_val / isrf_wl_cm(i)**4) &
                       * cabs_cm2(i) * pstate(j)
                ! Intrabin emission (photon leaves the grain within bin j)
                if ((ub(j) - ua(j)) > 0.0_wp .and. hnu <= ub(j) - ua(j)) then
@@ -2415,9 +2425,9 @@ contains
                ! Photon energy must not exceed the upper bound of this bin
                if (hnu > ub(j)) cycle
 
-               term = HC_CGS / (isrf_wl_cm(i) * KB_CGS * t_bins(j))
+               term = hc / (isrf_wl_cm(i) * k_boltz * t_bins(j))
                if (term < 500.0_wp) then
-                  dj = (8.0_wp * PI_CGS * hcc_val / isrf_wl_cm(i)**4) * &
+                  dj = (8.0_wp * pi * hcc_val / isrf_wl_cm(i)**4) * &
                        cabs_cm2(i) * pstate(j) / (exp(term) - 1.0_wp)
                   emission(i) = emission(i) + dj
                end if
@@ -2428,56 +2438,144 @@ contains
 
 
    !====================================================================
+   ! 17b. COARSEN_ABSORBED_FIELD -- a coarser wavelength grid for the
+   !      transition matrix that keeps the absorbed power.
+   !
+   !      NC nodes equally spaced in ln(lambda) span the same range as the
+   !      fine grid.  Every fine point (trapezoid weight w_i in lambda)
+   !      belongs to its nearest node.  A node carries the interval mean
+   !      cross section Cbar = sum C w / sum w and the absorption-weighted
+   !      field Jbar = sum C J w / sum C w, so Cbar*Jbar*sum(w) equals the
+   !      power absorbed in the interval; the field is then scaled by one
+   !      factor so that the trapezoid integral of C*J over the coarse grid
+   !      equals that over the fine grid.  The total absorbed power is kept
+   !      exactly; the photon spectrum inside an interval is replaced by
+   !      its mean, so structure narrower than an interval (an absorption
+   !      edge, a band limit of the field) is smoothed over it.  A node
+   !      that no fine point falls into takes the fine grid interpolated
+   !      linearly in ln(lambda).
+   !====================================================================
+   subroutine coarsen_absorbed_field(n, wl, fld, cab, nc, wl_c, fld_c, cab_c)
+      implicit none
+      integer,  intent(in)  :: n, nc
+      real(wp), intent(in)  :: wl(n), fld(n), cab(n)
+      real(wp), intent(out) :: wl_c(nc), fld_c(nc), cab_c(nc)
+
+      real(wp) :: x1, dx, w, sw(nc), scw(nc), scjw(nc), sjw(nc)
+      real(wp) :: p_fine, p_coarse, f
+      integer  :: i, k
+
+      x1 = log(wl(1))
+      dx = (log(wl(n)) - x1) / real(nc - 1, wp)
+      do k = 1, nc
+         wl_c(k) = exp(x1 + real(k - 1, wp) * dx)
+      end do
+      wl_c(1) = wl(1);  wl_c(nc) = wl(n)
+
+      sw = 0.0_wp; scw = 0.0_wp; scjw = 0.0_wp; sjw = 0.0_wp
+      do i = 1, n
+         w = 0.5_wp * (wl(min(i+1, n)) - wl(max(i-1, 1)))
+         k = 1 + nint((log(wl(i)) - x1) / dx)
+         k = max(1, min(k, nc))
+         sw(k)   = sw(k)   + w
+         scw(k)  = scw(k)  + cab(i) * w
+         scjw(k) = scjw(k) + cab(i) * fld(i) * w
+         sjw(k)  = sjw(k)  + fld(i) * w
+      end do
+      do k = 1, nc
+         if (sw(k) > 0.0_wp) then
+            cab_c(k) = scw(k) / sw(k)
+            if (scw(k) > 0.0_wp) then
+               fld_c(k) = scjw(k) / scw(k)
+            else
+               fld_c(k) = sjw(k) / sw(k)
+            end if
+         else
+            call linear_in_lnlambda(wl_c(k), cab_c(k), fld_c(k))
+         end if
+      end do
+
+      p_fine = 0.0_wp
+      do i = 1, n - 1
+         p_fine = p_fine + 0.5_wp * (cab(i)*fld(i) + cab(i+1)*fld(i+1)) * (wl(i+1) - wl(i))
+      end do
+      p_coarse = 0.0_wp
+      do k = 1, nc - 1
+         p_coarse = p_coarse + (wl_c(k+1) - wl_c(k)) / 6.0_wp * &
+              (2.0_wp*cab_c(k)*fld_c(k) + cab_c(k)*fld_c(k+1) + &
+               cab_c(k+1)*fld_c(k) + 2.0_wp*cab_c(k+1)*fld_c(k+1))
+      end do
+      if (p_coarse > 0.0_wp) then
+         f = p_fine / p_coarse
+         fld_c = fld_c * f
+      end if
+
+   contains
+
+      subroutine linear_in_lnlambda(x, cx, fx)
+         real(wp), intent(in)  :: x
+         real(wp), intent(out) :: cx, fx
+         integer  :: j
+         real(wp) :: t
+         j = 1
+         do while (j < n - 1 .and. wl(j + 1) < x)
+            j = j + 1
+         end do
+         t = (log(x) - log(wl(j))) / (log(wl(j + 1)) - log(wl(j)))
+         t = max(0.0_wp, min(1.0_wp, t))
+         cx = (1.0_wp - t) * cab(j) + t * cab(j + 1)
+         fx = (1.0_wp - t) * fld(j) + t * fld(j + 1)
+      end subroutine linear_in_lnlambda
+   end subroutine coarsen_absorbed_field
+
+
+   !====================================================================
    ! 18. Top-level single-grain QM driver
    !
    ! Given a grain with:
    !   - cross section Cabs(lambda) in cm^2
    !   - radiation field J_lam in SI W/m^3/sr at wavelengths lam_um
-   !   - enthalpy table H_wide(T) in erg and temperature grid T_wide(K)
-   !   - equilibrium enthalpy EEQ (erg)
-   !   - grain type ('sil' or 'pah')
+   !   - equilibrium enthalpy EEQ (erg), from the caller's model H(T)
+   !   - grain type ('sil' or 'pah'; 'gra' takes the carbonaceous modes)
    !   - grain radius a_cm
+   ! QM takes no enthalpy argument by design; its bin temperatures come only
+   ! from its own mode-counting enthalpy (see T_from_U_bisect). Do not add
+   ! one. The resulting difference from the heuristic/draine solvers, which
+   ! use the model's continuous H(T) (e.g. astrodust S2), is intentional and
+   ! is NOT a solver defect.
    !
-   ! Returns emission(NLAM) in CGS erg/s/cm per grain, matching the
-   ! unit convention of Draine's emission array.
-   !
-   ! The caller (sed_grain_loop) accumulates:
-   !   Jout += dn_pop(ir) * emission_qm * (units factor)
+   ! Returns emission(NLAM) = lambda * P_lambda in erg/s for one grain,
+   ! matching Draine's spectral power convention, and solved = .true.;
+   ! otherwise solved = .false., a zero spectrum, and the reason in
+   ! `status` (QM_* below), which the caller reports.
    !====================================================================
    subroutine qm_solve_grain(nlam, lam_um, cabs_cm2, j_lam_si, &
-                              nt_wide, t_wide, h_wide, &
-                              teq, eeq, eeqss, &
-                              a_cm, grain_type, &
-                              emission_out, solved)
-      use sed_mathlib, only: interp
+                              eeq, eeqss, &
+                              a_cm, grain_type, emission_out, solved, status, &
+                              actual_cooling_out, raw_negative_count_out)
       ! The single-photon bound is a property of the radiation field, so it is
       ! computed by the radiation-field module and shared with the two call
-      ! sites in sed_astrodust_mod rather than re-derived here.  radfield
-      ! depends only on constants, so importing it introduces no cycle; the
-      ! import is local to this routine to keep the module-level surface of
-      ! stoch_qm_mod (constants only) unchanged.
+      ! sites in sed_astrodust_mod rather than re-derived here.
       use radfield,    only: hardest_photon_energy
       implicit none
-      integer,          intent(in)  :: nlam, nt_wide
+      integer,          intent(in)  :: nlam
       real(wp),         intent(in)  :: lam_um(nlam), cabs_cm2(nlam)
       real(wp),         intent(in)  :: j_lam_si(nlam)
-      real(wp),         intent(in)  :: t_wide(nt_wide), h_wide(nt_wide)
-      real(wp),         intent(in)  :: teq, eeq, eeqss
+      real(wp),         intent(in)  :: eeq, eeqss
       real(wp),         intent(in)  :: a_cm
       character(len=*), intent(in)  :: grain_type
       real(wp),         intent(out) :: emission_out(nlam)
       logical,          intent(out) :: solved
+      integer, optional, intent(out) :: status
+      character(len=5), optional, intent(out) :: actual_cooling_out
+      integer, optional, intent(out) :: raw_negative_count_out
 
-      ! Local variables
-      integer :: nstate, nstate1, nmax, natom
-      integer :: i, j, fbin, iter, iter_total, jcut, jpmax
-      integer :: nc_pah, nh_pah, nset_qm
+      integer :: nstate, nstate1, istat, natom, nc_pah, nh_pah
+      integer :: i, iter, jcut, jpmax
+      integer :: nset_qm, negative_count, negative_total
       real(wp) :: umin, umax, umaxmin, umaxhi, umaxlo, uminhi, uminlo
-      real(wp) :: u_photon_max
-      real(wp) :: pmax, term, sum_p, err_bcg, tol_bcg
-      logical  :: refine, lngu_counted, bicg_ok, sparse_ok
-      integer  :: itmax_bcg, n_retry
-      integer, parameter :: MAX_BCG_RETRY = 30
+      real(wp) :: u_photon_max, pmax, sum_p, ratio_em
+      logical  :: refine, lngu_counted, gth_ok, converged, rates_ok
       character(len=5) :: eff_method   ! size-gated requested method
       character(len=5) :: cur_method   ! method actually used this iteration
 
@@ -2489,30 +2587,59 @@ contains
 
       ! Full-resolution CGS arrays for emission computation
       real(wp), allocatable :: isrf_wl_full(:), isrf_full(:), cabs_full(:)
-      ! Downsampled CGS arrays for transition matrix (much faster)
+      ! Transition-matrix wavelength grid (the full one unless qm_nisrf_max
+      ! asks for fewer points)
       integer :: nisrf_ds
       real(wp), allocatable :: isrf_wl_ds(:), isrf_ds(:), cabs_ds(:)
 
       real(wp), allocatable :: u(:), ua(:), ub(:), t_bins(:), lngu(:)
-      real(wp), allocatable :: amatrix(:,:), pstate_gd(:), pstate(:)
-      real(wp), allocatable :: amatrix1(:,:), pstate1(:), rhs(:)
-      real(wp), allocatable :: sa(:)
-      integer,  allocatable :: ija(:)
+      real(wp), allocatable :: amatrix(:,:), pstate(:)
 
       real(wp), parameter :: PMIN_LO_QM = 1.0d-13
       real(wp), parameter :: PMIN_UP_QM = 1.0d-13
-      integer,  parameter :: MAX_ITER = 10
+      ! Passes of the UMIN/UMAX refinement.  Each pass moves UMIN at most
+      ! 80% of the way to the first populated bin, so a window that starts
+      ! at U = 0 for a grain whose population sits two decades higher needs
+      ! ~14 passes (measured: astrodust qm_dbcon, nstate = 500); 10 left
+      ! such grains unconverged.
+      integer,  parameter :: MAX_ITER = 30
 
       ! Largest atom count for which the explicit-mode treatment (PAH_MODES /
-      ! sil modes, ~3*natom modes) is feasible. Above this we return
-      ! not-solved so the caller's GD fallback (Debye H(T), no mode array)
-      ! handles the grain -- such large grains sit near the equilibrium
-      ! boundary anyway. Prevents the ~3e7-element allocation seen for the
-      ! DL07 carbonaceous population, which extends to large a with non-zero dn.
+      ! sil modes, ~3*natom modes) is feasible. Above this the grain is
+      ! returned unsolved (QM_ATOM_COUNT_CAP) so the caller's GD solver
+      ! handles it -- such large grains sit near the equilibrium boundary
+      ! anyway. Prevents the ~3e7-element allocation seen for the DL07
+      ! carbonaceous population, which extends to large a with non-zero dn.
       integer, parameter :: NATOM_QM_MAX = 1000000
 
       solved = .false.
+      negative_total = 0
+      if (present(raw_negative_count_out)) raw_negative_count_out = 0
+      if (present(actual_cooling_out)) actual_cooling_out = ''
       emission_out = 0.0_wp
+      istat = QM_INVALID_INPUT
+      if (present(status)) status = istat
+      ratio_em = -1.0_wp
+      nset_qm = 0
+      natom = 0
+      iter = 0
+      cur_method = qm_method
+      ! Mode-aligned bins need three low-energy bins and two upper bins.
+      ! Two field samples are the minimum for the index interpolation below.
+      ! qm_nisrf_max = 0 selects the full field grid.
+      if (qm_nstate_default < 5 .or. qm_nisrf_max == 1 .or. qm_nisrf_max < 0 &
+          .or. nlam < 2) then
+         if (qm_verbose) write(*,'(a,3(i0,1x))') &
+            'stoch_qm: invalid nstate, nisrf, nlam: ', &
+            qm_nstate_default, qm_nisrf_max, nlam
+         return
+      end if
+
+      if (.not. all(ieee_is_finite(lam_um)) .or. .not. all(ieee_is_finite(cabs_cm2)) .or. &
+          .not. all(ieee_is_finite(j_lam_si)) .or. .not. ieee_is_finite(a_cm)) return
+      if (any(lam_um <= 0.0_wp) .or. any(cabs_cm2 < 0.0_wp) .or. &
+          any(j_lam_si < 0.0_wp) .or. a_cm <= 0.0_wp) return
+      if (any(lam_um(2:) <= lam_um(:nlam-1))) return
 
       select case (qm_method)
       case ('dbdis', 'dbcon', 'stati')
@@ -2525,21 +2652,21 @@ contains
 
       ! Which cooling treatment this grain can actually carry.  The
       ! exact-statistical kernel needs the counted degeneracies, which are
-      ! reachable only for small carbonaceous grains: for silicate the count
-      ! that survives the feasibility guards still leaves a residual
+      ! reachable only for small PAH grains: for silicate the count that
+      ! survives the feasibility guards still leaves a residual
       ! non-monotonicity in ln g (~14 in the log) that exp(lngu(k)-lngu(j))
       ! amplifies into a spurious MIR spike, so silicate uses the thermal
       ! kernel -- as Draine's production does, his silicate 'stati' branch
-      ! being flagged untested.  PAH 'stati' agrees with 'dbdis' to within
-      ! a few percent in every band.
+      ! being flagged untested. Agreement between statistical and thermal
+      ! spectra is not assumed, particularly at low excitation.
       eff_method = qm_method
       if (qm_method == 'stati') then
          if (trim(grain_type) /= 'pah' .or. a_cm > A_STATI_MAX_CM) &
             eff_method = 'dbdis'
       end if
 
-      ! Determine number of enthalpy bins
-      nstate = qm_nstate_default
+      nstate  = qm_nstate_default
+      nstate1 = nstate - 1
 
       ! Number of atoms in the grain
       natom = compute_natom(a_cm, grain_type)
@@ -2559,7 +2686,11 @@ contains
       ! and skips the modes, so large grains stay feasible there.
       if (max(natom, nc_pah) > NATOM_QM_MAX .and. &
           (eeq < 0.1_wp * eeqss .or. eff_method == 'stati')) then
-         solved = .false.
+         istat = QM_ATOM_COUNT_CAP
+         if (present(status)) status = istat
+         if (qm_verbose) write(0,'(a,es9.2,a,i0,a,a)') &
+            '  QM grain: a[um]=', a_cm * 1.0d4, ' natom=', natom, &
+            ' ok=F status=', trim(qm_status_name(istat))
          return
       end if
 
@@ -2573,23 +2704,18 @@ contains
       allocate(isrf_wl_full(nlam), isrf_full(nlam), cabs_full(nlam))
       do i = 1, nlam
          isrf_wl_full(i) = lam_um(i) * 1.0d-4     ! um -> cm
-         isrf_full(i)    = 4.0_wp * PI_CGS * 10.0_wp * j_lam_si(i)
+         isrf_full(i)    = 4.0_wp * pi * 10.0_wp * j_lam_si(i)
          cabs_full(i)    = cabs_cm2(i)
       end do
 
-      ! Downsample to NISRF_MAX_QM points (log-spaced) for transition matrix
-      ! This is the key optimization: Draine's method uses ~200 wavelengths, not 1129.
-      if (nlam > qm_nisrf_max) then
+      ! Coarsening applies only to photon absorption. Cooling and emission
+      ! share the full opacity grid: absorbed-power preservation does not
+      ! preserve the Planck-weighted cooling integral across PAH features.
+      if (qm_nisrf_max >= 2 .and. qm_nisrf_max < nlam) then
          nisrf_ds = qm_nisrf_max
          allocate(isrf_wl_ds(nisrf_ds), isrf_ds(nisrf_ds), cabs_ds(nisrf_ds))
-         do i = 1, nisrf_ds
-            ! Map to index in full array via equal log-spacing
-            j = 1 + nint(real(i - 1, wp) / real(nisrf_ds - 1, wp) * real(nlam - 1, wp))
-            j = max(1, min(j, nlam))
-            isrf_wl_ds(i) = isrf_wl_full(j)
-            isrf_ds(i)    = isrf_full(j)
-            cabs_ds(i)    = cabs_full(j)
-         end do
+         call coarsen_absorbed_field(nlam, isrf_wl_full, isrf_full, cabs_full, &
+                                     nisrf_ds, isrf_wl_ds, isrf_ds, cabs_ds)
       else
          nisrf_ds = nlam
          allocate(isrf_wl_ds(nisrf_ds), isrf_ds(nisrf_ds), cabs_ds(nisrf_ds))
@@ -2610,28 +2736,26 @@ contains
       ! Lyman limit.  The fixed 13.6 eV is right only for a field that stops
       ! at the Lyman limit; a field carried into the EUV raises the bound.
       u_photon_max = hardest_photon_energy(lam_um, j_lam_si)
-      umaxmin = 13.65_wp * EV2ERG
-      umax = max(max(13.6_wp * EV2ERG, u_photon_max) + 2.0_wp * eeq, umaxmin)
+      umaxmin = 13.65_wp * ev2erg
+      umax = max(max(13.6_wp * ev2erg, u_photon_max) + 2.0_wp * eeq, umaxmin)
       if (eeq < 0.1_wp * eeqss) then
          umin = 0.0_wp
       else
          umin = eeq / 5.0_wp
       end if
-      umaxhi = 1.0d70 * HC_CGS
+      umaxhi = 1.0d70 * hc
       umaxlo = 0.0_wp
-      uminhi = 1.0d70 * HC_CGS
+      uminhi = 1.0d70 * hc
       uminlo = 0.0_wp
 
-      ! Allocate state arrays
       allocate(u(nstate), ua(nstate), ub(nstate), t_bins(nstate), lngu(nstate))
-      allocate(amatrix(nstate, nstate), pstate_gd(nstate), pstate(nstate))
+      allocate(amatrix(nstate, nstate), pstate(nstate))
+      pstate = 0.0_wp
 
-      nstate1 = nstate - 1
-      nmax = (nstate1 + 1)**2 + 1
-      allocate(amatrix1(nstate1, nstate1), pstate1(nstate1), rhs(nstate1))
-      allocate(sa(nmax), ija(nmax))
-
-      ! Iterative UMIN/UMAX refinement loop (following Draine's method)
+      ! Iterative UMIN/UMAX refinement (following Draine's method).  Only a
+      ! bin set the refinement accepts gives a solution; a window still
+      ! moving after MAX_ITER passes is reported, not used.
+      converged = .false.
       do iter = 1, MAX_ITER
 
          ! Build enthalpy bins with mode-aware QM construction
@@ -2641,317 +2765,174 @@ contains
                                      lngu_counted)
 
          ! The exact-statistical kernel needs counted degeneracies; when the
-         ! bins carry the Debye limit instead, this grain uses the thermal one.
+         ! count is out of reach, this grain uses the thermal one.
          cur_method = eff_method
          if (eff_method == 'stati' .and. .not. lngu_counted) cur_method = 'dbdis'
 
-         ! Build transition matrix (using downsampled ISRF for speed)
          call build_transition_matrix(nstate, u, ua, ub, lngu, t_bins, &
                                       nisrf_ds, isrf_wl_ds, isrf_ds, cabs_ds, &
-                                      cur_method, amatrix, pstate_gd)
-
-         ! Check for low-U limit: direct solve without BiCG
-         fbin = 1
-         do i = 1, nstate
-            if (u(i) < 2.0d-12) fbin = i   ! 2e-12 erg ~ 12.5 eV
-         end do
-         if (amatrix(fbin,fbin) /= 0.0_wp) then
-            term = amatrix(1,1) / amatrix(fbin,fbin)
-         else
-            term = 1.0_wp
+                                      cur_method, nlam, isrf_wl_full, isrf_full, cabs_full, &
+                                      amatrix, negative_count, rates_ok)
+         negative_total = negative_total + negative_count
+         if (.not. rates_ok) then
+            istat = QM_INVALID_RATE
+            exit
          end if
 
-         if (abs(term) < 1.0d-8) then
-            ! Low-U direct solve
-            pstate(1) = 1.0_wp
-            if (amatrix(nstate,nstate) /= 0.0_wp) then
-               pstate(nstate) = -amatrix(nstate,1) / amatrix(nstate,nstate)
-            else
-               pstate(nstate) = 0.0_wp
-            end if
-            do fbin = nstate - 1, 2, -1
-               term = amatrix(fbin, 1)
-               do i = fbin + 1, nstate
-                  term = term + pstate(i) * amatrix(fbin, i)
-               end do
-               if (amatrix(fbin,fbin) /= 0.0_wp) then
-                  pstate(fbin) = -term / amatrix(fbin, fbin)
-               else
-                  pstate(fbin) = 0.0_wp
-               end if
+         call stationary_distribution_gth(nstate, amatrix, pstate, gth_ok)
+         if (.not. gth_ok) then
+            istat = QM_NO_STEADY_STATE
+            exit
+         end if
+
+         ! The window tests read the bins below the top one, as Draine's do.
+         pmax = maxval(pstate(1:nstate1))
+         if (pmax <= 0.0_wp) then
+            istat = QM_NO_STEADY_STATE
+            exit
+         end if
+         jpmax = maxloc(pstate(1:nstate1), dim=1)
+
+         ! Adjust UMAX
+         refine = .false.
+
+         if (pstate(nstate1) / pmax <= PMIN_UP_QM .and. umax > umaxmin) then
+            umaxhi = umax
+            jcut = nstate1
+            do i = nstate1, 1, -1
+               jcut = i
+               if (ub(i) < umaxmin) exit
+               if (pstate(i) / pmax > PMIN_UP_QM) exit
             end do
-            ! Normalize
-            term = sum(pstate)
-            if (term > 0.0_wp) pstate = pstate / term
-            pstate1(1:nstate1) = pstate(1:nstate1)
-            solved = .true.
-            exit   ! No UMIN/UMAX refinement needed for low-U
-
-         else
-            ! Full BiCG solve
-            ! Reduce system to (NSTATE-1) equations: P_N = 1 - sum(P_1..N-1)
-            do fbin = 1, nstate1
-               rhs(fbin) = -amatrix(fbin, nstate)
-               pstate1(fbin) = 0.0_wp
-               do i = 1, nstate1
-                  amatrix1(fbin, i) = amatrix(fbin, i) - amatrix(fbin, nstate)
-               end do
-            end do
-
-            ! Sparse storage
-            sa = 0.0_wp
-            ija = 0
-            call dense_to_sparse(amatrix1, nstate1, SPARSE_THRESH, nmax, sa, ija, sparse_ok)
-            if (.not. sparse_ok) then
-               ! storage overflow: zero the state so this grain is reported
-               ! unsolved (caller falls back to GD), same as a BiCG failure.
-               pstate1(1:nstate1) = 0.0_wp
-               pstate = 0.0_wp
-               exit
+            if (umax > 1.02_wp * umaxlo .and. umax > 1.01_wp * ub(jcut)) then
+               umax = 0.8_wp * ub(jcut) + 0.2_wp * umax
+               if (umax < umaxlo) umax = 1.01_wp * umaxlo
+               if (umax < umaxmin) umax = umaxmin
+               refine = .true.
             end if
-
-            ! BiCG solve with convergence enforcement:
-            ! grow ITMAX until
-            ! err <= tol (warm start), then verify the row residuals of
-            ! the linear system; rerun while any row with P > 1e-10 has
-            ! |residual|/|A(1,1)| > 1e-6. The original port accepted the
-            ! first linbcg result unchecked, which let stagnated solves
-            ! (garbage P, factors of 1e4-1e7) through at NSTATE=500 or
-            ! with the full 2500-point ISRF grid.
-            tol_bcg = 1.0d-15
-            itmax_bcg = 1000
-            bicg_ok = .false.
-            do n_retry = 1, MAX_BCG_RETRY
-               itmax_bcg = itmax_bcg + 100
-               call linbcg(nmax, sa, ija, nstate1, rhs, pstate1, &
-                           tol_bcg, itmax_bcg, iter_total, err_bcg)
-               if (err_bcg > tol_bcg) cycle
-               bicg_ok = .true.
-               do fbin = 1, nstate1
-                  if (pstate1(fbin) > 1.0d-10) then
-                     term = -rhs(fbin)
-                     do i = 1, nstate1
-                        term = term + amatrix1(fbin, i) * pstate1(i)
-                     end do
-                     term = abs(term / amatrix1(1, 1))
-                     if (term > 1.0d-6) then
-                        bicg_ok = .false.
-                        exit
-                     end if
-                  end if
-               end do
-               if (bicg_ok) exit
-            end do
-            if (.not. bicg_ok) then
-               ! persistent BiCG failure: zero the state so this grain is
-               ! reported unsolved (caller falls back to GD).
-               pstate1(1:nstate1) = 0.0_wp
-               pstate = 0.0_wp
-               exit
-            end if
-
-            ! Clamp negative values
-            do i = 1, nstate1
-               if (pstate1(i) < 0.0_wp) pstate1(i) = 0.0_wp
-            end do
-
-            sum_p = sum(pstate1(1:nstate1))
-
-            ! Reconstruct full PSTATE including bin NSTATE
-            pstate(1:nstate1) = pstate1(1:nstate1)
-            pstate(nstate) = 0.0_wp
-            do i = 1, nstate1
-               pstate(nstate) = pstate(nstate) + amatrix(nstate, i) * pstate1(i)
-            end do
-            if (amatrix(nstate,nstate) /= 0.0_wp) then
-               pstate(nstate) = -pstate(nstate) / amatrix(nstate, nstate)
-            else
-               pstate(nstate) = 0.0_wp
-            end if
-            if (pstate(nstate) < 0.0_wp) pstate(nstate) = 0.0_wp
-
-            ! Find peak
-            pmax = maxval(pstate1(1:nstate1))
-            if (pmax <= 0.0_wp) exit   ! degenerate
-
-            jpmax = maxloc(pstate1(1:nstate1), dim=1)
-
-            ! Adjust UMAX
-            refine = .false.
-
-            if (pstate1(nstate1) / pmax <= PMIN_UP_QM .and. umax > umaxmin) then
-               umaxhi = umax
-               jcut = nstate1
-               do i = nstate1, 1, -1
-                  jcut = i
-                  if (ub(i) < umaxmin) exit
-                  if (pstate1(i) / pmax > PMIN_UP_QM) exit
-               end do
-               if (umax > 1.02_wp * umaxlo .and. umax > 1.01_wp * ub(jcut)) then
-                  umax = 0.8_wp * ub(jcut) + 0.2_wp * umax
-                  if (umax < umaxlo) umax = 1.01_wp * umaxlo
-                  if (umax < umaxmin) umax = umaxmin
-                  refine = .true.
-               end if
-            else if (pstate1(nstate1) / pmax > PMIN_UP_QM) then
-               umaxlo = umax
-               if (1.2_wp * umax < umaxhi) then
-                  umax = 1.2_wp * umax
-                  refine = .true.
-               else if (umax / umaxhi - 1.0_wp > 0.01_wp) then
-                  umax = 0.5_wp * (umaxhi + umax)
-                  refine = .true.
-               end if
-            end if
-
-            ! Adjust UMIN
-            if (nstate1 >= 2 .and. pstate1(2) / pmax < PMIN_LO_QM) then
-               uminlo = umin
-               jcut = 1
-               do i = 1, nstate1
-                  jcut = i
-                  if (pstate1(i) / pmax > PMIN_LO_QM) exit
-               end do
-               if (umin < 0.95_wp * ua(jcut)) then
-                  umin = 0.2_wp * umin + 0.8_wp * ua(jcut)
-                  refine = .true.
-               end if
-            else if (umin > HC_CGS .and. pstate1(1) / pmax > PMIN_LO_QM) then
-               uminhi = umin
-               if (0.8_wp * umin > uminlo) then
-                  umin = max(HC_CGS, 0.8_wp * umin)
-                  refine = .true.
-               else if ((umin - uminlo) > 0.01_wp * umin .and. &
-                        umin / HC_CGS > 20.0_wp) then
-                  umin = max(0.5_wp * (uminlo + umin), HC_CGS)
-                  refine = .true.
-               end if
-            end if
-
-            if (.not. refine) then
-               solved = .true.
-               exit
+         else if (pstate(nstate1) / pmax > PMIN_UP_QM) then
+            umaxlo = umax
+            if (1.2_wp * umax < umaxhi) then
+               umax = 1.2_wp * umax
+               refine = .true.
+            else if (umax / umaxhi - 1.0_wp > 0.01_wp) then
+               umax = 0.5_wp * (umaxhi + umax)
+               refine = .true.
             end if
          end if
+
+         ! Adjust UMIN
+         if (pstate(2) / pmax < PMIN_LO_QM) then
+            uminlo = umin
+            jcut = 1
+            do i = 1, nstate1
+               jcut = i
+               if (pstate(i) / pmax > PMIN_LO_QM) exit
+            end do
+            if (umin < 0.95_wp * ua(jcut)) then
+               umin = 0.2_wp * umin + 0.8_wp * ua(jcut)
+               refine = .true.
+            end if
+         else if (umin > hc .and. pstate(1) / pmax > PMIN_LO_QM) then
+            uminhi = umin
+            if (0.8_wp * umin > uminlo) then
+               umin = max(hc, 0.8_wp * umin)
+               refine = .true.
+            else if ((umin - uminlo) > 0.01_wp * umin .and. &
+                     umin / hc > 20.0_wp) then
+               umin = max(0.5_wp * (uminlo + umin), hc)
+               refine = .true.
+            end if
+         end if
+
+         if (.not. refine) then
+            converged = .true.
+            exit
+         end if
+         if (iter == MAX_ITER) istat = QM_WINDOW_NOT_CONVERGED
       end do
 
-      ! If iteration did not converge, accept last result if pmax > 0
-      if (.not. solved) then
-         pmax = maxval(abs(pstate))
-         if (pmax > 0.0_wp) solved = .true.
-      end if
-
-      ! Sanity check: if pstate contains NaN, fall back to the
-      ! Guhathakurta-Draine preconditioner estimate
-      if (solved) then
-         do i = 1, nstate
-            if (pstate(i) /= pstate(i)) then
-               ! Use the GD estimate as fallback
-               pstate = pstate_gd
-               exit
-            end if
-         end do
-         ! Double-check the fallback for NaN too
-         do i = 1, nstate
-            if (pstate(i) /= pstate(i)) then
-               solved = .false.
-               exit
-            end if
-         end do
-      end if
-
-      ! Renormalize pstate so sum(pstate) = 1 (may have drifted from
-      ! clamping negatives and from finite BiCG tolerance).
-      if (solved) then
-         sum_p = sum(pstate(1:nstate))
-         if (sum_p > 0.0_wp) pstate = pstate / sum_p
-      end if
-
-      ! Compute emission spectrum using QM formula (full-resolution ISRF)
-      if (solved) then
-         call qm_emission(nstate, nlam, isrf_wl_full, cabs_full, &
-                          u, ua, ub, lngu, pstate, t_bins, cur_method, &
-                          emission_out)
-         ! Replace any NaN in emission with zero
-         do i = 1, nlam
-            if (emission_out(i) /= emission_out(i)) emission_out(i) = 0.0_wp
-         end do
-      end if
-
-      ! Energy-conservation gate on the EMISSION SPECTRUM (ISRFabs vs
-      ! P_em). A correct
-      ! steady state emits exactly the power it absorbs; a stagnated BiCG
-      ! solution that passes the row-residual test can still produce a
-      ! spurious emission spectrum (e.g. one silicate grain at nstate=300
-      ! emitting ~40x in the MIR). The matrix-transition energy balances
-      ! for such a solution -- so we test the actual spectrum directly:
-      !   P_abs = integral Cabs(lam) * ISRF(lam) dlam
-      !   P_em  = integral (nu*P_nu) dln(lam)
-      ! and fall back to GD if they disagree by > 5%.
-      if (solved) then
-         block
-            real(wp) :: p_abs, p_em, dlnl, wl
-            integer  :: ii
-            p_abs = 0.0_wp; p_em = 0.0_wp
-            do ii = 1, nlam
-               if (ii == 1) then
-                  dlnl = 0.5_wp * log(isrf_wl_full(2) / isrf_wl_full(1))
-               else if (ii == nlam) then
-                  dlnl = 0.5_wp * log(isrf_wl_full(nlam) / isrf_wl_full(nlam-1))
-               else
-                  dlnl = 0.5_wp * log(isrf_wl_full(ii+1) / isrf_wl_full(ii-1))
-               end if
-               wl = isrf_wl_full(ii)
-               p_abs = p_abs + cabs_full(ii) * isrf_full(ii) * wl * dlnl
-               p_em  = p_em  + emission_out(ii) * dlnl
-            end do
-            if (p_abs > 0.0_wp) then
-               if (abs(p_em / p_abs - 1.0_wp) > 0.05_wp) then
-                  solved = .false.
-                  emission_out = 0.0_wp
-               end if
-            end if
-         end block
-      end if
-
-      ! Single-grain diagnostic
-      if (qm_verbose) then
-         if (solved) then
-            ! Dump transition matrix diagnostics for first small grain
-            block
-               real(wp) :: sum_heat_1, cool_21, p1, p2, pmax_diag
-               integer  :: jpmax_diag
-
-               ! Total heating rate out of bin 1
-               sum_heat_1 = 0.0_wp
-               do i = 2, nstate
-                  sum_heat_1 = sum_heat_1 + amatrix(i, 1)
-               end do
-               ! Cooling rate from bin 2 to bin 1
-               cool_21 = amatrix(1, 2)
-               p1 = pstate(1)
-               p2 = pstate(2)
-               pmax_diag = maxval(pstate(1:nstate))
-               jpmax_diag = maxloc(pstate(1:nstate), dim=1)
-
-               write(0,'(a,es9.2,a,i5,a,i3,a,l1,a,i3)') &
-                  '  QM grain: a[um]=', a_cm * 1.0d4, &
-                  ' natom=', natom, ' nset=', nset_qm, &
-                  ' ok=', solved, ' jPk=', jpmax_diag
-            end block
+      if (converged) then
+         if (any(pstate /= pstate)) then
+            istat = QM_NO_STEADY_STATE
          else
-            write(0,'(a,es9.2,a,i5,a,i3,a,l1)') &
-               '  QM grain: a[um]=', a_cm * 1.0d4, &
-               ' natom=', natom, ' nset=', nset_qm, &
-               ' ok=', solved
+            sum_p = sum(pstate)
+            pstate = pstate / sum_p
+            call qm_emission(nstate, nlam, isrf_wl_full, cabs_full, &
+                             ua, ub, lngu, pstate, t_bins, cur_method, &
+                             emission_out)
+            ! Energy-conservation gate on the EMISSION SPECTRUM: a correct
+            ! steady state emits the power it absorbs.  Test the spectrum
+            ! itself (P_abs = int Cabs ISRF dlam, P_em = int lam P_lam dln lam)
+            ! and reject a grain that misses by more than 5%.
+            block
+               real(wp) :: p_abs, p_em, dlnl, wl
+               integer  :: ii
+               p_abs = 0.0_wp; p_em = 0.0_wp
+               do ii = 1, nlam
+                  if (ii == 1) then
+                     dlnl = 0.5_wp * log(isrf_wl_full(2) / isrf_wl_full(1))
+                  else if (ii == nlam) then
+                     dlnl = 0.5_wp * log(isrf_wl_full(nlam) / isrf_wl_full(nlam-1))
+                  else
+                     dlnl = 0.5_wp * log(isrf_wl_full(ii+1) / isrf_wl_full(ii-1))
+                  end if
+                  wl = isrf_wl_full(ii)
+                  p_abs = p_abs + cabs_full(ii) * isrf_full(ii) * wl * dlnl
+                  p_em  = p_em  + emission_out(ii) * dlnl
+               end do
+               if (p_abs > 0.0_wp) ratio_em = p_em / p_abs
+               if (any(emission_out /= emission_out)) then
+                  istat = QM_NO_STEADY_STATE
+               else if (p_abs > 0.0_wp .and. abs(ratio_em - 1.0_wp) > 0.05_wp) then
+                  istat = QM_ENERGY_NOT_CONSERVED
+               else
+                  istat = QM_SOLVED
+                  solved = .true.
+                  if (present(actual_cooling_out)) actual_cooling_out = cur_method
+               end if
+            end block
+            if (.not. solved) emission_out = 0.0_wp
          end if
+      end if
+      if (present(status)) status = istat
+      if (present(raw_negative_count_out)) raw_negative_count_out = negative_total
+
+      ! Single-grain diagnostic: every outcome, with the reason.
+      if (qm_verbose) then
+         jpmax = 0
+         if (solved) jpmax = maxloc(pstate, dim=1)
+         write(0,'(a,es9.2,a,i0,a,i0,a,a,a,l1,a,a,a,f8.5,a,i0,a,i0)') &
+            '  QM grain: a[um]=', a_cm * 1.0d4, ' natom=', natom, &
+            ' nset=', nset_qm, ' method=', trim(cur_method), ' ok=', solved, &
+            ' status=', trim(qm_status_name(istat)), ' Pem/Pabs=', ratio_em, &
+            ' iter=', min(iter, MAX_ITER), ' jPk=', jpmax
+         write(0,'(a,i0)') '  QM raw negative rates=', negative_total
       end if
 
       deallocate(isrf_wl_full, isrf_full, cabs_full)
       deallocate(isrf_wl_ds, isrf_ds, cabs_ds)
       deallocate(u, ua, ub, t_bins, lngu)
-      deallocate(amatrix, pstate_gd, pstate)
-      deallocate(amatrix1, pstate1, rhs, sa, ija)
+      deallocate(amatrix, pstate)
    end subroutine qm_solve_grain
+
+
+   !====================================================================
+   ! 19. Name of a qm_solve_grain status code.
+   !====================================================================
+   function qm_status_name(istat) result(name)
+      integer, intent(in) :: istat
+      character(len=24) :: name
+      select case (istat)
+      case (QM_SOLVED);               name = 'solved'
+      case (QM_INVALID_INPUT);        name = 'invalid_input'
+      case (QM_NO_STEADY_STATE);      name = 'no_steady_state'
+      case (QM_WINDOW_NOT_CONVERGED); name = 'window_not_converged'
+      case (QM_ENERGY_NOT_CONSERVED); name = 'energy_not_conserved'
+      case (QM_ATOM_COUNT_CAP);       name = 'atom_count_cap'
+      case (QM_INVALID_RATE);         name = 'invalid_transition_rate'
+      case default;                   name = 'unknown'
+      end select
+   end function qm_status_name
 
 end module stoch_qm_mod

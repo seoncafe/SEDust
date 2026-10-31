@@ -21,7 +21,7 @@ module dust_model_mod
    !                      size_integrated_extinction
    !   kappB    [..]      Planck-integral table used by calc_P/calc_Teq (NT, NA)
    !   H        [erg]     grain enthalpy (NT, NA)
-   !   kappCMB  [..]      CMB-pumped term for calc_P (NA)
+   !   kappCMB  [..]      legacy CMB integral above 1 mm (NA); not used in cooling
    !
    ! Types plus trivial (de)allocation helpers.
    use constants, only: wp

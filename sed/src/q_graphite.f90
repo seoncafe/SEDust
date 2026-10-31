@@ -12,7 +12,7 @@ module q_graphite_mod
    ! computed analytically per radius. Random-orientation average is
    ! Q_abs = (1/3) Q_∥ + (2/3) Q_⊥.
 
-   use constants, only: wp
+   use constants, only: wp, hc_evum
    use sed_mathlib,   only: interp
    use mie_mod,   only: mie
    use sed_paths, only: sed_data_path
@@ -92,7 +92,7 @@ contains
          cpa_eV(i)   = ener
          cpa_eps1(i) = e1
          cpa_eps2(i) = e2
-         cpa_wavl(i) = 1.23984_wp / ener     ! [um]
+         cpa_wavl(i) = hc_evum / ener     ! [um]
       end do
       close(u)
 
@@ -106,7 +106,7 @@ contains
          cpe_eV(i)   = ener
          cpe_eps1(i) = e1
          cpe_eps2(i) = e2
-         cpe_wavl(i) = 1.23984_wp / ener
+         cpe_wavl(i) = hc_evum / ener
       end do
       close(u)
 

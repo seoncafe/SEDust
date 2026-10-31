@@ -1,10 +1,9 @@
 program test_planck
-   use constants, only: wp
+   use constants, only: wp, h_si, c_si, k_si
    use radfield, only: bbody, calc_bbody, planck_grid_t, prepare_planck_grid
    implicit none
    integer, parameter :: n=1200
-   real(wp), parameter :: hc_kb_um = 6.62606957e-34_wp * 2.99792458e8_wp / &
-                                     1.3806488e-23_wp * 1.0e6_wp
+   real(wp), parameter :: hc_kb_um = h_si * c_si / k_si * 1.0e6_wp
    real(wp) :: lam(n), reference(n), measured(n), t
    type(planck_grid_t) :: grid
    integer :: i,j, bad

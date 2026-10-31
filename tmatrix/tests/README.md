@@ -37,8 +37,8 @@ workspaces rather than rounding. The `ampl` status of every call is compared
 too, so a workspace that lost or replaced its T-matrix would show up as a
 status mismatch rather than as amplitudes.
 
-`test_parallel_spheroid_optics.x` is the only harness that enters the driver
-layer. It runs `spheroid_q` on 48 cases spanning all three size-parameter
+`test_parallel_spheroid_optics.x` is the only parallel harness that enters the
+driver layer. It runs `spheroid_q` on 48 cases spanning all three size-parameter
 regimes — 16 Rayleigh, 24 T-matrix, 8 geometric optics, asserted from the
 returned flags so a case list that stopped covering a regime is reported rather
 than passed — and calls `rayleigh_limit` and `geometric_optics_limit` directly

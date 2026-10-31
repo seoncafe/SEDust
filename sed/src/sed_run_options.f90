@@ -22,7 +22,7 @@ module sed_run_options
    !                  own (declare_run_options(subjects=...)).
    !   solver         heuristic | draine | equil | qm | qm_dbcon | qm_stati
    !   grid           euv
-   !   field          mathis_orig, logU=X, hardfield
+   !   field          mathis_orig | hd23, logU=X, hardfield
    !   emission       induced, photcut
    !   qm size        nstate=N, nisrf=N
    !   graphite       gra_d03_sphere | gra_d16_sphere | gra_d16_spheroid
@@ -31,9 +31,8 @@ module sed_run_options
    !   zubko sizedist formula | table
    !   zubko optics   zda | mie_d03
    !
-   ! Every combination ACROSS axes is a valid run.  Only two things are refused:
-   ! two values of one axis, and a setting the chosen solver does not read
-   ! (check_run_options).
+   ! Combinations across axes are accepted when the selected solver reads
+   ! them and numerical counts meet the solver's minimum requirements.
    !
    ! Parsing and tagging are kept apart on purpose.  Reading an argument only
    ! records WHAT was asked for; the filename tag is assembled afterwards in ONE
@@ -100,6 +99,7 @@ module sed_run_options
 
       logical  :: hard_euv_field = .false.
       logical  :: mathis_orig    = .false.
+      logical  :: hd23           = .false.
       logical  :: set_logU       = .false.
       real(wp) :: logU           = 0.0_wp
 
@@ -220,7 +220,7 @@ contains
       character(len=*),    intent(in)    :: arg
       type(run_options_t), intent(inout) :: o
       logical,             intent(out)   :: taken
-      integer :: ieq
+      integer :: ieq, ios
 
       taken = .true.
       select case (trim(arg))
@@ -238,6 +238,9 @@ contains
       case ('mathis_orig')
          if (.not. axis_here(o, o%ax_field, arg, 'radiation-field')) return
          o%mathis_orig = .true.
+      case ('hd23')
+         if (.not. axis_here(o, o%ax_field, arg, 'radiation-field')) return
+         o%hd23 = .true.
 
       ! ---- stochastic solver ------------------------------------------
       case ('heuristic')
@@ -316,11 +319,19 @@ contains
                o%set_logU = .true.
             case ('nstate=')
                if (.not. axis_here(o, o%ax_qm_size, arg, 'transition-matrix-size')) return
-               read(arg(ieq+1:), *) o%nstate
+               read(arg(ieq+1:), *, iostat=ios) o%nstate
+               if (ios /= 0) then
+                  write(*,'(a,a)') ' Invalid nstate value: ', trim(arg)
+                  stop 1
+               end if
                o%set_nstate = .true.
             case ('nisrf=')
                if (.not. axis_here(o, o%ax_qm_size, arg, 'transition-matrix-size')) return
-               read(arg(ieq+1:), *) o%nisrf
+               read(arg(ieq+1:), *, iostat=ios) o%nisrf
+               if (ios /= 0) then
+                  write(*,'(a,a)') ' Invalid nisrf value: ', trim(arg)
+                  stop 1
+               end if
                o%set_nisrf = .true.
             case default
                taken = .false.
@@ -376,12 +387,15 @@ contains
 
 
    subroutine check_run_options(o)
-      ! Refuse the two kinds of combination that cannot be honored, and only
-      ! those: two values of one axis, and a setting the chosen solver does not
-      ! read.  Everything else is a valid run.  Keeping the last of two values
-      ! of one axis would write a file whose name claims something the run did
-      ! not do, and accepting a setting no solver reads would do the same.
+      ! Refuse conflicting settings, settings the solver does not read, and
+      ! bin counts below the solver's array requirements. Keeping the last
+      ! of two values of one axis would misstate the run in its filename.
       type(run_options_t), intent(in) :: o
+
+      if (o%mathis_orig .and. o%hd23) then
+         write(*,'(a)') ' '//trim(o%program)//': choose at most one of mathis_orig / hd23'
+         stop 1
+      end if
 
       if (o%n_solver > 1) then
          write(*,'(a)') ' '//trim(o%program)//': give at most one solver of'// &
@@ -411,13 +425,24 @@ contains
       end if
 
 
-      ! nstate / nisrf size the energy-space transition matrix and its
-      ! downsampled radiation field; no other solver builds one.
+      ! nstate / nisrf size the energy-space transition matrix and the
+      ! radiation-field grid it is built on (all field wavelengths unless
+      ! nisrf is given); no other solver builds one.
       if ((o%set_nstate .or. o%set_nisrf) .and. trim(o%solver) /= 'qm') then
          write(*,'(a)') ' '//trim(o%program)// &
             ': nstate= and nisrf= size the energy-space transition matrix,'
          write(*,'(a)') '   which only qm / qm_dbcon / qm_stati build.'// &
                         '  Solver named: '//trim(o%solver)
+         stop 1
+      end if
+      ! The mode-aligned enthalpy construction needs three low-energy and
+      ! two upper bins. A coarsened field grid needs two points.
+      if (o%set_nstate .and. o%nstate < 5) then
+         write(*,'(a)') ' nstate must be at least 5'
+         stop 1
+      end if
+      if (o%set_nisrf .and. o%nisrf < 2) then
+         write(*,'(a)') ' nisrf must be at least 2'
          stop 1
       end if
 
@@ -475,6 +500,7 @@ contains
 
       if (o%stage1_density_corrected) call append_token(tag, 'c2')
       if (o%mathis_orig)              call append_token(tag, 'morig')
+      if (o%hd23)                     call append_token(tag, 'hd23')
       if (o%set_logU) then
          write(piece,'(a,f0.2)') 'logU', o%logU
          call append_token(tag, trim(piece))
@@ -517,7 +543,9 @@ contains
          end if
       end if
       if (o%ax_field) then
-         if (o%mathis_orig) then
+         if (o%hd23) then
+            write(*,'(a)') ' field         : Hensley & Draine (2023) interstellar radiation field'
+         else if (o%mathis_orig) then
             write(*,'(a)') ' field         : Mathis 1983 as published'// &
                            ' (4000 K dilution 1e-13, CMB 2.9 K)'
          else
@@ -570,9 +598,10 @@ contains
       if (o%ax_grid) &
          write(*,'(a)') '   grid      : euv         solve the ionizing band as well'
       if (o%ax_field) then
+         write(*,'(a)') '   field     : hd23        Hensley & Draine (2023) field'
          write(*,'(a)') '   field     : mathis_orig literal Mathis 1983'// &
                         ' (4000 K dilution 1e-13, CMB 2.9 K)'
-         write(*,'(a)') '               logU=X      scale the Mathis field to U = 10^X'
+         write(*,'(a)') '               logU=X      scale the selected field to U = 10^X'
          write(*,'(a)') '               hardfield   fill the band below the Lyman'// &
                         ' limit with a diluted'
          write(*,'(a)') '                           1e5 K blackbody (implies euv)'
@@ -585,7 +614,7 @@ contains
       end if
       if (o%ax_qm_size) &
          write(*,'(a)') '   qm sizes  : nstate=N    enthalpy bins'// &
-                        '        nisrf=N  field wavelengths'
+                        '        nisrf=N  field wavelengths (default all)'
       if (o%ax_graphite) &
          write(*,'(a)') '   graphite  : gra_d03_sphere | gra_d16_sphere |'// &
                         ' gra_d16_spheroid  (PAH xi blend)'

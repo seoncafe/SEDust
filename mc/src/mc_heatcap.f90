@@ -20,7 +20,7 @@ module mc_heatcap
    ! (already integrated from 0); for D85 we evaluate the Debye integral
    ! analytically via the standard Debye_3 function.
 
-   use constants,             only: wp, pi
+   use constants,             only: wp, pi, kB_cgs => k_boltz
    use enthalpy,              only: enthalpy_DL01
    use enthalpy_astrodust_mod, only: enthalpy_S1, enthalpy_S2
    implicit none
@@ -29,7 +29,6 @@ module mc_heatcap
    public :: HC_DEFAULT
    character(len=*), parameter :: HC_DEFAULT = 'gra_dl01'
 
-   real(wp), parameter :: kB_cgs = 1.3806488e-16_wp   ! erg / K
    ! Draine 1985 graphite: Debye temperature and atom number density
    real(wp), parameter :: THETA_D85 = 420.0_wp        ! K
    real(wp), parameter :: NDENS_D85 = 1.14e23_wp      ! atoms / cm^3

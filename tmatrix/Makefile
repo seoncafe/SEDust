@@ -8,6 +8,8 @@
 #   run_tmatrix.x               random-orientation astrodust Q table
 #   spheroid_asymmetry_table.x  the G18 Model D scattering-asymmetry tables
 #   compare_mie_spheres.x       published-sphere checks behind those tables
+#   test_rayleigh_zero_scattering.x  zero-scattering conventions of the
+#                            Rayleigh limit (no library needed)
 
 FC = gfortran
 BUILD ?= release
@@ -95,7 +97,7 @@ tmatrix_status.o: src/tmatrix_status.f90
 tmatrix_types.o: src/tmatrix_types.f90 tmatrix_kinds.o
 	$(FC) $(MODERN_FFLAGS) -I. -c -o $@ $<
 tmatrix_core.o: src/tmatrix_core.f90 tmatrix_kinds.o tmatrix_types.o
-	# RECURSIVE_FLAG keeps every migrated helper reentrant.  NOINLINE_FLAG is
+	# RECURSIVE_FLAG keeps every migrated routine reentrant.  NOINLINE_FLAG is
 	# no longer a stack workaround -- TT/TMATR/GSP scratch now lives in the
 	# caller's workspace, so an inlined build needs 190 KB of thread stack
 	# instead of 3.1 MB and runs safely.  It is kept because inlining changes
@@ -245,16 +247,30 @@ test_parallel_full_direct.x: libtmatrix.a test_cases.o tests/test_parallel_full_
 	$(FC) $(MODERN_FFLAGS) $(OMPFLAGS) -I. tests/test_parallel_full_direct.f90 test_cases.o -L. -ltmatrix $(LDFLAGS) -o $@
 test_parallel_scattering_matrix.x: libtmatrix.a test_cases.o tests/test_parallel_scattering_matrix.f90
 	$(FC) $(MODERN_FFLAGS) $(OMPFLAGS) -I. tests/test_parallel_scattering_matrix.f90 test_cases.o -L. -ltmatrix $(LDFLAGS) -o $@
-# The only harness that enters the driver layer: it drives spheroid_q through
-# all three size-parameter regimes, so the Rayleigh and geometric-optics paths
-# through asymptotic_optics are covered as well.  It carries RECURSIVE_FLAG
-# itself because it evaluates one case in an internal procedure whose locals
-# are not covered by an OpenMP private clause; the harness must be reentrant
-# for the objects under test to be the only thing it measures.
+# The one parallel harness that enters the driver layer: it drives spheroid_q
+# through all three size-parameter regimes, so the Rayleigh and
+# geometric-optics paths through asymptotic_optics are covered as well.  It
+# carries RECURSIVE_FLAG itself because it evaluates one case in an internal
+# procedure whose locals are not covered by an OpenMP private clause; the
+# harness must be reentrant for the objects under test to be the only thing it
+# measures.
 test_parallel_spheroid_optics.x: libtmatrix.a asymptotic_optics.o spheroid_optics.o tests/test_parallel_spheroid_optics.f90
 	$(FC) $(MODERN_FFLAGS) $(RECURSIVE_FLAG) $(OMPFLAGS) -I. tests/test_parallel_spheroid_optics.f90 asymptotic_optics.o spheroid_optics.o -L. -ltmatrix $(LDFLAGS) -o $@
+# The zero-scattering conventions of rayleigh_limit: a vacuum contrast
+# (m = 1), a lossless dipole, and an absorbing one, with and without the
+# optional scattering moments.  No scattering returns finite zeros for the
+# albedo, asymmetry, and matrix coefficients rather than 0/0.  It needs only the
+# driver object, not the library.  `make BUILD=debug test_rayleigh_zero_scattering.x`
+# adds the runtime checks and the invalid/zero/overflow floating-point traps.
+# The conventions are exact zeros and exact unit albedos, so the test compares
+# reals exactly on purpose; RAYLEIGH_TEST_FLAGS silences that one GNU warning.
+ifeq ($(FC_FAMILY),gnu)
+  RAYLEIGH_TEST_FLAGS = -Wno-compare-reals
+endif
+test_rayleigh_zero_scattering.x: tmatrix_kinds.o asymptotic_optics.o tests/test_rayleigh_zero_scattering.f90
+	$(FC) $(MODERN_FFLAGS) $(RAYLEIGH_TEST_FLAGS) -I. tests/test_rayleigh_zero_scattering.f90 asymptotic_optics.o $(LDFLAGS) -o $@
 
-test: test-production-package test-default-backend test_api_regression.x test_api_status.x test_full_direct_regression.x test_parallel_api.x test_parallel_full_direct.x test_parallel_scattering_matrix.x test_parallel_spheroid_optics.x
+test: test-production-package test-default-backend test_api_regression.x test_api_status.x test_full_direct_regression.x test_parallel_api.x test_parallel_full_direct.x test_parallel_scattering_matrix.x test_parallel_spheroid_optics.x test_rayleigh_zero_scattering.x
 	./test_api_regression.x
 	./test_api_status.x
 	./test_full_direct_regression.x
@@ -262,6 +278,7 @@ test: test-production-package test-default-backend test_api_regression.x test_ap
 	OMP_NUM_THREADS=4 ./test_parallel_full_direct.x
 	OMP_NUM_THREADS=4 ./test_parallel_scattering_matrix.x
 	OMP_NUM_THREADS=4 ./test_parallel_spheroid_optics.x
+	./test_rayleigh_zero_scattering.x
 
 test-default-backend:
 	@awk 'index($$0, "subroutine tmatrix_eval("), index($$0, "end subroutine tmatrix_eval")' src/tmatrix_api.f90 | grep -q 'call full_direct_eval'
@@ -318,7 +335,7 @@ clean:
 	rm -f *.o *.mod *.a *.x
 
 cleanall: clean
-	rm -f run_tmatrix.x spheroid_asymmetry_table.x compare_mie_spheres.x evaluate_one.x test_api_regression.x test_api_status.x test_full_direct_regression.x test_parallel_api.x test_parallel_full_direct.x test_parallel_scattering_matrix.x test_parallel_spheroid_optics.x
+	rm -f run_tmatrix.x spheroid_asymmetry_table.x compare_mie_spheres.x evaluate_one.x test_api_regression.x test_api_status.x test_full_direct_regression.x test_parallel_api.x test_parallel_full_direct.x test_parallel_scattering_matrix.x test_parallel_spheroid_optics.x test_rayleigh_zero_scattering.x
 
 .PHONY: all clean cleanall example test smoke lyman_cut test-debug test-default-backend test-production-package test-full-direct-parallel test-api-parallel test-scattering-matrix-parallel test-spheroid-optics-parallel
 

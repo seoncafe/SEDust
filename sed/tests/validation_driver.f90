@@ -3,6 +3,7 @@
 ! Usage: validation.x 200 heuristic[,heuristic#1e-6] output_directory data_directory
 program validation_driver
    use dust_lib
+   use constants, only: h_si, c_si, k_si, hc_evum, pi
    use omp_lib, only: omp_get_wtime
 #ifdef BIN_POWER
    use sed_astrodust_mod, only: emission_bin_power_cutoff, &
@@ -13,8 +14,7 @@ program validation_driver
    integer, parameter :: dp=kind(1d0), nrep=5, nshape=3, npow=5
    real(dp), parameter :: pow(npow)=[3d-23,1d-22,1d-21,1d-20,1d-19]
    character(len=2), parameter :: shn(nshape)=['S0','S1','S2']
-   real(dp), parameter :: hpl=6.62607015d-34, cl=2.99792458d8, kb=1.380649d-23
-   real(dp), parameter :: pi=3.141592653589793d0, hc_evum=1.23984d0, tbb=4.0d4
+   real(dp), parameter :: tbb=4.0d4
    character(len=512) :: data_dir
    type(dust_model_t) :: m
    integer :: nt, st, nlam, nch, ish, ipw, irep, im, nmeth, u, k, cut
@@ -151,8 +151,8 @@ contains
       real(dp),intent(in) :: lum
       real(dp) :: b,lm,x
       lm=lum*1d-6
-      x=hpl*cl/(lm*kb*tbb)
-      b=2d0*hpl*cl**2/lm**5/(exp(x)-1d0)
+      x=h_si*c_si/(lm*k_si*tbb)
+      b=2d0*h_si*c_si**2/lm**5/(exp(x)-1d0)
    end function planck_si
    function supported_power(lambda, cross, field) result(power)
       real(dp),intent(in) :: lambda(:),cross(:),field(:)

@@ -6,6 +6,10 @@
 #   main_mc_sed.x       size-distribution SED builder, OpenMP-parallel
 #   main_pT_compare.x   single-grain P(T): MC vs the GD matrix solver
 #
+# Test:
+#   test_mc_supplied_field.x   grain_setup_from_cabs takes a supplied field
+#                              as is; its default is the J_Mathis field
+#
 # All shared modules come from ../sed/src -- this subproject has no
 # dependency outside the SEDust tree.
 
@@ -113,11 +117,59 @@ main_pT_compare.x: $(SRC_PT_COMPARE_ALL) | output
 	$(FC) $(FFLAGS) $(OMPFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./main_pT_compare.x'
 
+# grain_setup_from_cabs with a supplied J_lam_in uses that field unscaled,
+# whatever U_isrf is, and without one builds the same field as an explicit
+# J_Mathis call at the same U.
+SRC_TEST_FIELD = $(SHARED_BASE) $(SHARED_GRA) $(SHARED_RAD) $(SHARED_ENT) \
+                 $(SRC_ENGINE) tests/test_mc_supplied_field.f90
+
+test_mc_supplied_field.x: $(SRC_TEST_FIELD)
+	$(FC) $(FFLAGS) $^ -o $@
+	@echo 'Built: ./test_mc_supplied_field.x'
+
+SRC_TEST_INTERVAL = $(SHARED_BASE) $(SHARED_GRA) $(SHARED_RAD) $(SHARED_ENT) \
+                    $(SRC_ENGINE) tests/test_mc_cooling_interval.f90
+
+test_mc_cooling_interval.x: $(SRC_TEST_INTERVAL)
+	$(FC) $(FFLAGS) $^ -o $@
+	@echo 'Built: ./test_mc_cooling_interval.x'
+
+SRC_TEST_STATIONARY = $(SHARED_BASE) $(SHARED_GRA) $(SHARED_RAD) $(SHARED_ENT) \
+                      $(SRC_ENGINE) tests/test_mc_stationary.f90
+
+test_mc_stationary.x: $(SRC_TEST_STATIONARY)
+	$(FC) $(FFLAGS) $^ -o $@
+	@echo 'Built: ./test_mc_stationary.x'
+
+SRC_TEST_GRAPHITE_STATIONARY = $(SHARED_BASE) $(SHARED_GRA) $(SHARED_RAD) $(SHARED_ENT) \
+                               $(SRC_ENGINE) tests/test_mc_graphite_stationary.f90
+
+test_mc_graphite_stationary.x: $(SRC_TEST_GRAPHITE_STATIONARY)
+	$(FC) $(FFLAGS) $^ -o $@
+	@echo 'Built: ./test_mc_graphite_stationary.x'
+
+SRC_TEST_STATIONARY_START = $(SHARED_BASE) $(SHARED_GRA) $(SHARED_RAD) $(SHARED_ENT) \
+                            $(SRC_ENGINE) tests/test_mc_stationary_start.f90
+
+test_mc_stationary_start.x: $(SRC_TEST_STATIONARY_START)
+	$(FC) $(FFLAGS) $^ -o $@
+	@echo 'Built: ./test_mc_stationary_start.x'
+
+SRC_TEST_PHOTON = $(SHARED_BASE) $(SHARED_GRA) $(SHARED_RAD) $(SHARED_ENT) \
+                  $(SRC_ENGINE) tests/test_photon_support.f90
+
+test_photon_support.x: $(SRC_TEST_PHOTON)
+	$(FC) $(FFLAGS) $(OMPFLAGS) -o $@ $(SRC_TEST_PHOTON)
+
+.PHONY: test_driver_inputs
+test_driver_inputs: main_mc.x main_pT_compare.x
+	python3 tests/test_driver_inputs.py ./main_mc.x ./main_pT_compare.x
+
 clean:
 	rm -f *.o *.mod
 
 cleanall: clean
-	rm -f main_mc.x main_mc_sed.x main_pT_compare.x
+	rm -f test_photon_support.x main_mc.x main_mc_sed.x main_pT_compare.x test_mc_supplied_field.x test_mc_cooling_interval.x test_mc_stationary.x test_mc_graphite_stationary.x test_mc_stationary_start.x
 	rm -f output/Tt_*.dat output/PT_*.dat output/sed_*.dat \
 	      output/pT_compare_*.dat
 

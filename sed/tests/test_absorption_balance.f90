@@ -13,12 +13,12 @@ program test_absorption_balance
    ! band whose exterior zeros must not extend it), two enthalpy resolutions,
    ! and the wavelength grid both matching and not matching the p_sub_setup
    ! cache.
-   use constants, only: wp
+   use constants, only: wp, hc_ergum
    use p_sub, only: p_sub_setup, calc_P, radiation_absorption
    implicit none
    integer, parameter :: NLAM = 400, NFIELD = 3, NGRAIN = 6
    real(wp), parameter :: PI = 3.141592653589793238462643383279502884197_wp
-   real(wp), parameter :: HC = 6.62606957e-27_wp*2.99792458e10_wp*1e4_wp   ! erg um
+   real(wp), parameter :: HC = hc_ergum   ! erg um
    real(wp), parameter :: TOL = 1e-14_wp
    ! H(T) = H_SCALE T^3 / (1 + (T/300 K)^2) [erg], kappB = K T^6, on a
    ! logarithmic temperature grid [T_LO, T_HI].

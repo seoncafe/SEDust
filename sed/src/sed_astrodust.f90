@@ -23,7 +23,7 @@ module sed_astrodust_mod
 
    use, intrinsic :: iso_fortran_env, only: int64
    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-   use constants,             only: wp
+   use constants,             only: wp, h_si, c_si, hc, hc_ergum, ev2erg
    use sed_mathlib,               only: interp, first_location, last_location, locate
    use radfield,              only: bbody, calc_bbody, planck_grid_t, prepare_planck_grid, &
                                     hardest_photon_energy, cmb_temperature
@@ -42,7 +42,8 @@ module sed_astrodust_mod
                                     qpah_xsec_vintage, &
                                     nc_coeff, nc_integer, qpah_graphite_source
    use pah_ld01_mod,          only: use_ld01_pah_xsec
-   use stoch_qm_mod,          only: qm_solve_grain, qm_verbose
+   use stoch_qm_mod,          only: qm_solve_grain, qm_verbose, qm_status_name, &
+                                    QM_STATUS_MAX
    ! DL07 (silicate + carbonaceous) model support
    use grain_dist_mod,        only: grain_dist_dl07, gd_apply_d03_reduction
    use q_silicate_mod,        only: q_silicate_full, &
@@ -134,7 +135,7 @@ module sed_astrodust_mod
    ! Cabs_cneu / Cabs_cion.  kappB_pah_first is the f_ion-blended grain's and
    ! belongs with Cabs_pah only.
    public :: kappB_cneu, kappB_cion
-   ! Exposed for mc/ single-grain P(T) cross-check (calc_P needs H, kappCMB):
+   ! Exposed for single-grain checks and legacy partial CMB integral access:
    public :: H_first, H_pah_first, kappCMB, kappCMB_pah
    ! Toggle for the induced-emission (1 + J_lam/B_envelope) factor.
    ! Draine's emission kernel applies it, producing GROSS emission
@@ -162,6 +163,8 @@ module sed_astrodust_mod
    public :: sed_verbose
 
    real(wp), parameter :: PI    = 3.141592653589793238462643383279502884197d0
+   ! Indices of actual QM cooling methods in optional count arrays.
+   integer, parameter :: QM_DBCON = 1, QM_DBDIS = 2, QM_STATI = 3
    real(wp), parameter :: UM2CM = 1.0e-4_wp
 
    ! Solid mass densities of the two DL07 / WD01 materials [g/cm^3], used to
@@ -266,10 +269,8 @@ module sed_astrodust_mod
    ! The Lyman limit, 13.6 eV: where an interstellar radiation field stops, and
    ! the short-wavelength end of the non-ionizing products.
    real(wp), parameter :: LAM_LYMAN_UM = 0.0912_wp
-   ! SI constants for the induced-emission factor (h*c^2 in J*m^2/s).
-   real(wp), parameter :: H_SI    = 6.62606957e-34_wp
-   real(wp), parameter :: C_SI    = 2.99792458e8_wp
-   real(wp), parameter :: TWO_HCC = 2.0_wp * H_SI * C_SI**2
+   ! 2*h*c^2 in J*m^2/s, for the induced-emission factor.
+   real(wp), parameter :: TWO_HCC = 2.0_wp * h_si * c_si**2
 
    ! ---- optics of the EUV band below the Q table ------------------------
    ! sed_init fills the wavelengths it prepends below the Q table's 0.0912 um
@@ -346,7 +347,6 @@ module sed_astrodust_mod
    real(wp), save :: emission_bin_power_skipped = 0.0_wp
    real(wp), save :: emission_bin_power_weighted_total = 0.0_wp
    real(wp), save :: emission_bin_power_weighted_skipped = 0.0_wp
-   real(wp), parameter :: HC_ERG_UM = 6.62606957e-27_wp * 2.99792458e10_wp * 1.0e4_wp
    ! Production default solver. 'heuristic' = the GD look-ahead-narrowing variant
    ! (faster); 'draine' = Draine's original GD (Guhathakurta & Draine 1989 +
    ! grain-by-grain narrowing); 'qm' = energy-space transition matrix. Selectable via the
@@ -445,14 +445,14 @@ module sed_astrodust_mod
    !                  [Teq * exp(-NARROW_FAC*del), Teq * exp(+NARROW_FAC*del)]
    !                  with del = 2 * the previous grain's lnP > lnP_crit
    !                  half-width. Cheaper but does not threshold-target.
-   !   'qm'        -> quantum-mechanical solver (not yet implemented).
+   !   'qm'        -> energy-bin stochastic heating solver with selectable
+   !                  thermal-discrete, thermal-continuous, or
+   !                  exact-statistical cooling.
 
    ! --- Draine iterative constants ---
-   real(wp), parameter :: EV_TO_ERG      = 1.60218e-12_wp
-   real(wp), parameter :: EEQSS_ERG      = 150.0_wp * EV_TO_ERG    ! steady-state threshold
-   real(wp), parameter :: UMAXMIN_ERG    = 13.65_wp * EV_TO_ERG    ! single-UV-photon floor
-   real(wp), parameter :: U_UV1_ERG      = 13.6_wp  * EV_TO_ERG    ! 1 hydrogen-ionizing photon
-   real(wp), parameter :: HC_CGS_PER_CM  = 1.98645e-16_wp          ! erg per cm^-1 photon
+   real(wp), parameter :: EEQSS_ERG      = 150.0_wp * ev2erg       ! steady-state threshold
+   real(wp), parameter :: UMAXMIN_ERG    = 13.65_wp * ev2erg       ! single-UV-photon floor
+   real(wp), parameter :: U_UV1_ERG      = 13.6_wp  * ev2erg       ! 1 hydrogen-ionizing photon
    real(wp), parameter :: PMIN_LO        = 1.0e-13_wp              ! Draine v7 tail thresholds
    real(wp), parameter :: PMIN_UP        = 1.0e-13_wp
    integer,  parameter :: MAX_ITER_NARROW = 10
@@ -780,7 +780,7 @@ contains
       call build_kappB()
       log_kappB_first = log(max(kappB_first, tiny(0.0_wp)))
 
-      ! ---- kappCMB(NA) = CMB Planck integral (used in calc_P) ----
+      ! ---- kappCMB(NA) = partial CMB Planck integral (lambda > 1 mm) ----
       call build_kappCMB()
 
       ! ---- H_first(NT, NA, 2) for the two astrodust enthalpy stages ----
@@ -899,7 +899,7 @@ contains
       allocate(Jout(NLAM))
 
       call sed_grain_loop(NA, dn_ad, aeff, Cabs, kappB_first, H_first(:,:,is), &
-                          log_H_first(:,:,is), log_kappB_first, kappCMB, &
+                          log_H_first(:,:,is), log_kappB_first, &
                           J_lam, 'sil', Jout)
 
       if (use_induced_emission) call apply_induced_factor(J_lam, Jout)
@@ -948,12 +948,12 @@ contains
          if (icharge == 0) then
             call sed_grain_loop(NA, dn_cneu, aeff, Cabs_cneu, kappB_cneu, &
                                 H_pah_first, log_H_pah_first, &
-                                log_kappB_cneu, kappCMB_cneu, &
+                                log_kappB_cneu, &
                                 J_lam, 'pah', Jout_q)
          else
             call sed_grain_loop(NA, dn_cion, aeff, Cabs_cion, kappB_cion, &
                                 H_pah_first, log_H_pah_first, &
-                                log_kappB_cion, kappCMB_cion, &
+                                log_kappB_cion, &
                                 J_lam, 'pah', Jout_q)
          end if
          Jout = Jout + Jout_q
@@ -1336,14 +1336,15 @@ contains
    end subroutine sed_init_dl07
 
 
-   subroutine sed_solve_dl07(J_lam, lamI_total, lamI_sil, lamI_carb)
+   subroutine sed_solve_dl07(J_lam, lamI_total, lamI_sil, lamI_carb, actual_counts)
       ! Total DL07 SED = silicate + carbonaceous, each via the shared
       ! grain loop (GD stochastic solver). Outputs lambda*I_lambda / N_H
       ! [erg s^-1 sr^-1 H^-1], same convention as sed_solve.
       real(wp), intent(in)  :: J_lam(:)
       real(wp), intent(out) :: lamI_total(:), lamI_sil(:), lamI_carb(:)
+      integer, optional, intent(out) :: actual_counts(3,2) ! dbcon/dbdis/stati by silicate/carbonaceous
       real(wp), allocatable :: Jout_s(:), Jout_c(:), Jout_q(:)
-      integer :: icharge
+      integer :: icharge, sil_counts(3), charge_counts(3), carb_counts(3)
 
       if (.not. initialized) then
          write(*,'(a)') 'sed_solve_dl07: call sed_init_dl07 first'
@@ -1351,11 +1352,12 @@ contains
       end if
 
       allocate(Jout_s(NLAM), Jout_c(NLAM), Jout_q(NLAM))
+      carb_counts = 0
 
       ! Silicate population
       call sed_grain_loop(NA, dn_ad, aeff, Cabs, kappB_first, H_first(:,:,1), &
-                          log_H_first(:,:,1), log_kappB_first, kappCMB, &
-                          J_lam, 'sil', Jout_s)
+                          log_H_first(:,:,1), log_kappB_first, &
+                          J_lam, 'sil', Jout_s, actual_counts=sil_counts)
 
       ! Carbonaceous: solve neutral and cation as SEPARATE stochastic
       ! populations (different absorption -> different T distribution) and
@@ -1372,9 +1374,10 @@ contains
          call build_kappCMB_pah()               ! reads Cabs_pah -> kappCMB_pah
          call sed_grain_loop(NA, dn_pah, aeff, Cabs_pah, kappB_pah_first, &
                              H_pah_first, log_H_pah_first, &
-                             log_kappB_pah_first, kappCMB_pah, &
-                             J_lam, 'pah', Jout_q)
+                             log_kappB_pah_first, &
+                             J_lam, 'pah', Jout_q, actual_counts=charge_counts)
          Jout_c = Jout_c + Jout_q
+         carb_counts = carb_counts + charge_counts
       end do
 
       if (use_induced_emission) then
@@ -1385,6 +1388,10 @@ contains
       lamI_sil   = lam * Jout_s * 1.0e-3_wp
       lamI_carb  = lam * Jout_c * 1.0e-3_wp
       lamI_total = lamI_sil + lamI_carb
+      if (present(actual_counts)) then
+         actual_counts(:,1) = sil_counts
+         actual_counts(:,2) = carb_counts
+      end if
 
       deallocate(Jout_s, Jout_c, Jout_q)
    end subroutine sed_solve_dl07
@@ -1397,8 +1404,8 @@ contains
    ! stoch_method.
    ! =====================================================================
    subroutine sed_grain_loop(npop, dn_pop, aeff_pop, Cabs_pop, kappB_pop, H_pop, &
-                              log_H_pop, log_kappB_pop, kappCMB_pop, &
-                              J_lam, grain_type, Jout)
+                              log_H_pop, log_kappB_pop, &
+                              J_lam, grain_type, Jout, actual_counts)
       integer,          intent(in)  :: npop
       real(wp),         intent(in)  :: dn_pop(:)          ! (npop)
       real(wp),         intent(in)  :: aeff_pop(:)        ! (npop) [um] radii of this population
@@ -1407,13 +1414,16 @@ contains
       real(wp),         intent(in)  :: H_pop(:,:)         ! (NT, npop)
       real(wp),         intent(in)  :: log_H_pop(:,:)     ! (NT, npop)
       real(wp),         intent(in)  :: log_kappB_pop(:,:) ! (NT, npop)
-      real(wp),         intent(in)  :: kappCMB_pop(:)     ! (npop)
       real(wp),         intent(in)  :: J_lam(:)           ! (NLAM)
       character(len=*), intent(in)  :: grain_type         ! 'sil' or 'pah'
       real(wp),         intent(out) :: Jout(:)            ! (NLAM)
+      integer, optional, intent(out) :: actual_counts(3)  ! dbcon, dbdis, stati
 
       integer  :: ir, ii, loc1, loc2, iguard, n_guard_resolve
-      integer  :: n_stoch, n_equil_eeq, n_equil_fail
+      integer  :: n_stoch, n_equil_eeq, n_equil_fail, n_qm_fail_gd
+      integer  :: qm_stat, n_qm_status(0:QM_STATUS_MAX)
+      integer  :: cooling_counts(3)
+      character(len=5) :: actual_cooling
       real(wp) :: Teq, EEQ, del, Tmin_n, Tmax_n, a_cm_qm
       real(wp) :: bin_power, power_cut
       real(wp), allocatable :: spec(:), P(:), lnP(:)
@@ -1423,6 +1433,8 @@ contains
       type(planck_grid_t) :: emission_planck_grid
 
       Jout = 0.0_wp
+      cooling_counts = 0
+      if (present(actual_counts)) actual_counts = 0
       call prepare_planck_grid(lam, emission_planck_grid)
       if (.not. ieee_is_finite(emission_bin_power_cutoff) .or. &
           emission_bin_power_cutoff < 0.0_wp .or. emission_bin_power_cutoff > 1.0_wp) &
@@ -1441,7 +1453,7 @@ contains
          n_stoch = 0; n_equil_eeq = 0; n_equil_fail = 0
          !$omp parallel default(none) &
          !$omp&   shared(npop, dn_pop, Cabs_pop, kappB_pop, H_pop, &
-         !$omp&          log_H_pop, log_kappB_pop, kappCMB_pop, J_lam, &
+         !$omp&          log_H_pop, log_kappB_pop, J_lam, &
          !$omp&          T_first, lam, Jout, NLAM, NT, emission_planck_grid) &
          !$omp&   private(ir, ii, Teq, EEQ, Equil, converged, &
          !$omp&           spec, P, lnP, T, H, kappB, Jout_local) &
@@ -1465,7 +1477,7 @@ contains
             if (.not. Equil) then
                call narrow_iterative(H_pop(:, ir), log_H_pop(:, ir), &
                                      kappB_pop(:, ir), log_kappB_pop(:, ir), &
-                                     kappCMB_pop(ir), Cabs_pop(:, ir), J_lam, &
+                                     Cabs_pop(:, ir), J_lam, &
                                      Teq, EEQ, T, P, converged)
                if (.not. converged) then
                   Equil = .true.; n_equil_fail = n_equil_fail + 1
@@ -1502,9 +1514,10 @@ contains
          ! grain, but the window TOP is set per grain from the physical
          ! hot-tail bound (Draine's UMAX convention, vsg_td_emission_v7
          ! line 646):  T_max = H^{-1}(13.6 eV + 2 H(Teq)).
-         ! No excursion can exceed "hardest single photon on top of twice
-         ! the equilibrium enthalpy", so this places the top correctly
-         ! without the draine-variant's iterative re-solves. The original
+         ! This estimates the upper window for isolated photon heating;
+         ! repeated absorption before cooling can exceed it, so it is not
+         ! a physical upper bound. The probability guard below checks the
+         ! finite window but does not prove convergence. The original
          ! look-ahead top (Teq*exp(+NARROW_FAC*del), inherited from the
          ! previous grain) could land inside the populated tail; calc_P
          ! assigns every photon that carries the grain past the window's top
@@ -1561,8 +1574,8 @@ contains
                do iguard = 1, 3
                   call narrow_T_window(ir, log_H_pop, log_kappB_pop, &
                                        Tmin_n, Tmax_n, T, H, kappB)
-                  call calc_P(lam, Cabs_pop(:, ir), J_lam, T, kappB, H, &
-                              P, lnP, kappCMB_pop(ir))
+                  ! J_lam already includes any CMB; use the full absorbed field.
+                  call calc_P(lam, Cabs_pop(:, ir), J_lam, T, kappB, H, P, lnP)
                   ! P(top) guard: if the top bin is still populated above
                   ! the tail threshold, the window clipped the hot tail --
                   ! raise the top and re-solve (rare).
@@ -1609,7 +1622,7 @@ contains
                      if (gd_photon_cutoff) then
                         ! dbdis photon cutoff: a grain in bin ii cannot
                         ! emit a photon more energetic than its enthalpy.
-                        where (lam < HC_ERG_UM / H(ii)) spec = 0.0_wp
+                        where (lam < hc_ergum / H(ii)) spec = 0.0_wp
                      end if
                      Jout = Jout + dn_pop(ir) * P(ii) * Cabs_pop(:, ir) * spec
                   end if
@@ -1622,17 +1635,18 @@ contains
             ' guard_resolves=', n_guard_resolve, ']'
 
       case ('qm')
-         ! ----- Quantum-mechanical (dbdis) solver -----------------------
+         ! ----- QM energy-space solver; cooling method is selected by the engine ----
          ! Each grain decides equilibrium independently (EEQ threshold),
          ! so the loop is OpenMP-parallelizable.
-         n_stoch = 0; n_equil_eeq = 0; n_equil_fail = 0
+         n_stoch = 0; n_equil_eeq = 0; n_equil_fail = 0; n_qm_fail_gd = 0
+         n_qm_status = 0
          !$omp parallel default(none) &
          !$omp&   shared(npop, dn_pop, aeff_pop, Cabs_pop, kappB_pop, H_pop, &
-         !$omp&          log_H_pop, log_kappB_pop, kappCMB_pop, J_lam, &
+         !$omp&          log_H_pop, log_kappB_pop, J_lam, &
          !$omp&          T_first, lam, grain_type, Jout, NLAM, NT, emission_planck_grid) &
-         !$omp&   private(ir, ii, Teq, EEQ, Equil, converged, a_cm_qm, qm_ok, &
+         !$omp&   private(ir, ii, Teq, EEQ, Equil, converged, a_cm_qm, qm_ok, qm_stat, actual_cooling, &
          !$omp&           spec, P, lnP, T, H, kappB, Jout_local, emission_qm) &
-         !$omp&   reduction(+:n_stoch, n_equil_eeq, n_equil_fail)
+         !$omp&   reduction(+:n_stoch, n_equil_eeq, n_equil_fail, n_qm_fail_gd, n_qm_status, cooling_counts)
          allocate(spec(NLAM), P(NT), lnP(NT), T(NT), H(NT), kappB(NT))
          allocate(Jout_local(NLAM), emission_qm(NLAM))
          Jout_local = 0.0_wp
@@ -1653,11 +1667,21 @@ contains
                if (.not. Equil) then
                   a_cm_qm = aeff_pop(ir) * UM2CM
                   call qm_solve_grain(NLAM, lam, Cabs_pop(:,ir), J_lam, &
-                                      NT, T_first, H_pop(:,ir), &
-                                      Teq, EEQ, EEQSS_ERG, &
+                                      EEQ, EEQSS_ERG, &
                                       a_cm_qm, grain_type, &
-                                      emission_qm, qm_ok)
+                                      emission_qm, qm_ok, qm_stat, actual_cooling_out=actual_cooling)
+                  n_qm_status(qm_stat) = n_qm_status(qm_stat) + 1
                   if (qm_ok) then
+                     select case (actual_cooling)
+                     case ('dbcon')
+                        cooling_counts(QM_DBCON) = cooling_counts(QM_DBCON) + 1
+                     case ('dbdis')
+                        cooling_counts(QM_DBDIS) = cooling_counts(QM_DBDIS) + 1
+                     case ('stati')
+                        cooling_counts(QM_STATI) = cooling_counts(QM_STATI) + 1
+                     case default
+                        error stop 'sed_grain_loop: successful QM solve lacks cooling method'
+                     end select
                      do ii = 1, NLAM
                         Jout_local(ii) = Jout_local(ii) + dn_pop(ir) * emission_qm(ii) / &
                                          (4.0_wp * PI * lam(ii) * 1.0e-3_wp)
@@ -1667,7 +1691,7 @@ contains
                      ! QM failed: fall back to GD for this grain only.
                      call narrow_iterative(H_pop(:, ir), log_H_pop(:, ir), &
                                            kappB_pop(:, ir), log_kappB_pop(:, ir), &
-                                           kappCMB_pop(ir), Cabs_pop(:, ir), J_lam, &
+                                           Cabs_pop(:, ir), J_lam, &
                                            Teq, EEQ, T, P, converged)
                      if (converged) then
                         do ii = 1, NT
@@ -1676,10 +1700,11 @@ contains
                               Jout_local = Jout_local + dn_pop(ir) * P(ii) * Cabs_pop(:, ir) * spec
                            end if
                         end do
+                        n_qm_fail_gd = n_qm_fail_gd + 1
                      else
                         Equil = .true.
+                        n_equil_fail = n_equil_fail + 1
                      end if
-                     n_equil_fail = n_equil_fail + 1
                   end if
                end if
 
@@ -1695,9 +1720,16 @@ contains
          !$omp end critical
          deallocate(spec, P, lnP, T, H, kappB, Jout_local)
          !$omp end parallel
-         if (sed_verbose) write(*,'(a,i4,a,i4,a,i4,a)') &
+         ! stoch = solved by QM; qm_fail_to_gd / qm_fail_to_eq = QM refused the
+         ! grain and it was solved by the GD narrowing / left in equilibrium.
+         if (sum(cooling_counts) /= n_stoch) error stop 'sed_grain_loop: QM cooling count mismatch'
+         if (present(actual_counts)) actual_counts = cooling_counts
+         if (sed_verbose) write(*,'(7(a,i0),a)') &
             '   [QM solver: stoch=', n_stoch, ' eeq_gate=', n_equil_eeq, &
-            ' fail_to_eq=', n_equil_fail, ']'
+            ' qm_fail_to_gd=', n_qm_fail_gd, ' qm_fail_to_eq=', n_equil_fail, &
+            ' dbcon=', cooling_counts(QM_DBCON), ' dbdis=', cooling_counts(QM_DBDIS), &
+            ' stati=', cooling_counts(QM_STATI), ']'
+         if (sed_verbose) call write_qm_refusals(n_qm_status)
 
       case ('equil')
          ! Force EQUILIBRIUM for ALL grains (no stochastic heating): each
@@ -1726,18 +1758,36 @@ contains
 
 
    ! =====================================================================
-   ! Batch QM solver: process all 3 grain types (S1, S2, PAH)
-   ! in ONE OpenMP parallel region.  Total work = 3 × NA grains ≈ 486,
-   ! with ~210 stochastic grains, keeping all threads busy.
+   ! Batch QM solver: process S1, S2, PAH-neutral, and PAH-cation
+   ! in one OpenMP parallel region (4 * NA size entries).
    ! =====================================================================
-   subroutine sed_solve_qm_batch(J_lam, lamI_stages, lamI_pah)
+   subroutine write_qm_refusals(n_status)
+      ! One line naming why the energy-space solver refused grains (status
+      ! codes of stoch_qm_mod), printed only when it refused any.
+      integer, intent(in) :: n_status(0:QM_STATUS_MAX)
+      integer :: k
+      character(len=256) :: line
+      if (sum(n_status(1:)) == 0) return
+      line = '   [QM refusals:'
+      do k = 1, QM_STATUS_MAX
+         if (n_status(k) > 0) write(line,'(a,1x,a,a,i0)') trim(line), &
+            trim(qm_status_name(k)), '=', n_status(k)
+      end do
+      write(*,'(a,a)') trim(line), ']'
+   end subroutine write_qm_refusals
+
+   subroutine sed_solve_qm_batch(J_lam, lamI_stages, lamI_pah, actual_counts)
       real(wp), intent(in)  :: J_lam(:)            ! (NLAM)
       real(wp), intent(out) :: lamI_stages(:,:)    ! (NLAM, 2)
       real(wp), intent(out) :: lamI_pah(:)         ! (NLAM)
+      integer, optional, intent(out) :: actual_counts(3,4) ! dbcon/dbdis/stati by S1/S2/PAH-neutral/PAH-cation
 
       integer  :: total_grains, iw, itype, ir, ii, out_idx
-      integer  :: n_stoch, n_equil
-      real(wp) :: Teq, EEQ, a_cm_qm, dn_ir, kCMBg
+      integer  :: n_stoch, n_equil, n_qm_fail_gd, n_qm_fail_eq
+      integer  :: qm_stat, n_qm_status(0:QM_STATUS_MAX)
+      integer  :: cooling_counts(3,4)
+      character(len=5) :: actual_cooling
+      real(wp) :: Teq, EEQ, a_cm_qm, dn_ir
       logical  :: Equil, qm_ok, converged
       character(len=3) :: gtype
 
@@ -1757,21 +1807,24 @@ contains
       ! Cabs); both accumulate into the PAH output slot (out_idx=3).
       total_grains = 4 * NA
       Jout_all = 0.0_wp
-      n_stoch = 0; n_equil = 0
+      n_stoch = 0; n_equil = 0; n_qm_fail_gd = 0; n_qm_fail_eq = 0
+      n_qm_status = 0
+      cooling_counts = 0
+      if (present(actual_counts)) actual_counts = 0
 
       !$omp parallel default(none) &
       !$omp&   shared(total_grains, NA, NLAM, NT, J_lam, Jout_all, &
       !$omp&          lam, aeff, T_first, &
       !$omp&          dn_ad, Cabs, kappB_first, H_first, &
-      !$omp&          log_H_first, log_kappB_first, kappCMB, &
+      !$omp&          log_H_first, log_kappB_first, &
       !$omp&          dn_cneu, dn_cion, Cabs_cneu, Cabs_cion, H_pah_first, &
       !$omp&          kappB_cneu, kappB_cion, log_H_pah_first, &
-      !$omp&          log_kappB_cneu, log_kappB_cion, kappCMB_cneu, kappCMB_cion) &
+      !$omp&          log_kappB_cneu, log_kappB_cion) &
       !$omp&   private(iw, itype, ir, ii, Teq, EEQ, Equil, converged, &
-      !$omp&           a_cm_qm, dn_ir, gtype, qm_ok, out_idx, kCMBg, &
+      !$omp&           a_cm_qm, dn_ir, gtype, qm_ok, qm_stat, out_idx, actual_cooling, &
       !$omp&           spec, P, lnP, T, H_w, kappB_w, Jout_local, &
       !$omp&           emission_qm, Cabs_g, kappB_g, Hg, logHg, logkBg) &
-      !$omp&   reduction(+:n_stoch, n_equil)
+      !$omp&   reduction(+:n_stoch, n_equil, n_qm_fail_gd, n_qm_fail_eq, n_qm_status, cooling_counts)
       allocate(spec(NLAM), P(NT), lnP(NT), T(NT), H_w(NT), kappB_w(NT))
       allocate(Jout_local(NLAM, 3))
       allocate(emission_qm(NLAM), Cabs_g(NLAM), kappB_g(NT))
@@ -1792,17 +1845,17 @@ contains
                dn_ir = dn_ad(ir);   gtype = 'sil';  out_idx = itype
                Cabs_g = Cabs(:,ir);          kappB_g = kappB_first(:,ir)
                Hg     = H_first(:,ir,itype); logHg   = log_H_first(:,ir,itype)
-               logkBg = log_kappB_first(:,ir); kCMBg = kappCMB(ir)
+               logkBg = log_kappB_first(:,ir)
             case (3)
                dn_ir = dn_cneu(ir);  gtype = 'pah';  out_idx = 3
                Cabs_g = Cabs_cneu(:,ir);  kappB_g = kappB_cneu(:,ir)
                Hg     = H_pah_first(:,ir);  logHg = log_H_pah_first(:,ir)
-               logkBg = log_kappB_cneu(:,ir);  kCMBg = kappCMB_cneu(ir)
+               logkBg = log_kappB_cneu(:,ir)
             case default   ! 4 = cation
                dn_ir = dn_cion(ir);  gtype = 'pah';  out_idx = 3
                Cabs_g = Cabs_cion(:,ir);  kappB_g = kappB_cion(:,ir)
                Hg     = H_pah_first(:,ir);  logHg = log_H_pah_first(:,ir)
-               logkBg = log_kappB_cion(:,ir);  kCMBg = kappCMB_cion(ir)
+               logkBg = log_kappB_cion(:,ir)
             end select
             if (dn_ir <= 0.0_wp) cycle
 
@@ -1818,11 +1871,21 @@ contains
             if (.not. Equil) then
                a_cm_qm = aeff(ir) * UM2CM
                call qm_solve_grain(NLAM, lam, Cabs_g, J_lam, &
-                                   NT, T_first, Hg, &
-                                   Teq, EEQ, EEQSS_ERG, &
-                                   a_cm_qm, gtype, emission_qm, qm_ok)
+                                   EEQ, EEQSS_ERG, &
+                                   a_cm_qm, gtype, emission_qm, qm_ok, qm_stat, actual_cooling_out=actual_cooling)
+               n_qm_status(qm_stat) = n_qm_status(qm_stat) + 1
 
                if (qm_ok) then
+                  select case (actual_cooling)
+                  case ('dbcon')
+                     cooling_counts(QM_DBCON,itype) = cooling_counts(QM_DBCON,itype) + 1
+                  case ('dbdis')
+                     cooling_counts(QM_DBDIS,itype) = cooling_counts(QM_DBDIS,itype) + 1
+                  case ('stati')
+                     cooling_counts(QM_STATI,itype) = cooling_counts(QM_STATI,itype) + 1
+                  case default
+                     error stop 'sed_solve_qm_batch: successful QM solve lacks cooling method'
+                  end select
                   do ii = 1, NLAM
                      Jout_local(ii, out_idx) = Jout_local(ii, out_idx) + &
                         dn_ir * emission_qm(ii) / (4.0_wp * PI * lam(ii) * 1.0e-3_wp)
@@ -1831,7 +1894,7 @@ contains
                else
                   ! QM failed: fall back to GD
                   call narrow_iterative(Hg, logHg, kappB_g, logkBg, &
-                                        kCMBg, Cabs_g, J_lam, &
+                                        Cabs_g, J_lam, &
                                         Teq, EEQ, T, P, converged)
                   if (converged) then
                      do ii = 1, NT
@@ -1841,8 +1904,10 @@ contains
                               dn_ir * P(ii) * Cabs_g * spec
                         end if
                      end do
+                     n_qm_fail_gd = n_qm_fail_gd + 1
                   else
                      Equil = .true.
+                     n_qm_fail_eq = n_qm_fail_eq + 1
                   end if
                end if
             end if
@@ -1861,8 +1926,26 @@ contains
       deallocate(spec, P, lnP, T, H_w, kappB_w, Jout_local)
       !$omp end parallel
 
-      if (sed_verbose) write(*,'(a,i4,a,i4,a)') &
-         '   [QM batch: stoch=', n_stoch, ' equil=', n_equil, ']'
+      ! stoch = solved by QM; eeq_gate = equilibrium by the EEQ threshold;
+      ! qm_fail_to_gd / qm_fail_to_eq = QM refused the grain and it was solved
+      ! by the GD narrowing / left in equilibrium.
+      if (sum(cooling_counts) /= n_stoch) error stop 'sed_solve_qm_batch: QM cooling count mismatch'
+      if (present(actual_counts)) actual_counts = cooling_counts
+      if (sed_verbose) write(*,'(7(a,i0),a)') &
+         '   [QM batch: stoch=', n_stoch, ' eeq_gate=', n_equil, &
+         ' qm_fail_to_gd=', n_qm_fail_gd, ' qm_fail_to_eq=', n_qm_fail_eq, &
+         ' dbcon=', sum(cooling_counts(QM_DBCON,:)), &
+         ' dbdis=', sum(cooling_counts(QM_DBDIS,:)), &
+         ' stati=', sum(cooling_counts(QM_STATI,:)), ']'
+      if (sed_verbose) call write_qm_refusals(n_qm_status)
+      if (sed_verbose) then
+         do itype = 1, 4
+            write(*,'(a,i0,3(a,i0),a)') '   [QM cooling type=', itype, &
+               ' dbcon=', cooling_counts(QM_DBCON,itype), &
+               ' dbdis=', cooling_counts(QM_DBDIS,itype), &
+               ' stati=', cooling_counts(QM_STATI,itype), ']'
+         end do
+      end if
 
       ! Unit conversion: Jout → lamI_lam
       do ii = 1, NSTAGE
@@ -1881,7 +1964,7 @@ contains
 
    subroutine narrow_T_window(ir, log_H_p, log_kappB_p, Tmin_n, Tmax_n, &
                               T_out, H_out, kappB_out)
-      ! Heuristic narrowing helper. Build a log-spaced T grid of
+      ! Temperature window of the heuristic narrowing: build a log-spaced T grid of
       ! NT points in [Tmin_n, Tmax_n] and interpolate H_p(:, ir) and
       ! kappB_p(:, ir) (passed in log) onto it via log-log interpolation
       ! against log_T_first. Used by the stoch_method='heuristic'
@@ -1950,7 +2033,7 @@ contains
 
 
    subroutine narrow_iterative(H_wide, log_H_wide, kappB_wide, log_kappB_wide, &
-                               kappCMB_r, Cabs_r, J_lam, &
+                               Cabs_r, J_lam, &
                                Teq, EEQ, T_out, P_out, converged)
       ! Iterative T-window selection following Draine's method:
       !   - Initial guess from EEQ (UMAX = max(13.6eV + 2·EEQ, 13.65eV);
@@ -1965,7 +2048,7 @@ contains
       ! collapses) converged = .false. -> caller uses equilibrium.
       real(wp), intent(in)  :: H_wide(:), log_H_wide(:)
       real(wp), intent(in)  :: kappB_wide(:), log_kappB_wide(:)
-      real(wp), intent(in)  :: kappCMB_r, Cabs_r(:), J_lam(:)
+      real(wp), intent(in)  :: Cabs_r(:), J_lam(:)
       real(wp), intent(in)  :: Teq, EEQ
       real(wp), intent(out) :: T_out(:), P_out(:)
       logical,  intent(out) :: converged
@@ -2017,7 +2100,8 @@ contains
                                                 T_out, H, kappB)
          U = H
 
-         call calc_P(lam, Cabs_r, J_lam, T_out, kappB, H, P_out, lnP, kappCMB_r)
+         ! J_lam already includes any CMB; cooling is the grain's full emission.
+         call calc_P(lam, Cabs_r, J_lam, T_out, kappB, H, P_out, lnP)
          Pmax = maxval(P_out)
          if (Pmax <= 0.0_wp) exit                            ! degenerate
 
@@ -2064,14 +2148,14 @@ contains
                UMIN = 0.2_wp * UMIN + 0.8_wp * U(JCUT)
                refine = .true.
             end if
-         elseif (UMIN > HC_CGS_PER_CM .and. P_out(1)/Pmax > PMIN_LO) then
+         elseif (UMIN > hc .and. P_out(1)/Pmax > PMIN_LO) then
             ! tail at bottom still elevated and UMIN > 1 cm^-1 -> reduce
             UMINHI = UMIN
             if (0.8_wp * UMIN > UMINLO) then
-               UMIN = max(HC_CGS_PER_CM, 0.8_wp * UMIN)
+               UMIN = max(hc, 0.8_wp * UMIN)
                refine = .true.
-            elseif ((UMIN - UMINLO) > 0.01_wp*UMIN .and. UMIN/HC_CGS_PER_CM > 20.0_wp) then
-               UMIN = max(0.5_wp*(UMINLO + UMIN), HC_CGS_PER_CM)
+            elseif ((UMIN - UMINLO) > 0.01_wp*UMIN .and. UMIN/hc > 20.0_wp) then
+               UMIN = max(0.5_wp*(UMINLO + UMIN), hc)
                refine = .true.
             end if
          end if
@@ -2155,12 +2239,10 @@ contains
 
    subroutine build_kappCMB_pah()
       ! Same as build_kappCMB() but using Cabs_pah.
-      ! calc_P subtracts this from the grain's own emission, so kappB - kappCMB
-      ! is the NET cooling rate and a grain cannot cool below its surroundings.
-      ! T_CMB must therefore be the temperature of the CMB the FIELD carries;
-      ! radfield's cmb_temperature() is the single place that value is written
-      ! down.  It was hard-coded 2.9 K here while J_Mathis had moved to
-      ! 2.725 K, which held grains up against photons the field never supplied.
+      ! This partial integral covers wavelengths above 1 mm only. The
+      ! production solver does not use it as background heating: J_lam
+      ! already supplies any CMB photons. Passing it to calc_P with such
+      ! a field would count CMB heating twice.
       real(wp)            :: T_CMB
       real(wp), parameter :: lam_min  = 1000.0_wp
       integer,  parameter :: NW_INT   = 101
@@ -2563,13 +2645,10 @@ contains
 
    subroutine build_kappCMB()
       ! kappCMB(ja) = integral_(lam>1mm) Cabs(lam, ja) * B_lam(T_CMB, lam) dlam
-      ! See setup_kappCMB.
-      ! calc_P subtracts this from the grain's own emission, so kappB - kappCMB
-      ! is the NET cooling rate and a grain cannot cool below its surroundings.
-      ! T_CMB must therefore be the temperature of the CMB the FIELD carries;
-      ! radfield's cmb_temperature() is the single place that value is written
-      ! down.  It was hard-coded 2.9 K here while J_Mathis had moved to
-      ! 2.725 K, which held grains up against photons the field never supplied.
+      ! This partial integral covers wavelengths above 1 mm only. The
+      ! production solver does not use it as background heating: J_lam
+      ! already supplies any CMB photons. Passing it to calc_P with such
+      ! a field would count CMB heating twice.
       real(wp)            :: T_CMB
       real(wp), parameter :: lam_min  = 1000.0_wp     ! [um]
       integer,  parameter :: NW_INT   = 101
@@ -4794,7 +4873,7 @@ contains
    ! convention. lamI_total(NLAM) is the summed SED; optional
    ! lamI_chan(NLAM, n_channel) returns the SED of each channel.
    ! REQUIRES: m is the most recently built model (its grids == the globals).
-   subroutine dust_emission(m, J_lam, lamI_total, lamI_chan, status)
+   subroutine dust_emission(m, J_lam, lamI_total, lamI_chan, status, actual_counts)
       type(dust_model_t), intent(in)  :: m
       real(wp),           intent(in)  :: J_lam(:)              ! (NLAM)
       real(wp),           intent(out) :: lamI_total(:)         ! (NLAM)
@@ -4808,10 +4887,16 @@ contains
       !   status = 4  emission_bin_power_cutoff outside [0,1] or nonfinite
       !   status = 5  nonzero emission_bin_power_cutoff with another solver
       integer,  optional, intent(out) :: status
+      integer, optional, intent(out) :: actual_counts(:,:)    ! (3, n_channel): dbcon, dbdis, stati
       real(wp), allocatable :: Jout_pop(:), Jchan(:,:)
-      integer :: ip, ic
+      integer :: ip, ic, pop_counts(3)
 
       if (present(status)) status = 0
+      if (present(actual_counts)) then
+         if (size(actual_counts,1) /= 3 .or. size(actual_counts,2) /= m%n_channel) &
+            error stop 'dust_emission: invalid actual_counts shape'
+         actual_counts = 0
+      end if
       emission_bin_power_total = 0.0_wp
       emission_bin_power_skipped = 0.0_wp
       emission_bin_power_weighted_total = 0.0_wp
@@ -4889,9 +4974,10 @@ contains
          call sed_grain_loop(size(m%pops(ip)%dn), m%pops(ip)%dn, m%pops(ip)%aeff, &
                              m%pops(ip)%Cabs, &
                              m%pops(ip)%kappB, m%pops(ip)%H, m%pops(ip)%log_H, &
-                             m%pops(ip)%log_kappB, m%pops(ip)%kappCMB, &
-                             J_lam, trim(m%pops(ip)%grain_type), Jout_pop)
+                             m%pops(ip)%log_kappB, &
+                             J_lam, trim(m%pops(ip)%grain_type), Jout_pop, pop_counts)
          ic = m%pops(ip)%out_channel
+         if (present(actual_counts)) actual_counts(:,ic) = actual_counts(:,ic) + pop_counts
          Jchan(:, ic) = Jchan(:, ic) + Jout_pop
       end do
 

@@ -8,6 +8,13 @@
 #                            ... with the T-matrix and the spheroid optics of
 #                            the astrodust EUV band in the same archive
 #   make calc_kext.x         size-integrated transport optics for any model
+#   make test_cmb_field_balance.x    calc_P energy closure, full-field CMB
+#   make test_cmb_population_invariance.x
+#                            dust_emission ignores the stored kappCMB; run as
+#                            ./test_cmb_population_invariance.x <abs data dir>
+#   make test_hd23_field.x       J_HD23 vs HD23 eqs. (9)-(10), CMB, J_Mathis
+#   make test_qm_invalid_bins.x  qm_solve_grain refuses degenerate grids
+#   make test_qm_rate_closure.x  Zubko PAH rate signs and emitted power
 #   make clean / cleanall
 #
 # Run (from this directory; data paths are relative to ../):
@@ -254,6 +261,57 @@ test_dustem_extinction.x: $(SRC_DUST_MODEL) src/test_dustem_extinction.f90
 	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
 	@echo 'Built: ./test_dustem_extinction.x'
 
+# Energy closure of calc_P under the full-field convention (the CMB is part of
+# the supplied field, never a separate cooling term): a zero field leaves the
+# lowest enthalpy bin populated, and a pure CMB field and a field without CMB
+# both close to round-off.  The finite-bin GD solver conserves energy; it does
+# not enforce exact Planck detailed balance, and the test does not ask it to.
+SRC_TCMBBAL = src/constants.f90 src/radfield.f90 src/p_sub.f90 \
+              tests/test_cmb_field_balance.f90
+
+test_cmb_field_balance.x: $(SRC_TCMBBAL)
+	$(FC) $(FFLAGS) $^ -o $@
+	@echo 'Built: ./test_cmb_field_balance.x'
+
+# build_astrodust + dust_emission (heuristic and draine): perturbing the stored
+# kappCMB arrays must leave the emitted spectrum bit-identical, because the
+# supplied field is the only heating source.  It reads the astrodust HDF5
+# product from the data directory given as its first argument:
+#   ./test_cmb_population_invariance.x $PWD/../data
+SRC_TCMBPOP = $(SRC_DUST_MODEL) src/dust_lib.f90 \
+              tests/test_cmb_population_invariance.f90
+
+test_cmb_population_invariance.x: $(SRC_TCMBPOP)
+	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
+	@echo 'Built: ./test_cmb_population_invariance.x'
+
+# J_HD23 against Hensley & Draine (2023), eqs. (9) and (10), evaluated in the
+# test itself: the UV segment boundaries, the three diluted blackbodies, U
+# scaling of the stellar part only, the unscaled 2.725 K CMB, and both
+# J_Mathis conventions.
+SRC_THD23 = src/constants.f90 src/radfield.f90 tests/test_hd23_field.f90
+
+test_hd23_field.x: $(SRC_THD23)
+	$(FC) $(FFLAGS) $^ -o $@
+	@echo 'Built: ./test_hd23_field.x'
+
+# qm_solve_grain refuses fewer than 5 enthalpy bins (qm_nstate_default), fewer
+# than 2 transition-matrix wavelengths (qm_nisrf_max), and fewer than 2 input
+# wavelengths: solved = .false. and a zero spectrum, not a solution on a
+# degenerate grid.
+SRC_TQMBIN = src/constants.f90 src/sed_mathlib.f90 src/enthalpy_v2.f90 \
+             src/radfield.f90 src/stoch_qm.f90 tests/test_qm_invalid_bins.f90
+
+test_qm_invalid_bins.x: $(SRC_TQMBIN)
+	$(FC) $(FFLAGS) $^ -o $@
+	@echo 'Built: ./test_qm_invalid_bins.x'
+
+SRC_TQMCLOSURE = $(SRC_DUST_MODEL) $(SRC_CLIOPT) $(SRC_CLIAPPLY) tests/test_qm_rate_closure.f90
+
+test_qm_rate_closure.x: $(SRC_TQMCLOSURE)
+	$(FC) $(FFLAGS) $^ $(H5LIBS) -o $@
+	@echo 'Built: ./test_qm_rate_closure.x'
+
 # Builds every model from a foreign working directory with an absolute
 # data_dir, and checks that a bad one comes back as a status instead of an
 # abort.  Links the LIBRARY, not the model sources, because that is what a
@@ -316,7 +374,9 @@ clean:
 cleanall: clean
 	rm -f *.a calc_enthalpy.x calc_sed.x calc_kext.x
 	rm -f calc_qtable.x check_build_dust.x use_dustlib.x test_size_distribution.x
-	rm -f test_dustem_extinction.x test_h5_storage_policy.x
+	rm -f test_dustem_extinction.x test_h5_storage_policy.x check_data_root.x
+	rm -f test_cmb_field_balance.x test_cmb_population_invariance.x
+	rm -f test_hd23_field.x test_qm_invalid_bins.x test_qm_rate_closure.x
 	rm -f output/sed_astrodust_*.dat output/enthalpy_*.dat
 
 .PHONY: all clean cleanall

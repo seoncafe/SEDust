@@ -59,15 +59,16 @@ from scipy.integrate import simpson
 
 
 # ---------------------------------------------------------------------------
-# Physical constants: the literals of sed/src/radfield.f90 and p_sub.f90
+# Physical constants: the exact SI values of sed/src/constants.f90, combined
+# as radfield.f90 and p_sub.f90 combine them
 # ---------------------------------------------------------------------------
 
-_H_SI = 6.62606957e-34     # J s
+_H_SI = 6.62607015e-34     # J s
 _C_SI = 2.99792458e8       # m/s
-_KB_SI = 1.3806488e-23     # J/K
+_KB_SI = 1.380649e-23      # J/K
 _HC2_SI = 2.0 * _H_SI * _C_SI**2
 _HC_KB_SI = _H_SI * _C_SI / _KB_SI
-_HC_ERG_UM = 6.62606957e-27 * 2.99792458e10 * 1.0e4   # h*c in erg um (p_sub :: hc)
+_HC_ERG_UM = 6.62607015e-27 * 2.99792458e10 * 1.0e4   # h*c in erg um (constants :: hc_ergum)
 _FOURPI = 4.0 * math.pi
 
 # Relative intensity threshold for the outer field-support bounds
