@@ -11,6 +11,14 @@ module dust_lib
    !      call dust_emission(m, J_lam, lamI_total [, lamI_chan])  ! per cell
    !   end do
    !
+   ! J_lam is the COMPLETE field the grains absorb, any background included:
+   ! a host that wants CMB heating adds bbody(2.725 K) to J_lam itself, as
+   ! J_Mathis and J_HD23 do.  Nothing is added here, and the cooling rate of
+   ! the stochastic solver is the grain's full emission (p_sub::calc_P), so a
+   ! field without CMB lets a grain cool to the bottom of the temperature grid
+   ! (since 2026-10-30; before, a stored CMB integral was subtracted from the
+   ! cooling, which counted the CMB twice for a field that carried it).
+   !
    ! Two usage modes:
    !   (a) single-cell EXACT solve: dust_emission(m, J_lam, ...)  -- arbitrary J(lambda).
    !   (b) precomputed TABLE + interpolation, for when the cell field is a

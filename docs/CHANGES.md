@@ -4,6 +4,820 @@ A dated record of code and documentation changes, newest first. Each entry names
 the files it touches and, where a change moves numbers, states the measurement
 that was made on the tree itself.
 
+## 2026-10-31
+
+### Photon support and MC diagnostics
+
+Construct the photon CDF on the input wavelength nodes and invert the
+nonnegative linear number density within each positive-mass interval.
+Zero-probability intervals are skipped. Exact plateau probabilities use an
+explicit endpoint limit without zero divided by zero. For the default Mathis
+field, photon integration begins at 0.0912 micrometers; the cooling grid is
+retained. Supplied radiation fields retain their own positive support.
+
+At radius 0.001 micrometers and U = 1, the original sampler drew 1,881 of
+2,000,000 photons outside the field support, carrying 2.281094% of sampled
+absorbed energy. The repaired sampler drew zero unsupported photons in
+2,000,000 samples at each of five graphite radii. The sample mean agrees
+with the exact integral of the represented photon density within 0.596
+standard errors in all five cases. Independent tests with actual astrodust
+and PAH cross sections, Mathis and HD23 fields, and three radii found zero
+unsupported samples for both source versions; those paths did not have the
+standalone zero-UV defect.
+
+The observed maximum temperature in the 500,000-event, seed-101 graphite
+calculation at 10 angstroms is 420.738401 K, compared with 7808.555649 K from the
+original sampler. These are trajectory extrema, not histogram edges or
+universal temperature limits. The full graphite size set and all dependent
+MC emission and temperature-comparison products were recalculated in both
+branches. All 43 tracked MC tables are byte-identical between branches.
+The 2,913 emission-grain diagnostics have zero omitted and outside-grid time;
+the raw radiative closure residual including stored heat spans -1.083501%
+to +0.075948%, before spectral rescaling. Finite cooling steps and the
+0.5 K temperature floor remain documented numerical approximations.
+
+Use constants-module values for photon energies, the 150 eV equilibrium
+gate, pi, and the optional D85 Boltzmann constant; derive the MC
+Stefan--Boltzmann coefficient from those fundamental constants. No grain
+changed equilibrium classification in the measured production cases.
+`diag_Teq_vs_Trad.dat` has a header and a sixth population column, is
+truncated at the start of each total solve, and has deterministic population
+and radius ordering. Its plotting script reads the population column.
+
+A partial `a_um_list` runs only the specified positive radii. Both drivers
+reject malformed or nonphysical inputs; U = 0 remains valid for a CMB-only
+field. Large emission/event-absorption ratios use exponent notation.
+`make test_photon_support.x` and `make test_driver_inputs` provide targeted
+support, mean-energy, boundary, and driver-input checks. The existing
+supplied-field and cooling-interval tests passed in both branches.
+
+Current measurements, preserved products, source and input hashes, and
+installation receipts are retained in
+`SEDust_JKAS/results/20261031_mc_photon_support` beside the branches.
+
+### Astrodust report: removed passages restored with remeasured values
+
+`docs/astrodust_sed_report.tex` regains the passages the final rewrite of
+2026-10-31 removed: the measurement-status and energy-budget paragraphs of
+the introduction, the execution-cost timings, the original-Mathis band
+statistics, the scaling test, the jori=1 substitution test (avenue 3), the
+induced-emission analysis with its two tables, the history of the
+`tab:mathis_c` values, the first D03-sphere graphite-continuum table, the
+mode-by-mode PAH Drude tuning record (`tab:pah_tune`), the library structure
+note, and the conclusions with the diagnostic record and next steps. Every
+restored number was remeasured on 2026-10-31 from `sed/output` and from
+untracked runs of the settled source (`mathis_orig`, `induced`,
+`mathis_orig induced`, `c2 induced`, `c2 mathis_orig induced`, `draine`,
+`draine hd23`), which reproduce the tracked astrodust products byte for byte.
+The jori=1 substitution table and its -15.1% to -11.3% result, the DL07 eq. 2
+attribution, and the PAH tuning fit cannot be remeasured from this tree and
+are marked with their dates. Corrected on the way: the gross/net emission
+derivation (B J/B_env equals n_T J, not J), the independent Teq check
+(remeasured: rms 0.0016% over 161 astrodust grains, not 0.14%), the
+single-grain ratio statements (mean 0.99992; plateau 1/1.1866), the
+T-window algorithm switch (run time, not compile time), the HD23-field
+shoulder maximum (+27% at 35 um), the feature-band range (2-21%), the
+`morig` file-name token, and the timings (Xeon Gold 6154, 2026-10-31).
+
+### mc_pT_report figures and numbers remeasured from the final MC products
+
+`docs/mc_pT_report.tex` now describes the current engine and quotes numbers
+measured from the tracked `mc/output` and `sed/output` products and the run
+logs of `SEDust_JKAS/results/20261031_final_recalculation`. The PAH and
+large-grain single-grain comparisons, the cap-grain cold-end tally, and the
+graphite wall times were measured with a separate build whose sources match
+the settled manifest; their inputs and outputs are in
+`SEDust_JKAS/results/20261031_mc_report_remeasure`. All six MC figures
+(`fig24_5`, `fig24_6`, `sed_mc_vs_ref`, `pT_compare_astrodust`,
+`pT_compare_pah`, `pT_compare_large`) were regenerated. Measured on
+2026-10-31: default-mode MC/reference band ratios 0.961 (1-5 um), 0.998,
+1.001, 1.001 (5-30, 30-300, 300-3000 um), and the all-MC mode within 0.0003
+of them; T_rad/Teq of the 265 equilibrium-gate grains between 0.99871 and
+1.00008; grain-by-grain closure between -1.084% and +0.076%, unchanged to
+2.1e-5 between 5e4 and 5e5 events; no waiting interval needed a second step
+chunk.
+
+The report also records a defect of the standalone graphite setup, not
+corrected because the numerical sources are settled: `invert_cdf` returns the
+first grid wavelength (1e-3 um) for the zero-probability CDF node, so
+`grain_setup_graphite` samples 0.097% of its photons below 0.0912 um, where
+`J_Mathis` is zero. These photons (13.6 eV to 1.24 keV) raise the mean sampled
+photon energy by 1.8% and produce the high-temperature tails of the
+Figure 24.6 graphite distributions (10 A reaches 7800 K). The
+`grain_setup_from_cabs` path of the SED builder and `main_pT_compare.x`
+starts at 0.0912 um and is not affected.
+
+`mc/scripts`: `run_fig24_5.sh` and `run_fig24_6.sh` use `set -eo pipefail`,
+keep the full output of each run in `<tag>.log`, and pass the current
+diagnostic lines (`emit/event_abs`, `mc_interval`, `mc_energy_single`,
+`mc_warmup`, errors); the `run_fig24_6.sh` comment now states its 500000
+events. The plot scripts take `--data`/`--out` arguments, render with
+LaTeX, and no longer carry the 2 K grid, `N_burn`, or single-bin claims;
+`plot_fig24_5.py` counts photon absorptions without the end-of-interval
+record, `plot_fig24_6.py` shows the full temperature range, and
+`plot_sed_compare.py` labels the reference as `calc_sed.x astrodust` (GD
+matrix, `heuristic` narrowing).
+
+### Settled-source data, emission, and manuscript recalculation
+
+Rebuilt both branches outside the working trees from the 112-file settled
+source manifest and regenerated the optical data affected by constant changes.
+All six dust models passed `check_build_dust` in each branch. Astrodust, DL07,
+MRN, and the Zubko D03 Mie options have changed numerical HDF5 datasets;
+THEMIS and G18D remain numerically identical. The astrodust PAH maximum
+relative absorption change is 6.03821748e-4 at 0.004259018 micrometers.
+An isolated calculation changing only `hc_evum` reproduces that extremum.
+
+Regenerated branch SED and MC products with the current sources. The 68 common
+SED spectra are byte-identical between branches. Of 43 tracked MC tables,
+42 are byte-identical; the remaining equilibrium diagnostic has identical
+numeric rows and differs only in row order. Across the nine MC emission runs,
+all 2,913 recorded grain diagnostics have zero omitted and outside-grid time.
+The signed radiative closure residual including stored heat spans
+-1.08352% to +0.075952% before spectral rescaling. The 0.5 K floor and
+finite cooling-step error remain numerical limitations. The fifteen distinct
+graphite calculations have a maximum absolute energy residual of 1.71728%.
+
+Corrected the final-run validator to distinguish neutral and ionized PAH
+population blocks when pairing warm-up and energy records. The six earlier
+successful runs were validated and reused; no numerical sources were changed
+for this correction. Regenerated the astrodust report figures and reconciled
+its current input conditions and QM cooling-method counts.
+
+The complete measurements, preserved products, installed-file hashes, and
+manuscript checks are recorded in
+`SEDust_JKAS/results/20261031_final_recalculation` beside the branches.
+The MC temperature report is maintained separately.
+
+## 2026-10-30
+
+### QM radiative rates: positivity, cooling opacity, and actual-method counts
+
+`sed/src/stoch_qm.f90` now interpolates opacity and radiation between two
+neighboring wavelengths with nonnegative convex weights. The three-point
+`PARAB_INTERPL` algorithm, from Aigen Li and B. T. Draine, could overshoot
+below zero between positive opacity samples. A Zubko PAH heating rate of
+-5.016826684e-11 s^-1 and cooling rate of -0.002970407157 s^-1 were traced to
+specific negative interpolated cross sections, not floating-point round-off.
+The original algorithm remains named `PARAB_INTERPL` for state-density
+interpolation; its source is Draine's `BDraine_src/src/parab_interpl.f`,
+which is not distributed with SEDust.
+
+Cooling always uses the original opacity and field grid shared by the output
+spectrum. `nisrf=N` reduces only the photon-absorption grid. Its field scale
+preserves absorbed power using the exact integral of the product of the two
+linear interpolants, including cross terms. Coarse cooling opacity missed
+narrow PAH infrared features and caused a 3-4% emission excess in the smallest
+grain; preserving absorbed power alone did not preserve its cooling power.
+
+Rates are checked before the continuous-cooling collapse. Negative or
+nonfinite physical rates return `QM_INVALID_RATE`; GTH no longer clips them.
+The optional `raw_negative_count_out` and verbose diagnostic retain the count
+across the attempted state grids. The optional `actual_cooling_out` returns
+the successful method. Callers in `sed_astrodust.f90` count actual `dbcon`,
+`dbdis`, and `stati` solves in the OpenMP summaries; `calc_sed.f90` records
+those counts in each spectral header. Rejected QM attempts and equilibrium
+calculations are not counted as successful QM methods. Numeric output columns
+are unchanged. QM retains its own mode-counting enthalpy and accepts no
+enthalpy table.
+
+Measured with gfortran, 200 states, Zubko BARE-GR-S neutral PAH radius 3.5 A,
+Mathis U=1 plus the hard EUV field, and `nisrf=150`:
+
+| Cooling method | Emitted/absorbed before | Emitted/absorbed after |
+| --- | ---: | ---: |
+| `dbcon` | 1.03011961 | 0.99658405 |
+| `dbdis` | 1.03075130 | 0.99876866 |
+| `stati` | 1.04049800 | 1.00013548 |
+
+The new `test_qm_rate_closure.x` Makefile target checks actual Zubko optical
+inputs, raw rate signs, successful-method reporting, emitted/absorbed power,
+and rejection of negative input opacity. Fifteen parameterized checks at
+radii 3.5, 9.09832, 13.8236, and 25.8886 A passed with zero negative raw rates
+and power discrepancies below 1%. The existing invalid-bin checks passed in
+both branches. Builds and numerical comparisons ran outside the repositories;
+tracked spectra and manuscript figures were not regenerated.
+
+The long-wavelength PAH difference between `qm_dbcon` and discrete cooling
+is a limit of the continuous-cooling approximation and is documented in
+README_HOWTO, not removed by these repairs. The final comparison report and
+source hashes are recorded with the read-only trace evidence.
+
+
+Validation of the complete model spectra used identical before/after inputs.
+With `nisrf=150`, the Zubko PAH 1-5 um after/before ratios were 0.963428
+(`dbcon`), 0.962629 (`dbdis`), and 0.958863 (`stati`); the 300-3000 um ratios
+were 1.002228, 1.002439, and 1.002411. Astrodust PAH and DL07 carbonaceous
+5-30 um ratios were 1.003400 and 1.003373. Full-field runs and all component
+bands are recorded in `SEDust_JKAS/results/20261030_qm_rate_repair/REPORT.md`
+and its tables. All ten after runs recorded zero negative raw rates and
+zero invalid-rate refusals. The fourteen complete spectra were plotted and
+visually inspected; only diagnostic outputs were written.
+
+### Energy-space (qm) solver: cooling quadrature, field grid, direct solve, refusals
+
+All in `sed/src/stoch_qm.f90` (identical in v1.00 and v1.20), with the calls
+in `sed/src/sed_astrodust.f90`.
+
+1. Cooling-rate quadrature. `simpson_therm_cooling` and
+   `simpson_intrabin_therm_cooling` returned zero whenever their first three
+   samples were zero. That happened whenever the photon-energy interval was
+   hundreds of kT wide (enthalpy bins wider than the photons that cool them),
+   because those samples fall far outside the Planck peak at a few kT. The
+   integral now stops at E1 + 60 kT and its first step is at most kT, so the
+   peak is always sampled. The omitted tail is below 1e-17 for an integrand
+   falling as x^m e^-x with m <= 7 (stated at the routine). A zero sum is
+   accepted only on a grid finer than kT. The heating and exact-statistical
+   integrators had the same early exit; they now accept a zero sum only once
+   the step resolves the field grid (`photon_grid_spacing`).
+2. Transition-matrix wavelength grid. The matrix now uses the full field grid
+   by default (`qm_nisrf_max = 0`); before, it used 200 points picked evenly
+   in grid index. An explicit `nisrf=N` coarsens the grid to N points equally
+   spaced in ln(lambda), keeping the absorbed power (`coarsen_absorbed_field`;
+   README_HOWTO describes the approximation).
+3. Steady state. The BiCG solver and its sparse-storage routines are removed.
+   The steady state is now found by GTH state reduction
+   (`stationary_distribution_gth`), which adds only nonnegative terms. The
+   back substitution is rescaled so that probabilities spanning more than the
+   double range do not overflow. Cost, measured with gfortran -O3 (one
+   thread): 0.002, 0.03, 0.22, 2.1 and 9.7 s, and 0.3, 2, 8, 32 and 72 MB of
+   work array, at nstate = 200, 500, 1000, 2000 and 3000.
+4. No unconverged solution is used. A grain whose UMIN/UMAX window is still
+   moving after the last pass is refused; the window loop now allows 30 passes
+   (it was 10, after which the last state was accepted as is). The NaN
+   replacement by `pstate_gd`, which was always zero, is removed.
+   `qm_solve_grain` returns a status (`atom_count_cap`, `no_steady_state`,
+   `window_not_converged`, `energy_not_conserved`). Every outcome prints a
+   diagnostic line, the atom-count cap included. The callers print
+   `[QM refusals: ...]` by reason; the refused grains are still solved by
+   the GD matrix.
+5. `qm_solve_grain` no longer takes `nt_wide, t_wide, h_wide` or `teq`. None
+   was read: the bin temperatures come from the solver's own mode-counting
+   enthalpy (`T_from_U_bisect`, `enthalpy_DL01`), by design, and comments at
+   that routine and at the bin construction now say so. With these arguments
+   removed and nothing else changed, `calc_sed.x astrodust qm` and
+   `calc_sed.x zubko qm` (one thread) gave byte-identical outputs in both
+   branches.
+
+Measured with gfortran 16.2.0 (OpenMP, 24 threads before and 36 after; the counts do not depend on it). Counts are
+grains returned to GD out of the grains not in equilibrium.
+
+| run | refused before | refused after (reason) | P_em/P_abs of solved grains |
+|---|---|---|---|
+| `astrodust qm` | 33 | 2 (atom_count_cap) | 0.9856-1.0003 |
+| `astrodust qm nstate=500` | 10 | 2 (atom_count_cap) | 0.9950-1.0003 |
+| `astrodust qm_stati nstate=500` | 10 | 2 (atom_count_cap) | 0.9950-1.0003 |
+| `astrodust qm_dbcon nstate=500` | 10 | 2 (atom_count_cap) | 0.9919-1.0002 |
+| `dl07 mw31_60 qm` | 14 | 1 (atom_count_cap) | 0.9863-1.0003 |
+| `dl07 mw31_60 qm_stati mathis_orig nstate=150` | 20 | 2 (atom_count_cap) | 0.9806-1.0022 |
+| `zubko qm` | 10 | 2 (atom_count_cap) | 0.9915-1.0027 |
+| `zubko euv hardfield qm_dbcon nisrf=150` | 49 | 1 (atom_count_cap) | 0.9930-1.0313 |
+
+Band powers qm/heuristic after the change, `astrodust qm`, for the bands
+1-5 / 5-30 / 30-300 / 300-3000 um:
+- S1: 0.9988 / 1.0009 / 0.9996 / 1.0002;
+- S2: 0.7380 / 0.9015 / 0.9994 / 1.0097;
+- PAH: 0.9928 / 0.9989 / 0.9945 / 1.0006.
+
+The S2 difference was 0.7392 / 0.9026 / 0.9998 / 1.0097 before. It is the
+intended difference between the solver's own mode enthalpy and the model's
+S2 H(T), not a solver error. The tracked `sed/output` qm products are not
+regenerated by this entry. v1.00 and v1.20 give byte-identical outputs for
+all 23 files of these runs.
+
+### Exact SI physical constants in one module; QM fallback counts
+
+`sed/src/constants.f90` now holds h, c, k_B and the electron-volt as the exact
+SI defining values (h = 6.62607015e-27 erg s, c = 2.99792458e10 cm/s,
+k_B = 1.380649e-16 erg/K, 1 eV = 1.602176634e-12 erg), their SI-unit forms
+(`h_si`, `c_si`, `k_si`), and the derived `hc`, `hc_ergum`, `hc_evum`
+(1.2398419843 eV um) and `hc_k` (1.4387768775 cm K). The modules that carried
+their own rounded copies now `use` these: `p_sub.f90` (h of CODATA 2010),
+`radfield.f90` (h, k_B of CODATA 2010), `sed_astrodust.f90` (h of CODATA 2010;
+1 eV = 1.60218e-12 erg; hc = 1.98645e-16 erg cm), `stoch_qm.f90` (h = 6.62607e-27,
+c = 2.99792e10, k_B = 1.38065e-16, pi = 3.141593, 1 eV = 1.60218e-12 erg,
+hc/k = 1.43877), `enthalpy_v2.f90` (k_B of CODATA 2010 and hc/k = 1.4387687,
+a wrong value; the correct one is 1.4387769), `calc_sed.f90` (1 eV of CODATA
+2010, hc = 1.23984193 eV um), and the dielectric-table readers
+`q_astrodust.f90`, `q_silicate.f90`, `q_graphite.f90` (hc = 1.23984 eV um).
+The tests `test_planck_grid`, `test_radiation_support`,
+`test_absorption_balance`, `test_hd23_field` and `validation_driver` take the
+same constants, and `pyutil/sed_from_cabs.py` mirrors them. `pah_ioniz.f90`
+(a port of Draine's grain-charging code) and `tmatrix/` are unchanged.
+
+Measured with gfortran 16.2.0, OpenMP 6 threads, against the tracked
+`sed/output` files (which the unchanged code reproduces byte for byte):
+`calc_sed.x astrodust` changes by at most 1.4e-5 at a point (PAH, 0.40 um;
+points above 1e-6 of the peak) and 2e-7 in the total; `calc_sed.x dl07
+mw31_60` by at most 6.9e-6 at a point and 2e-7 in the total;
+`calc_sed.x astrodust qm` by at most 3.2e-3 at a point (S2, 48 um), with
+band changes of at most 3.8e-4 (1-5 um). The tracked `sed/output` files are
+not regenerated by this entry. v1.00 and v1.20 give byte-identical outputs.
+
+The dl07 and mrn EUV optics are computed through `q_silicate`/`q_graphite`,
+whose wavelength axis moved by 1.6e-6; `check_build_dust.x` now finds the
+stored `data/dl07` and `data/mrn` EUV products off by up to 1.1e-3 (C_abs) and
+5e-3 (<cos>), and fails those 8 checks until the products are regenerated
+(`calc_qtable.x`, then `calc_kext.x <model> euv`). Their non-EUV views and all
+other models pass.
+
+`check_radiation_support.sh` passes; its worst closure is now 2.2e-15 with
+ifort (2.0e-15 before) and 2.0e-15 with gfortran. `test_planck_grid` gives
+`BIT_DIFFERENCES=0`; `test_cmb_field_balance` closures are -7.8e-16 and
+-3.3e-16 (8.9e-16 and -1.0e-15 before). `sed/tests/README.md` is updated.
+
+`stoch_qm.f90`'s single-grain diagnostic line printed `natom` with `i5`,
+which gave `*****` for every grain above 1e5 atoms; the integers are now
+written with `i0`. The QM summary lines in `sed_astrodust.f90` now report what
+solved each grain: `[QM batch: stoch= eeq_gate= qm_fail_to_gd= qm_fail_to_eq=]`.
+The batch line did not count QM refusals at all, and the `qm` line of `sed_grain_loop`
+counted a refusal solved by the GD narrowing as `fail_to_eq`. For
+`calc_sed.x astrodust qm` the batch now reports 33 refusals solved by GD
+(31 with the old constants, from the old line's stoch and equil counts); the
+stderr diagnostic prints 2 fewer `ok=F` lines, because the atom-count cap
+(`NATOM_QM_MAX`) returns before it (two carbonaceous grains of 0.0133 and
+0.0141 um).
+
+### P(T) comparison energy diagnostic label
+
+`mc/src/main_pT_compare.f90` now labels its printed ratio
+`emit/event_abs`. The denominator counts discrete photon absorption only;
+continuous heating is excluded. This ratio is not a total energy closure
+test. The arithmetic and saved P(T) products are unchanged.
+
+### SED products regenerated without the stored CMB cooling term
+
+The tracked `sed/output/sed_*.dat` products were made before `calc_P` stopped
+subtracting the stored `kappCMB` integral from the cooling rate (the CMB is
+already in `J_Mathis` and `J_HD23`). They were regenerated with the current
+`calc_sed.x` (gfortran, OpenMP 8 threads), one run for each tracked file, with
+the arguments read back from the filename tag. Every regenerated file keeps its
+name, wavelength grid and columns; the column header now reads
+`erg s^-1 sr^-1 H^-1`. All new spectra are identical, data line for data line,
+to the committed code with only the `kappCMB` subtraction removed, so the
+changes below are this correction alone. All 71 files are installed. Largest
+point change (points above 1e-12 of the column peak): 7.5e-4
+(`sed_dl07_mw31_60_morig.dat`, silicate column, 63.8 um). Largest change of
+the total column integrated over 1-5, 5-30, 30-300 and 300-3000 um:
+-4.1e-5, +4.1e-5, -8.6e-6 and -1.0e-4. Equilibrium runs are unchanged.
+The new spectra are byte-identical in v1.00 and v1.20 wherever both
+branches track the file. `sed_astrodust_hd23_{S1,S2,PAH}.dat` were already
+current and are unchanged.
+
+Four files change more than the 1e-4 level of the other products: `sed_g18d.dat` and `sed_g18d_morig.dat`
+(PAH column -2.7% and -3.6% near 2 mm; total over 300-3000 um -3.8e-5 and
+-5.2e-5), `sed_zubko_euv_hardfield_qm_dbcon_nisrf150.dat` (PAH hot tail
+-13.7% at 0.084 um, where the PAH column is 1.3e-12 of its peak; the
+smallest PAHs fail the QM solve under the hard field and are solved by the
+GD matrix), and `sed_zubko_draine_morig_logU-.50_induced.dat` (PAH column
+-1.3e-3 at 4.7 mm). These changes are also the `kappCMB` correction alone. The large relative
+changes occur where the column is a small fraction of its peak (about 1e-5
+of the PAH peak near 2 mm for G18D, 1.3e-12 at 0.084 um for the hard field).
+
+`docs/astrodust_sed_report.tex` numbers and figures were recomputed from the
+regenerated products (`docs/make_figs.py`, all eight figures redrawn); no
+value printed by `make_figs.py` moved at the precision the report quotes, the
+largest change being the maximum S1_C1 30-300 um residual, 23.33% -> 23.34%
+(quoted as 23.3%), and the energy-budget and `hd23` tables are unchanged. The
+induced-emission comparisons and the x1.186 scaling test, which the report had
+kept from older code states, were re-measured with the current `calc_sed.x`
+(FIR baseline of the induced-vs-HD23 table -15.83% -> -14.18%, scaled FIR
+residual -0.2% -> +1.8%), and its QM-solver paragraph now gives the measured
+band ratios (Stage S2 26% below the heuristic solver in 1-5 um) and the 29
+grains that fall back to the GD matrix.
+
+### Stationary-start comparison under prior constants
+
+The preserved set `SEDust_JKAS/results/20261030_mc_stationary` completed
+12 SED/P(T) calculations and 15 graphite calculations using the source
+snapshot preceding the concurrent physical-constant conversion. It is not
+a set of current-tree products. The 14 tracked MC tables and manuscript
+selection remain unchanged pending the explicit numerical-sources-settled
+notice and a final rebuild.
+
+All 2913 SED grain trajectories have zero omitted and out-of-grid time.
+The 2940 warm records contain actual durations and event counts; realized
+counts range from 76 to 50583. Stored/absorbed fractions span
+-6.02975e-5 to 1.29309e-4, and signed raw closure residuals span
+-1.08352% to +0.0759518%. Across the saved component/band comparisons,
+integrated-power ratios range from 0.998900412 to 1.002057569. These changes
+include finite Monte Carlo fluctuations because preparation changes the
+recorded random sequence.
+
+The 200/100/50 angstrom graphite first occupied bin edges are
+16.2743/9.69634/4.28594 K; these are sample-dependent bin edges, not
+physical minimum temperatures. The 200 angstrom probability below
+15 K changes from 2.01842e-5 to zero in this finite sample. For
+1000 independent 10 angstrom starts, the bin-edge CDF difference from
+a 500000-event reference is 0.0385893, within the start-only 99% DKW
+half-width of 0.0514700. The reference has separate finite sampling
+uncertainty. Individual warm times, full profiles, spectral bands, and
+diagnostic limits are in the preserved set's `MEASUREMENTS.md`.
+
+### Deterministic stationary Monte Carlo recording
+
+`mc/src/mc_engine.f90` now prepares each simulated grain from the radiative
+equilibrium temperature of the configured grain and supplied radiation field.
+For a positive discrete absorption rate, the preparation duration is the fixed
+`T_w = max(10 * tau_relax, 100 / rate_event)`; with zero event rate, it is
+`10 * tau_relax`. The second term gives 100 expected events, not a required
+number of realized events. The logged event count is the actual number before
+`T_w`. Because the sampled event rate is independent of temperature, photon
+arrivals form a homogeneous Poisson process. The preparation integrates the
+current waiting interval only to `T_w`, without forcing an event at that time.
+At positive rate, the recorded engine samples a fresh exponential residual
+waiting time, consistent with Poisson memorylessness. The fixed duration
+avoids selecting a recording start solely because a photon arrived.
+
+`mc/src/main_mc.f90`, `mc/src/main_mc_sed.f90`,
+`mc/src/main_pT_compare.f90`, and `mc/src/mc_sed.f90` start recording
+from the prepared temperature and random state. Preparation contributes no
+histogram residence, elapsed time, event absorption, emission,
+or stored-energy change to recorded outputs. `N_events` and `t_max` constrain
+the recorded interval only. An explicit positive `T_init` in `main_mc.x`
+requests a transient experiment and bypasses preparation; the default is the
+stationary procedure. The comparison driver starts all three engines from the
+same prepared state. The `[mc_warmup]` record reports initial equilibrium
+temperature, recording temperature, preparation time, and actual event count;
+`mc_sed` also reports composition.
+
+The buffered option measures its complete sample count with a two-pass replay
+from that same state, then allocates the measured capacity. The limit is
+1,000,000,000 samples, approximately 16 GB for the two real sample arrays.
+The OpenMP SED builder serializes capacity measurement and buffered execution
+to bound their aggregate buffer allocation. The drivers reject insufficient
+capacity and replay-count mismatches. Input file open and malformed-namelist
+failures now report an error and exit with nonzero status; `main_mc.x` also
+rejects an unknown engine name. `docs/mc_pT_report.tex` and `README_HOWTO.md`
+describe the current preparation and recording boundaries.
+
+The fresh numerical production under this deterministic start is in progress.
+No prior numerical product is attributed to this procedure. The entries below
+retain the methods and measured values of their earlier checkpoints, including
+CMB starts and runs without an excluded preparation interval where stated.
+
+### Earlier completed MC products and manuscript verification
+
+The earlier completed calculation set was
+`SEDust_JKAS/results/20261030_mc_energy_consistent`. Its numbers were
+measured before the deterministic stationary start above and are historical
+for that method; they are not current stationary results.
+Twelve SED/distribution runs and fifteen graphite runs completed in external
+GNU Fortran builds. All accepted MC intervals have zero omitted and
+out-of-grid time. The two version trees produce identical matched products.
+The then-refreshed default tracked SED had final/preserved integrated powers
+1.000007013, 1.000010176, 1.000158469, and 0.998882880 in 1-5, 5-30,
+30-300, and 300-3000 um. Preserved tracked files lack full provenance;
+these are product differences, not an isolated estimate of one correction.
+The paper default ratios from that calculation were 1.000006503,
+1.000012414, 1.000147607, and 0.998794121. Full temperature profiles and CDFs are retained. Their
+largest changes include missing cold probability and different bin edges:
+0.890341078 (fixed) and 0.608986554 (two-pass/buffered) for the paper.
+
+Every simulated grain has a stored-energy diagnostic. Across paper runs,
+maximum absolute stored/absorbed fractions are 0.000262176 (50,000 events)
+and 0.0000308162 (500,000 events). The largest astrodust grain, initialized
+at equilibrium, has stored/absorbed = -0.00000728550 in the paper all-MC
+run, compared with 0.0903643 in the controlled CMB-start experiment.
+The signed raw closure residual after subtracting stored heat spans
+-0.0107978 to 0.000686893 in paper runs; spectral rescaling does not
+remove this integration error. A matched 5000-event test gives residuals
+-0.696281%, -0.221798%, and -0.056514% for maximum fractional temperature
+steps 0.05, 0.025, and 0.01. The fast default remains 0.05.
+
+Trajectory recording now returns an explicit capacity failure instead of
+silently truncating the history. The single-grain driver reserves space
+for event records and time samples; recording-disabled trajectories are
+unchanged by this check. Focused tests verify overflow, reset, and identical
+RNG, elapsed time, and energy when recording is disabled. All fifteen
+refreshed graphite calculations retain raw energy accounting; the largest
+absolute closure residual is 0.563324% of total absorption. The manuscript's
+10 angstrom graphite example uses the measured 468.208 carbon atoms and
+367.879 K after a 10 eV photon from 2.725 K. Manuscript text describes the
+current methods, while these change records preserve diagnostic comparisons.
+
+### Complete Monte Carlo waiting intervals and temperature histograms
+
+The adaptive wavelength split uses the same `hc_erg_um` as the photon-event
+energies. Its value is derived from the exact SI Planck constant and the speed
+of light, converted to erg um: 1.9864458571489286e-12. The local constants in
+`mc_sed` and `main_pT_compare` were 1.98644582e-13, a factor of ten too small
+for the stated 1% temperature-jump threshold. They are removed. The engine's
+Planck constant is also updated from 6.62606957e-27 to 6.62607015e-27 erg s;
+this changes event energies by 8.7533e-8 in relative terms. A unit test checks
+that a 1 um photon has energy 1.239841984332 eV. The default temperature-jump
+threshold remains 0.01; its dimensional conversion is consistent with the
+sampled photons. This correction changes the physical division between event
+and continuous heating and requires affected MC products to be recalculated.
+
+The Monte Carlo engines complete each sampled waiting interval before applying
+its photon event. The fixed-grid and adaptive engines use chunks of 4000 and
+300 steps, respectively, with a finite budget of 1,000,000 steps for one
+interval. A nonfinite or non-advancing step, exhausted budget, temperature
+outside the histogram grid, or exhausted sample capacity returns an explicit
+status. Drivers stop before accepting a spectrum or grain comparison.
+`cool_segment` reports the time actually integrated. No environment variables
+or new run-input format are introduced.
+
+All completed intervals, including the initial trajectory, contribute to the
+histogram, elapsed time, absorbed event energy, and emitted energy. The
+obsolete `N_burn` argument is removed from `mc_run_engine_2pass` and
+`mc_run_engine_buffered`; source callers must remove that positional argument.
+The two-pass probe covers all temperatures that the replay bins. The fixed
+histogram covers 0.5–5000 K. Its column structure is unchanged, but its bin
+edges and therefore the interpretation of saved MC probabilities change.
+Residence outside the grid is counted and fails explicitly; it is not moved
+to an edge bin. Buffered calculations require storage for the complete
+trajectory and fail explicitly on capacity exhaustion. `main_pT_compare`
+measures the required capacity from its identical-seed two-pass calculation
+and checks the buffered count against it, with a limit of 1,000,000,000
+samples (16 GB for the two real sample arrays).
+
+The optional engine outputs `floor_time_out`, `out_of_grid_time_out`,
+`omitted_time_out`, and `sample_count_out` separate numerical boundaries from
+elapsed time. `status_out` reports `MC_OK`, `MC_STEP_BUDGET`,
+`MC_INVALID_STEP`, `MC_INVALID_WAIT`, `MC_HISTOGRAM_RANGE`, or
+`MC_SAMPLE_CAPACITY`. Omitting `status_out` causes an unsuccessful engine
+call to stop. `mc_sed` reports the independently integrated prescribed-field
+absorption, sampled event absorption, continuous heating, emitted power,
+elapsed time, omitted time, floor residence, and histogram mass for each
+simulated grain. Its bolometric rescale is not an acceptance test for either
+the trajectory or the wavelength distribution.
+
+At the imposed 0.5 K floor, a derivative directed toward lower temperature
+leaves the grain at the floor for the rest of the waiting interval, including
+its full residence and emission. This is an unresolved-cold-tail approximation,
+not a continuous-heating equilibrium or a CMB temperature boundary. In the
+controlled interval-only diagnostic at U=1.585, retaining the original
+wavelength split to isolate time integration, the HD23 S2 grains at
+0.000354813389233575 and 0.000375837404288444 um have mathematical
+continuous-heating roots of 0.199355 and 0.258852 K under the implemented
+QPL extrapolation. More than 99.998% of their CMB absorption power belongs
+to discrete events. QPL is held at its 1 K table value below that temperature;
+the cold probability density is not physically validated by this approximation.
+
+Direct matched-grain calculations used 50,000 events, seeds 13354 and 14363,
+and the same S2 optics, radiation field, and preserved original cutoff.
+These controlled values isolate interval integration; they do not describe
+the final corrected-cutoff production settings. The omitted time in the replay
+was 751746640.014091 and 43451931.8374593 s. Completing the intervals
+restored those times while keeping the absorbed event energy and final RNG
+state identical. With the complete-histogram implementation, omitted and
+out-of-grid time are zero, probability mass differs from unity by less than
+1.3e-14, and the exact 0.5 K residence fractions are 0.4843276265 and
+0.4015012335. The required sample counts are 61,208,568 and 59,317,056.
+The full CDF changes relative to the truncated calculations are 0.00032106026
+and 0.000025638214. The measured emission from bins below 1 K is less than
+8e-9 of total emission for these two cases; this does not validate their cold
+probability distributions or establish the approximation for other inputs.
+Independent trajectory emission still exceeds absorbed energy by about 0.7%
+in these cases, so exact energy conservation is not claimed.
+
+With the physically consistent cutoff and exact Planck constant, both
+matched grains use lambda_c=39,360 um. Their continuous-heating terms are
+5.4944010e-19 and 5.8199754e-19 erg cm^-2 s^-1; the formal roots of the
+constant-QPL continuation are about 0.0297602 K, outside its physical
+validation range. Exact floor residence fractions in the final 50,000-event
+runs are 0.4868630592 and 0.4091529688. Omitted and out-of-grid time are
+zero, probability mass is within 3e-14 of unity, and sample counts are
+61,210,768 and 59,324,376. Full CDF changes from the original truncated,
+incorrect-cutoff calculations are 0.0028159573 and 0.0075563804. Separate
+runs with the corrected cutoff but the truncating engine omit
+8.9003996997e8 and 5.73672694165e7 s in replay; completing the same
+intervals restores those times. Final temperature bins below 1 K contribute
+7.17293e-9 and 7.79503e-9 of histogram-estimated emitted power. These
+fractions describe the direct cold emission, not a bound on its influence
+on later heating excursions. Full inputs and profiles are recorded in
+`SEDust_JKAS/results/20261030_mc_interval_diagnostics/correct_hc/`.
+
+Focused tests in both versions cover chunk-size independence, all three
+engines, pure cooling, continuous heating, floor residence, long waits,
+finite observation time, invalid steps and waiting rates, budget exhaustion,
+truncated-probe range errors, and buffered capacity errors. Tests and builds
+run outside the source repositories. The matched-grain measurements and full
+profiles are in `SEDust_JKAS/results/20261030_mc_interval_diagnostics/`.
+
+### Recalculated MC spectra and complete temperature distributions
+
+The following measurements describe the preserved
+`20261030_mc_physical_cutoff` diagnostic set. A subsequent independent energy
+check found that interpolation in the photon enthalpy inverse loses energy
+for small photon increments. These numbers are retained as a diagnostic
+record, not accepted final results. The analytic-inverse calculations are
+recorded separately below when complete.
+
+External GNU builds completed the three SED calculations and four-grain
+P(T) comparison for each version and for the paper inputs (12 driver runs).
+All accepted grain trajectories have zero omitted and out-of-grid time.
+The two version outputs agree for matching inputs. The tracked comparisons
+use the unchanged Mathis-field namelists; the paper uses piecewise HD23
+at U=10^0.2. These input sets must not be conflated.
+
+For the tracked default, high-count, and all-MC spectra, respectively,
+the 30–300 um power changes against the preserved tables are +0.015896%,
++0.009812%, and +0.014894%; the 300–3000 um changes are -0.111246%,
+-0.110643%, and -0.097555%. For the matched paper comparison, the
+high-count spectrum changes by +0.007532% and -0.119996% in those bands.
+The paper's two-pass P(T) CDF changes by as much as 0.608986 across the
+four grains, at 10 Angstrom; the tracked set's maximum is 0.649580.
+This is distinct from the smaller matched cap-grain CDF changes above.
+The fixed-grid cumulative-mass changes reach 0.890341 and 0.906744,
+respectively, and include recovery of previously unrecorded cold residence.
+The preserved fixed-grid distributions are not silently renormalized.
+The saved column structure stays unchanged while the fixed bin edges change.
+
+In that earlier calculation, the two-pass and buffered distributions agreed for the same seeds and
+complete sample counts. Full density/CDF comparisons, input conditions,
+independent raw absorption/emission diagnostics, and component band changes
+are recorded in
+`SEDust_JKAS/results/20261030_mc_physical_cutoff/MEASUREMENTS.md`.
+Previously tracked tables lack complete input/source metadata, so their
+changes are reported as a product refresh rather than an isolated estimate
+of one correction. Earlier calculation directories are preserved.
+
+### Analytic photon enthalpy inversion and initial thermal energy
+
+Photon absorption in the MC engines now inverts the same analytic U(T) used
+before absorption. The tabulated enthalpy locates a bracket; safeguarded
+Newton iteration with bisection satisfies the analytic energy residual.
+Below the table the bracket extends to the imposed 0.5 K floor, and above
+the table it expands instead of silently capping temperature. Invalid or
+unresolved targets return MC_INVALID_STEP before the event is accepted.
+When the bracket endpoints are adjacent representable temperatures, the
+endpoint with the smaller enthalpy residual is accepted only if the relative
+residual is at most 1e-12. All other targets retain the stricter residual
+criterion. A positive-energy photon cannot cool the grain; roundoff-sized
+inverse differences are handled before updating the state.
+
+The defect was measured with the preserved HD23 all-MC 5.011872336 um
+astrodust calculation. The cumulative photon-jump loss was
+2.65530331314e-4 erg. Stored heat increased by 2.69460436767e-4 erg, while
+absorbed minus emitted energy was 5.34990014640e-4 erg. Thus finite initial
+heating alone did not explain the deficit. The prior inverse interpolated
+log(T) linearly in U even though each event began from analytic U(T), and
+small photon increments repeatedly lost energy through that mismatch.
+The matched Mathis calculation had a cumulative loss of 2.54406670312e-4 erg.
+The separate signed closure residual after accounting for these terms was
+below 8e-10 erg in both diagnostic runs.
+
+At this earlier checkpoint, all-MC grains above the equilibrium-energy
+threshold started at radiative equilibrium, while smaller grains started at
+the CMB temperature. No preparation interval was excluded at that stage:
+residence, time, absorption, and emission used the same intervals. The optional
+stored_energy_out diagnostic returns analytic U(T_final)-U(T_initial);
+mc_sed appends stored_energy_erg to its independent diagnostic record.
+The spectrum and P(T) data-column structure is unchanged.
+
+Focused tests cover the analytic inverse over 0.5–12000 K, multiple materials
+and radii, zero and small photon increments, the observed adjacent-temperature
+case, invalid targets, and stored-energy consistency between engines and
+chunk sizes. Full measured results for the refreshed calculations are recorded
+in SEDust_JKAS/results/20261030_mc_energy_consistent/ when validated.
+
+### Explicit resolution controls and the zero-scattering Rayleigh limit
+
+The three-dimensional radiative-transfer setting retains the fast `heuristic`
+solver and a 200-temperature-point model. The energy-space `qm` method retains
+200 enthalpy bins and a 200-wavelength radiation-field cap by default. Existing
+`nstate=N` and `nisrf=N` CLI settings permit a deliberate resolution study;
+for example, `astrodust qm nstate=500 nisrf=1129 hd23 logU=0.2` uses all
+1129 source wavelengths when that grid is available. The effective count is
+the lesser of the source-grid count and `qm_nisrf_max`. Library callers may set
+the public `qm_nstate_default` and `qm_nisrf_max` module variables before
+parallel solves and must not change them concurrently. A larger setting does
+not establish spectral convergence by itself; compare the resulting spectra
+and energy balance at successive resolutions.
+
+A focused diagnostic used one neutral PAH at `a=0.000421697 um`, 35 atoms,
+`NT=200` over 2.7–5000 K, HD23 `U=10^0.2`, and thermal-discrete QM with
+`nstate=500`. Its emitted-to-absorbed power ratios for 200, 500, and 1129
+radiation wavelengths were 0.8439877849 (rejected solution), 0.9683433756,
+and 0.9962086841. The corresponding ionized PAH at 200 wavelengths gave
+1.0068300802. This isolates a sampling problem for one grain and charge
+state; it is not an accuracy estimate for a complete dust spectrum. The fast
+default and all existing reference products remain unchanged by the explicit
+resolution option.
+
+The Rayleigh dipole limit now returns zero albedo and zero phase-matrix
+moments when the refractive index has no contrast with vacuum and both
+extinction and scattering vanish. Previously the normalization divided by
+zero and produced NaNs. Focused checked GNU tests in both versions passed
+vacuum sphere, oblate, and prolate cases, lossless and absorbing scattering,
+the spherical Rayleigh formula, and optional moments. No optical tables were
+regenerated.
+
+### Explicit HD23 radiation field and complete CMB accounting
+
+`sed/src/radfield.f90` implements the final journal version of Hensley &
+Draine (2023, ApJ 948, 55), equations (9) and (10). The three diluted
+blackbodies have `(T, W)` values `(3000 K, 7.0e-13)`,
+`(4000 K, 1.65e-13)`, and `(7500 K, 1.0e-14)`. With wavelength in um,
+the UV `lambda*u_lambda` terms in erg cm^-3 are `1.287e-9*lambda^4.4172`
+for 0.0912–0.110 um, `6.825e-13*lambda` for 0.110–0.134 um, and
+`2.373e-14*lambda^-0.6678` for 0.134–0.246 um. The code converts
+`u_lambda` to `J_lambda` in W m^-3 sr^-1, scales stellar light by `U`,
+and adds the unscaled 2.725 K CMB. The field is piecewise, as in Draine's
+`mmp_radiation_field.f` and in `J_Mathis`: the UV power laws up to and
+including 0.246 um, the three blackbodies above it. (The first version of
+this routine, written the same day, added the blackbodies at every
+wavelength because eq. 9 is printed as a sum; the review of 2026-10-30
+replaced it, since the MMP83 UV fits already hold the stellar Wien tails,
+and the release energy budget closes only with the piecewise form: emitted
+over absorbed power of the HD23 release at log U = 0.2 is 1.000 (astrodust)
+and 1.015 (PAH) with it, against 0.974 and 0.917 with the sum.)
+The `J_HD23(U, lambda, J)` routine is public.
+
+`calc_sed.x` accepts `hd23` as an explicit field setting for every dust
+model and rejects its combination with `mathis_orig`. A default run still
+uses the corrected Mathis field; `mathis_orig` retains the published 1983
+convention. `hd23` adds a deterministic filename tag. Each SED run also
+writes the spectrum supplied to the solver as
+`output/field_<model>[_<tag>].dat`, including any `hardfield` replacement.
+The emission headers identify the field and `U`; units of `lambda*I_lambda/N_H`
+are corrected to erg s^-1 sr^-1 H^-1.
+
+The Monte Carlo input files now accept `radiation_field = 'mathis'`,
+`'mathis_orig'`, or `'hd23'`. The supplied field is used by both the
+stochastic grains and the equilibrium grains, fixing the path that rebuilt
+a Mathis field after the caller selected another spectrum. The MC drivers
+write the field they supplied to `*_field.dat`. The complete field includes
+CMB heating, so the GD cooling calculation does not subtract the stored
+partial CMB integral a second time.
+
+Fresh external GNU builds of both versions used `WITH_TMATRIX=1`,
+`FC=/opt/miniconda3/bin/gfortran`, and
+`HDF5_PREFIX=/data/opt/hdf5_gfortran`. The focused HD23 test passed its
+UV boundaries, unscaled CMB, `U` scaling, and both Mathis conventions.
+The zero-field population check passed. The measured relative finite-bin
+energy-closure residuals were `8.8818e-16` for pure CMB and `-9.9920e-16`
+for a field without CMB in each version. The subsequent manuscript calculations regenerated the affected SED and MC
+figures under `../SEDust_JKAS/results/20261030_hd23`. That directory records
+actual fields, run settings, frozen sources, checks, and reference limitations.
+Older benchmark outputs elsewhere remain historical.
+
+### Energy budget conclusion withdrawn
+
+`docs/astrodust_sed_report.tex` (and its PDF) no longer states that the HD23
+release fails to conserve energy. That conclusion, reached on 2026-06-12,
+used our default `mathis` field, which follows Draine's 2008
+`mmp_radiation_field.f`: it corrects the 4000 K dilution factor to 1.65e-13
+but keeps the Mathis (1983) `W = 4e-13` at 3000 K. HD23 eq. (9) uses the
+Draine (2011) value `7e-13` (see "Explicit HD23 radiation field" above for
+the `J_HD23` routine and the `hd23` setting). The 2026-06-12 argument that a
+field difference would shift astrodust and PAH equally holds only for a
+uniform change of `U`; the 3000 K factor changes the field shape, and raises
+the absorbed power of the release `C_abs` by 9.3% (astrodust) and 1.8% (PAH).
+
+Measured on 2026-10-30 from the release tables (`C_abs` = extinction -
+scattering, power-law extrapolation over 0.0912-0.1 um, emission
+`4 pi int lambda I_lambda dln lambda` of the `irem` column, log U = 0.2),
+emitted over absorbed power:
+
+| field | astrodust | PAH |
+|---|---|---|
+| `mathis` (W3000 = 4e-13) | 1.093 | 1.033 |
+| `hd23`, piecewise (W3000 = 7e-13) | 1.000 | 1.015 |
+| eq. (9) as a literal sum | 0.974 | 0.917 |
+
+Our SED with the HD23 field (`./calc_sed.x astrodust hd23`, gfortran,
+NT = 200, heuristic; outputs `sed/output/sed_astrodust_hd23_{S1,S2,PAH}.dat`)
+against the release, median of (ours - HD23)/HD23 with the band power ratio
+in parentheses (`docs/make_figs.py` conventions):
+
+| band (um) | astrodust S1 | astrodust S2 | PAH |
+|---|---|---|---|
+| 1-5 | +71.24% (1.387) | +164.35% (1.879) | +14.75% (1.022) |
+| 5-30 | +3.70% (1.043) | +10.97% (1.156) | +4.34% (0.969) |
+| 30-300 | -0.13% (0.999) | -0.37% (0.999) | +0.32% (1.001) |
+| 300-3000 | -0.42% (0.994) | -1.06% (0.986) | +3.57% (1.021) |
+
+The astrodust S1 residual at the 133.4 um peak is -0.69% (-9.80% with the
+default field), and the 0.1-3000 um power ratio is 0.999 (astrodust) and
+0.982 (PAH), against 0.914 and 0.965 with the default field. The 1-5 um
+astrodust excess is the same with either field and remains open. The report
+now carries both fields in Table `tab:ad_energy`, adds Table
+`tab:hd23_bands`, retitles the section `sec:phaseE-resolution` ("the 3000 K
+dilution factor of the heating field"), and rewrites the introduction
+summary, the conclusions table and the closing discussion accordingly. The
+default `mathis` numbers elsewhere in the report are kept and labeled as such.
+
+### Count the illuminating CMB once
+
+The GD callers in `sed_astrodust.f90` and `main_pT_compare.f90` no longer
+subtract the stored CMB integral from cooling. `J_lam` already contains any
+background radiation, so the previous subtraction duplicated that heating.
+This corrects heuristic, iterative, and unsuccessful QM solves that use GD.
+The public partial `kappCMB` arrays remain available, but production emission
+does not consume them. The optional low-level `calc_P` argument is documented
+as a separate continuous-heating term only when excluded from `Jfield`.
+
+Added focused full-field closure and population-invariance tests. In fresh
+GNU builds of both versions, the pure-CMB closure residual was 8.8818e-16 and the
+CMB-free-field residual was -9.9920e-16. Both emission methods
+were unchanged when the stored partial CMB arrays were perturbed. Existing
+spectra and quoted benchmark values must be remeasured before serving as
+validation of the corrected solver.
+
 ## 2026-10-22
 
 ### Intel Fortran builds

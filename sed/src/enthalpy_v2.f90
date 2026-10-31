@@ -3,7 +3,7 @@
 module enthalpy
 ! module to calculate enthalpies for graphite, silicate, and PAH.
 !      Debye function (or integral) of order n = 2,3
-use constants, only: wp
+use constants, only: wp, k_boltz, hc_k
 implicit none
 contains
 !++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -19,10 +19,10 @@ contains
    character(len=4), intent(in) :: dtype
 ! Local variables
    real(kind=wp), parameter :: Top = 863.0_wp, Tip = 2504.0_wp, T2 = 500.0_wp, T3 = 1500.0_wp
-   real(kind=wp), parameter :: kB  = 1.3806488e-16_wp ! erg K^-1
-! C2 = h x c / k, lambdaj(1:3) in cm
+   real(kind=wp), parameter :: kB  = k_boltz ! erg K^-1
+! C2 = h x c / k [cm K], lambdaj(1:3) in cm
 ! Note C2, and hwc should be double precision to avoid NaN.
-   real(kind=wp), parameter :: C2 = 1.4387687_wp
+   real(kind=wp), parameter :: C2 = hc_k
    real(kind=wp), parameter :: lambdaj(3) = (/11.3_wp, 8.6_wp, 3.3_wp/) * 1e-4_wp
    real(kind=wp), parameter :: hwc(3) = C2/lambdaj(:)
 

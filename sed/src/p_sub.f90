@@ -12,7 +12,7 @@ module p_sub
    ! toward an exterior zero sample contributes photons beyond those ends.
 
    use, intrinsic :: iso_fortran_env, only: real64, int64
-   use constants, only: wp
+   use constants, only: wp, hc_ergum
    use radfield, only: radiation_field_support, isolated_radiation_support_count, RADIATION_SUPPORT_ISOLATED
    implicit none
    private
@@ -20,9 +20,7 @@ module p_sub
 
    real(wp), parameter :: PI     = 3.141592653589793238462643383279502884197d0
    real(wp), parameter :: FOURPI = PI * 4.0d0
-   real(wp), parameter :: c     = 2.99792458d10   ! cm/s
-   real(wp), parameter :: hp    = 6.62606957d-27  ! cm^2 g s^-1
-   real(wp), parameter :: hc    = hp*c*1d4        ! erg um  (lambda is in um)
+   real(wp), parameter :: hc    = hc_ergum        ! erg um  (lambda is in um)
 
    ! The absorbed power per unit photon energy on a field's support, built
    ! once for each calc_P call (absorbed_power_spectrum).
@@ -164,8 +162,14 @@ contains
       ! distribution P(T) of a stochastically heated grain, on the enthalpy
       ! grid H(T) (erg), with the GD89 linear recursion for the steady state.
       !
-      ! Downward rates are GD89's continuous cooling,
-      !    A(u-1, u) = 4 pi [kappB(u) - kappCMB] / (H(u) - H(u-1)).
+      ! Downward rates are GD89's continuous cooling. With the complete
+      ! illuminating field in Jfield, omit kappCMB:
+      !    A(u-1, u) = 4 pi kappB(u) / (H(u) - H(u-1)).
+      ! The optional kappCMB is an explicitly separate continuous-heating
+      ! integral, in the same units as kappB. Supply it only for heating
+      ! excluded from Jfield; otherwise that energy is counted twice.
+      ! Its historical name does not add a CMB implicitly. In particular,
+      ! J_Mathis already includes CMB photons and requires no such term.
       ! Upward rates are Draine & Li (2001, ApJ 551, 807; DL01) eqs. (15)-(24)
       ! for l -> u < nT, eq. (16) for the top bin nT, and eq. (28) for the
       ! absorptions that stay inside bin l, added to l -> l+1; see

@@ -1,8 +1,10 @@
 #!/bin/bash
 # Run MC for P(T) distributions (PIIM Fig 24.6).
-# Sizes: 10, 20, 50, 100, 200 A.  ISRF: U=1 (Mathis 1983).
-# N_events = 20000 per grain for histogram statistics.
-set -e
+# Sizes: 10, 20, 50, 100, 200 A.  ISRF: U=1 (Mathis 1983, corrected).
+# N_events = 500000 recorded events per grain (t_max = 0: no time limit),
+# after the stationary warm-up from the radiative-equilibrium temperature.
+# The full program output of each run is kept in output/fig24_6/<tag>.log.
+set -eo pipefail
 cd "$(dirname "$0")/.."
 
 mkdir -p output/fig24_6
@@ -16,7 +18,7 @@ for i in 0 1 2 3 4; do
   N=${NEVT[$i]}
   tag="${alabel}_U1"
   nml="output/fig24_6/${tag}.nml"
-  cat > "$nml" <<EOF
+  cat > "$nml" <<NML
 &mc_input
   a_um       = $a
   U_isrf     = 1.0
@@ -27,9 +29,10 @@ for i in 0 1 2 3 4; do
   seed       = $((101 + i))
   out_prefix = 'output/fig24_6/${tag}'
 /
-EOF
+NML
   echo "=== $tag (a=$a um, N=$N) ==="
-  ./main_mc.x "$nml" 2>&1 | grep -E '(rate_event|emit/abs|t_total|n_rec)'
+  ./main_mc.x "$nml" 2>&1 | tee "output/fig24_6/${tag}.log" | \
+    grep -E '(mc_warmup|rate_event|mc_interval|t_total|emit/event_abs|mc_energy_single|ERROR|failed)'
 done
 
 echo

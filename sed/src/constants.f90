@@ -47,11 +47,25 @@ public
   real(kind=wp), parameter :: kpc2cm = pc2cm * 1e3_wp
   real(kind=wp), parameter :: au2cm  = 1.4960e13_wp
 
-! physical constants
-  real(kind=wp), parameter :: c        = 2.99792458e10_wp
-  real(kind=wp), parameter :: hc       = 1.9864475e-16_wp
-  real(kind=wp), parameter :: hc2      = hc**2
-  real(kind=wp), parameter :: hc_ergum = 1.9864475e-12_wp
+! physical constants, cgs.
+! h, c, k_B and e are the defining constants of the SI (exact since the 2019
+! redefinition; BIPM, The International System of Units, 9th ed., 2019, Table 1).
+! Everything below them is derived from them here, so no module carries its own
+! rounded copy. The SI-unit values are the same exact numbers.
+  real(kind=wp), parameter :: c        = 2.99792458e10_wp     ! speed of light [cm s^-1]
+  real(kind=wp), parameter :: h_planck = 6.62607015e-27_wp    ! Planck constant [erg s]
+  real(kind=wp), parameter :: k_boltz  = 1.380649e-16_wp      ! Boltzmann constant [erg K^-1]
+  real(kind=wp), parameter :: ev2erg   = 1.602176634e-12_wp   ! 1 eV [erg] (e = 1.602176634e-19 C)
+
+  real(kind=wp), parameter :: c_si     = 2.99792458e8_wp      ! [m s^-1]
+  real(kind=wp), parameter :: h_si     = 6.62607015e-34_wp    ! [J s]
+  real(kind=wp), parameter :: k_si     = 1.380649e-23_wp      ! [J K^-1]
+
+  real(kind=wp), parameter :: hc       = h_planck * c         ! [erg cm]; also erg per cm^-1 of wavenumber
+  real(kind=wp), parameter :: hc2      = hc**2                ! [erg^2 cm^2]
+  real(kind=wp), parameter :: hc_ergum = hc * 1e4_wp          ! [erg um]
+  real(kind=wp), parameter :: hc_evum  = hc_ergum / ev2erg    ! [eV um] = 1.2398419843...
+  real(kind=wp), parameter :: hc_k     = hc / k_boltz         ! second radiation constant [cm K] = 1.4387768775...
 
 ! dust mass per hydrogen nuclei (g/H)
   real(kind=wp), parameter :: h2dust = 1.87e-26_wp

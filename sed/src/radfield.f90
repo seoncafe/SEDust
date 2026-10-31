@@ -4,10 +4,10 @@ module radfield
    ! A prepared wavelength grid reuses Planck coefficients across temperatures.
 
    use, intrinsic :: iso_fortran_env, only: real64, int64
-   use constants, only: wp
+   use constants, only: wp, c_si, h_si, k_si, hc_ergum
    implicit none
    private
-   public :: J_Mathis, J_diluted_bbody, calc_bbody, bbody
+   public :: J_Mathis, J_HD23, J_diluted_bbody, calc_bbody, bbody
    public :: planck_grid_t, prepare_planck_grid
    public :: hardest_photon_energy, radiation_field_support, J_REL_FLOOR
    public :: isolated_radiation_support_count, RADIATION_SUPPORT_OK, &
@@ -23,17 +23,15 @@ module radfield
    ! against HD23 astrodust_irem.dat, and the open questions there).
    public :: use_mathis_corrected
 
-   real(wp), parameter :: c     = 2.99792458d8     ! m/s
-   real(wp), parameter :: h     = 6.62606957d-34   ! J.s
-   real(wp), parameter :: kB    = 1.3806488d-23    ! J/K
-   real(wp), parameter :: hc2   = 2.0d0*h*c**2
-   real(wp), parameter :: hc_kB = h*c/kB
-   ! h*c in [erg um], written with the same literals and the same order of
-   ! operations as HC_ERG_UM in sed_astrodust_mod so that the two agree to the
-   ! last bit; the single-photon bound below is compared against a 13.6 eV
-   ! constant, and a last-place disagreement there would show up as a spurious
-   ! difference in the grains that sit exactly at the switch-over.
-   real(wp), parameter :: hc_erg_um = 6.62606957e-27_wp * 2.99792458e10_wp * 1.0e4_wp
+   ! SI: B_lambda in W m^-3 sr^-1 with lambda in m.
+   real(wp), parameter :: c     = c_si             ! m/s
+   real(wp), parameter :: hc2   = 2.0_wp*h_si*c_si**2
+   real(wp), parameter :: hc_kB = h_si*c_si/k_si   ! m K
+   ! h*c in [erg um] is the shared constants value, the same one
+   ! sed_astrodust_mod uses; the single-photon bound below is compared against
+   ! a 13.6 eV constant, and a last-place disagreement there would show up as a
+   ! spurious difference in the grains that sit exactly at the switch-over.
+   real(wp), parameter :: hc_erg_um = hc_ergum
 
    ! Relative intensity threshold for the outer field-support bounds.
    ! Interior samples are retained; see hardest_photon_energy.
@@ -61,23 +59,11 @@ module radfield
 contains
 
    pure function cmb_temperature() result(T_cmb)
-      ! The CMB temperature this module puts into the radiation field, and the
-      ! ONLY place that value is written down.
-      !
-      ! It has to be a single source of truth because two very different pieces
-      ! of the calculation must agree on it. J_Mathis adds a CMB blackbody to
-      ! the field the grains absorb, and build_kappCMB integrates C_abs against
-      ! a CMB blackbody past 1 mm to form the term calc_P subtracts from the
-      ! grain's own emission (kappB - kappCMB is the NET cooling rate, which is
-      ! what stops a grain cooling below its surroundings). If the two used
-      ! different temperatures the solver would hold grains up against photons
-      ! the field never supplied. They did differ -- 2.725 K in the field
-      ! against a hard-coded 2.9 K in the cooling term -- once
-      ! use_mathis_corrected became the default.
-      !
-      ! use_mathis_corrected = .true. is the modern value (Mather et al.);
-      ! .false. recovers the literal Mathis (1983) 2.9 K together with that
-      ! paper's 4000 K dilution factor, so the two move as a pair.
+      ! Temperature of the CMB included in the constructed radiation field.
+      ! A solver that absorbs that complete field must use gross emission
+      ! for cooling, without subtracting the same background a second time.
+      ! The historical uncorrected option retains its 2.9 K convention;
+      ! the corrected option uses 2.725 K.
       real(wp) :: T_cmb
       if (use_mathis_corrected) then
          T_cmb = 2.725_wp
@@ -127,6 +113,58 @@ contains
          J(i) = J(i) + bbody(T_cmb, lambda(i))
       end do
    end subroutine J_Mathis
+
+
+   subroutine J_HD23(U, lambda, J)
+      ! Hensley & Draine 2023, ApJ 948, 55, equations (9) and (10): the
+      ! "modified MMP" starlight of Mathis et al. (1983) with the dilution
+      ! factors of Draine (2011), W = 7.0e-13 (3000 K), 1.65e-13 (4000 K),
+      ! 1.0e-14 (7500 K), the MMP83 ultraviolet power laws, and an unscaled
+      ! 2.725 K CMB.  U scales the starlight only.
+      !
+      ! Eq. (9) is printed as a sum of the UV component and the three
+      ! blackbodies.  The MMP83 field is piecewise: the UV power laws are fits
+      ! to the observed field over 912-2460 A, so the stellar Wien tails are
+      ! already in them, and the blackbodies take over at 2460 A.  Draine's
+      ! implementation (mmp_radiation_field.f, 2008) is piecewise with that
+      ! boundary (UV for lambda <= 0.246 um, blackbodies above), and J_Mathis
+      ! follows it.  This routine keeps that piecewise definition with the
+      ! revised dilution factors.  The released HD23 emission supports it: the
+      ! release C_abs integrated against this field at log U = 0.2 gives an
+      ! emitted-to-absorbed power of 1.000 (astrodust) and 1.015 (PAH),
+      ! against 0.974 and 0.917 when the blackbodies are also added over the
+      ! UV range (measured 2026-10-30 on the release tables).
+      ! J is J_lambda in W m^-3 sr^-1, for lambda in um.
+      real(wp), intent(in)  :: U, lambda(:)
+      real(wp), intent(out) :: J(:)
+      real(wp), parameter :: pi = 3.141592653589793238462643383279502884197_wp
+      real(wp) :: lam, lambda_u_uv
+      integer :: i
+
+      do i = 1, size(lambda)
+         lam = lambda(i)
+         if (lam < 0.0912_wp) then
+            J(i) = 0.0_wp
+         else if (lam <= 0.246_wp) then
+            lambda_u_uv = 0.0_wp ! lambda * u_lambda in erg cm^-3
+            if (lam < 0.110_wp) then
+               lambda_u_uv = 1.287e-9_wp * lam**4.4172_wp
+            else if (lam < 0.134_wp) then
+               lambda_u_uv = 6.825e-13_wp * lam
+            else
+               lambda_u_uv = 2.373e-14_wp * lam**(-0.6678_wp)
+            end if
+            ! (c/4pi) u_lambda, with c in m s^-1 and
+            ! erg cm^-3 um^-1 converted to J m^-4 by 1e5.
+            J(i) = c/(4.0_wp*pi) * 1.0e5_wp * lambda_u_uv/lam
+         else
+            J(i) = 7.0e-13_wp * bbody(3000.0_wp, lam) &
+                 + 1.65e-13_wp * bbody(4000.0_wp, lam) &
+                 + 1.0e-14_wp * bbody(7500.0_wp, lam)
+         end if
+         J(i) = U*J(i) + bbody(2.725_wp, lam)
+      end do
+   end subroutine J_HD23
 
 
    subroutine J_diluted_bbody(itype, lambda, J)

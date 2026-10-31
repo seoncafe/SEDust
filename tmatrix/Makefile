@@ -29,6 +29,8 @@
 #   compare_*.x              verification drivers
 #   euv_polarized_optics.x   orientation-resolved optics shortward of 0.0912 um
 #   spheroid_asymmetry_table.x  the G18 Model D scattering-asymmetry tables
+#   test_rayleigh_zero_scattering.x  zero-scattering conventions of the
+#                            Rayleigh limit (no library needed)
 #
 # Run:
 #   make                     # run_tmatrix.x run_scatmat.x run_q_jori.x
@@ -132,7 +134,7 @@ tmatrix_status.o: src/tmatrix_status.f90
 tmatrix_types.o: src/tmatrix_types.f90 tmatrix_kinds.o
 	$(FC) $(MODERN_FFLAGS) -I. -c -o $@ $<
 tmatrix_core.o: src/tmatrix_core.f90 tmatrix_kinds.o tmatrix_types.o
-	# RECURSIVE_FLAG keeps every migrated helper reentrant.  NOINLINE_FLAG is
+	# RECURSIVE_FLAG keeps every migrated routine reentrant.  NOINLINE_FLAG is
 	# kept because inlining changes where the compiler contracts multiply-add
 	# pairs, which moves the last bits of the T-matrix convergence test.
 	$(FC) $(MODERN_FFLAGS) $(RECURSIVE_FLAG) $(NOINLINE_FLAG) -I. -c -o $@ $<
@@ -390,6 +392,20 @@ evaluate_one.x: libtmatrix.a examples/evaluate_one.f90
 	$(FC) $(MODERN_FFLAGS) -I. examples/evaluate_one.f90 -L. -ltmatrix $(LDFLAGS) -o $@
 example: evaluate_one.x
 
+# The zero-scattering conventions of rayleigh_limit: a vacuum contrast
+# (m = 1), a lossless dipole, and an absorbing one, with and without the
+# optional scattering moments.  No scattering returns finite zeros for the
+# albedo, asymmetry, and matrix coefficients rather than 0/0.  It needs only the
+# driver object, not the library.  `make BUILD=debug test_rayleigh_zero_scattering.x`
+# adds the runtime checks and the invalid/zero/overflow floating-point traps.
+# The conventions are exact zeros and exact unit albedos, so the test compares
+# reals exactly on purpose; RAYLEIGH_TEST_FLAGS silences that one GNU warning.
+ifeq ($(FC_FAMILY),gnu)
+  RAYLEIGH_TEST_FLAGS = -Wno-compare-reals
+endif
+test_rayleigh_zero_scattering.x: tmatrix_kinds.o asymptotic_optics.o tests/test_rayleigh_zero_scattering.f90
+	$(FC) $(MODERN_FFLAGS) $(RAYLEIGH_TEST_FLAGS) -I. tests/test_rayleigh_zero_scattering.f90 asymptotic_optics.o $(LDFLAGS) -o $@
+
 clean:
 	rm -f *.o *.mod *.a
 	rm -rf build
@@ -399,7 +415,7 @@ cleanall: clean
 	      compare_tmatrix_jori.x compare_tmatrix_abs.x compare_go_jori.x \
 	      compare_birefringence.x compare_scatmat_aligned.x run_scatmat_aligned.x \
 	      euv_polarized_optics.x evaluate_one.x spheroid_asymmetry_table.x \
-	      compare_mie_spheres.x
+	      compare_mie_spheres.x test_rayleigh_zero_scattering.x
 
 .PHONY: all all-compare example clean cleanall lyman_cut
 

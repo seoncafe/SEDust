@@ -1,7 +1,10 @@
 #!/bin/bash
 # Generate namelists and run MC for the PIIM Figure 24.5 panels:
 # (a, U) = {10, 20, 50, 100, 200 A} x {1, 100}, t_max = 1e5 s each.
-set -e
+# Each run starts recording after the stationary warm-up from the
+# radiative-equilibrium temperature (no T_init in the namelist).
+# The full program output of each run is kept in output/fig24_5/<tag>.log.
+set -eo pipefail
 cd "$(dirname "$0")/.."
 
 mkdir -p output/fig24_5
@@ -18,7 +21,7 @@ for i in 0 1 2 3 4; do
     Ulabel=${U_LBL[$j]}
     tag="${alabel}_${Ulabel}"
     nml="output/fig24_5/${tag}.nml"
-    cat > "$nml" <<EOF
+    cat > "$nml" <<NML
 &mc_input
   a_um       = $a
   U_isrf     = $U
@@ -30,9 +33,10 @@ for i in 0 1 2 3 4; do
   out_prefix = 'output/fig24_5/${tag}'
   record_trajectory = .true.
 /
-EOF
+NML
     echo "=== $tag (a=$a um, U=$U) ==="
-    ./main_mc.x "$nml" 2>&1 | grep -E '(rate_event|emit/abs|t_total|n_rec)'
+    ./main_mc.x "$nml" 2>&1 | tee "output/fig24_5/${tag}.log" | \
+      grep -E '(mc_warmup|rate_event|mc_interval|t_total|emit/event_abs|mc_energy_single|ERROR|failed)'
   done
 done
 

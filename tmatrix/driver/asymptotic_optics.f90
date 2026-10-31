@@ -10,13 +10,12 @@ module asymptotic_optics
    !       Closes a ~6% systematic vs HD23 release at
    !       long wavelengths that an isotropic Mie sphere would leave open.
    !
-   !   - geometric_optics_limit, valid for x >> 1 (used for x > 50):
-   !       Q_ext -> 2 and Q_abs = 1 - exp(-4 k x),
-   !       Q_sca = Q_ext - Q_abs, g approximately 0 (no preferred direction
-   !       for randomly oriented large opaque grains in the GO limit; this
-   !       is a deliberate over-simplification, justified by the fact that
-   !       the FIR/sub-mm SED has J_lambda ~ 0 here so cross-section
-   !       errors do not propagate to the final SED).
+   !   - geometric_optics_limit, called for x > 50 and after some
+   !       T-matrix failures: Q_ext = 2, Q_abs = 1 - exp(-4 k x),
+   !       Q_sca = Q_ext - Q_abs. The equal-volume sphere absorption,
+   !       g = 0, and isotropic scattering matrix are unverified or
+   !       physically incorrect for large spheroids. Their effect on
+   !       size-integrated optical properties and SEDs is unverified.
    !
    ! Both return a single set of Q_ext, Q_sca, albedo, g.
    !
@@ -118,7 +117,10 @@ contains
       qabs = (qabs_a + 2.0_wp*qabs_b) / 3.0_wp
       qsca = (qsca_a + 2.0_wp*qsca_b) / 3.0_wp
       qext = qabs + qsca
-      walb = qsca / qext
+      ! With no dielectric contrast, Q_ext = Q_sca = 0 and albedo is
+      ! undefined. Return the finite zero-scattering convention.
+      walb = 0.0_wp
+      if (qext > 0.0_wp) walb = qsca / qext
       asymm = 0.0_wp
 
       ! Orientation-resolved cross sections (index = jori).  These are the
@@ -142,8 +144,10 @@ contains
          qre_ori(1) = qre_b;  qre_ori(2) = qre_a;  qre_ori(3) = qre_b
       end if
 
-      if (present(al1)) call rayleigh_matrix_expansion(alpha_a, alpha_b, &
-                             al1, al2, al3, al4, be1, be2, lmax)
+      if (present(al1) .or. present(al2) .or. present(al3) .or. &
+          present(al4) .or. present(be1) .or. present(be2) .or. present(lmax)) &
+         call rayleigh_matrix_expansion(alpha_a, alpha_b, &
+                                       al1, al2, al3, al4, be1, be2, lmax)
    end subroutine rayleigh_limit
 
 
@@ -237,6 +241,18 @@ contains
       bb = abs(abar)**2 - (2.0_wp/45.0_wp) * abs(del)**2
       cc = (1.0_wp/15.0_wp) * abs(del)**2
       xnorm = (2.0_wp/3.0_wp)*aa + (4.0_wp/3.0_wp)*cc
+      if (xnorm <= 0.0_wp) then
+         ! A zero scattering cross section has no normalized phase matrix.
+         ! Zero coefficients and LMAX=0 mark the finite no-scattering limit.
+         if (present(al1)) al1 = 0.0_wp
+         if (present(al2)) al2 = 0.0_wp
+         if (present(al3)) al3 = 0.0_wp
+         if (present(al4)) al4 = 0.0_wp
+         if (present(be1)) be1 = 0.0_wp
+         if (present(be2)) be2 = 0.0_wp
+         if (present(lmax)) lmax = 0
+         return
+      end if
       r = (aa - cc) / xnorm
 
       if (present(al1)) then; al1 = 0.0_wp; al1(1) = 1.0_wp; al1(3) = r/3.0_wp; end if
@@ -254,24 +270,23 @@ contains
                                qext_ori, qabs_ori, qsca_ori, qre_ori)
       ! Geometric-optics limit, x = 2 pi a_eff / lambda >> 1 (used for x > 50).
       !
-      ! Averaged (equal-volume sphere) outputs -- UNCHANGED from the original
-      ! sphere model, so the cross-section-only sweep in run_tmatrix.f90 stays
-      ! byte-identical:
-      !     Q_ext = 2 (extinction paradox),
-      !     Q_abs = 1 - exp(-4 k_i x)  (a single chord of length 2 a_eff
-      !                                 through an absorbing sphere; k_i=Im(m)),
-      !     Q_sca = Q_ext - Q_abs, g = 0,
-      ! and the optional scattering matrix stays isotropic (alpha_1 = 1, all
-      ! other coefficients zero, LMAX = 0).  eps_ba does not enter any of
-      ! these; it is consumed only by the orientation-resolved outputs below.
-      !
-      ! Domain of validity of the averaged g = 0 / isotropic-matrix
-      ! assumption: it is used only for x > 50, where the astrodust size
-      ! distribution has essentially no grains (dn/dloga has fallen by many
-      ! orders of magnitude by a_eff ~ 4 um), so the contribution to the
-      ! C_sca-weighted size integral is negligible at the wavelengths this
-      ! table targets.  It must NOT be relied on for a size distribution with
-      ! significant large-grain weight.
+      ! Scalar outputs use an equal-volume sphere approximation:
+      !     Q_ext = 2,
+      !     Q_abs = 1 - exp(-4 k_i x),
+      !     Q_sca = Q_ext - Q_abs.
+      ! The absorption uses one diameter chord and omits Fresnel reflection,
+      ! the impact-parameter integral, and the spheroid projected area.
+      ! It is not a validated geometric-optics absorption cross section.
+      ! The assigned g = 0 and isotropic matrix (LMAX = 0) are physically
+      ! incorrect for the forward diffraction of a large particle. There is
+      ! no large-x validity range for that angular prescription. Small weight
+      ! in a selected size distribution does not establish physical validity.
+      ! Callers also reach this approximation after T-matrix failure at x >= 1;
+      ! such failure does not establish the geometric-optics limit.
+      ! Treat scalar absorption and scattering from these entries as unverified.
+      ! A correction requires consistent angular scattering and cross sections;
+      ! changing only g would contradict the returned scattering matrix.
+      ! eps_ba enters only the orientation-resolved outputs below.
       !
       ! Optional orientation-resolved outputs qext_ori/qabs_ori/qsca_ori
       ! (length 3, jori index of sed/src/q_table_jori.f90) carry the two
@@ -308,8 +323,9 @@ contains
       real(wp), optional, intent(out) :: qext_ori(:), qabs_ori(:), qsca_ori(:)
       ! Birefringence twin: at geometric-optics order the extinction paradox is
       ! polarization-independent (Q_ext(2) = Q_ext(3)), so the birefringence
-      ! 0.5*(qre(3)-qre(2)) vanishes.  This is a documented approximation valid
-      ! in the x > 50 region, which carries negligible astrodust weight.
+      ! 0.5*(qre(3)-qre(2)) vanishes in this approximation. The assumption
+      ! is unverified even when a selected size distribution has little
+      ! large-grain weight.
       real(wp), optional, intent(out) :: qre_ori(:)
       real(wp) :: x, qabs
       real(wp) :: qe_o(3), qa_o(3)

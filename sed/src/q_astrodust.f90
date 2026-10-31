@@ -96,14 +96,15 @@ module q_astrodust_mod
    ! and the sphere genuinely different; there the T-matrix table is the
    ! model's optics.
    !
-   ! The eV -> um conversion uses hc = 1.23984 eV um, matching q_silicate_mod
-   ! and q_graphite_mod.  run_tmatrix.f90's reader rounds the same constant to
-   ! 1.2398, i.e. the two wavelength axes differ by 3e-5 in relative terms.
-   ! On this module's own EUV grid over 13.6-100 eV that shift moves Q_abs by
-   ! 2e-5 (median) and at most 3e-4; a wavelength landing inside one of the
-   ! table's absorption-edge steps can reach 5e-3, because the tabulation
-   ! itself steps there (the largest such step below 100 eV is 5% in k across
-   ! 0.03% in E, at 66.0 eV).  The table's ENERGY spacing is 3.6% at 13.6 eV
+   ! The eV -> um conversion uses the exact hc = 1.2398419843 eV um of the
+   ! constants module, as q_silicate_mod and q_graphite_mod do.  The T-matrix
+   ! reader (tmatrix/driver/read_index.f90) rounds it to 1.2398, i.e. the two
+   ! wavelength axes differ by 3e-5 in relative terms.
+   ! On this module's own EUV grid over 13.6-100 eV a shift of that size moves
+   ! Q_abs by 2e-5 (median) and at most 3e-4; a wavelength landing inside one
+   ! of the table's absorption-edge steps can reach 5e-3, because the
+   ! tabulation itself steps there (the largest such step below 100 eV is 5%
+   ! in k across 0.03% in E, at 66.0 eV).  The table's ENERGY spacing is 3.6% at 13.6 eV
    ! and 13% near 40 eV, with 0.02-0.6% patches bracketing the edges, so the
    ! edges and that spacing -- not the constant -- set the resolution here.
    !
@@ -118,7 +119,7 @@ module q_astrodust_mod
    ! does), after which any number of threads may call astrodust_index_at,
    ! q_astrodust_abs or q_astrodust_full at once.
 
-   use constants,   only: wp
+   use constants,   only: wp, hc_evum
    use sed_mathlib, only: interp
    use mie_mod,     only: mie
    use sed_paths,   only: sed_data_path
@@ -253,7 +254,7 @@ contains
          ad_eV(i)   = ener
          ad_n(i)    = 1.0_wp + rn1
          ad_k(i)    = rk
-         ad_wavl(i) = 1.23984_wp / ener     ! [um]
+         ad_wavl(i) = hc_evum / ener     ! [um]
       end do
       close(u)
       loaded = .true.

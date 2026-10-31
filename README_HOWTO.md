@@ -42,8 +42,9 @@ make                        # calc_enthalpy.x calc_sed.x calc_kext.x
 #
 #   solver    heuristic (default) | draine | equil | qm | qm_dbcon | qm_stati
 #   grid      euv          solve the ionizing band as well
-#   field     mathis_orig  literal Mathis 1983 (4000 K dilution 1e-13, CMB 2.9 K)
-#             logU=X       scale the Mathis field to U = 10^X
+#   field     hd23         Hensley & Draine 2023, eqs. (9) and (10)
+#             mathis_orig  literal Mathis 1983 (4000 K dilution 1e-13, CMB 2.9 K)
+#             logU=X       scale the selected stellar field to U = 10^X
 #             hardfield    fill the band below the Lyman limit with a diluted
 #                          1e5 K blackbody, so the field carries photons above
 #                          13.6 eV (implies euv)
@@ -60,6 +61,7 @@ make                        # calc_enthalpy.x calc_sed.x calc_kext.x
 ./calc_sed.x astrodust qm_stati nstate=500  # -> sed_astrodust_qm_stati_ns500_*.dat
 ./calc_sed.x astrodust gra_d16_spheroid     # PAH xi blend on the D16 b/a=1.4 spheroid
 ./calc_sed.x astrodust mathis_orig          # -> sed_astrodust_morig_*.dat
+./calc_sed.x astrodust hd23                 # -> sed_astrodust_hd23_*.dat
 ./calc_sed.x dl07 lmc2_10 draine euv        # -> sed_dl07_lmc2_10_euv_draine.dat
 ./calc_sed.x mrn draine euv                 # -> sed_mrn_euv_draine.dat
 ./calc_sed.x zubko euv hardfield            # -> sed_zubko_euv_hardfield.dat
@@ -119,10 +121,12 @@ make calc_polext.x         && ./calc_polext.x
 #   (4000 K dilution w_4000 = 1e-13, CMB 2.9 K) beside the default corrected
 #   one (1.65e-13, 2.725 K), so that the convention behind each published
 #   reference SED is settled by direct comparison.  The convention is fixed
-#   BEFORE the model is built, so the CMB temperature in the cooling term and
-#   the one in the field always agree.
+#   before the model is built. The complete field includes the CMB; GD
+#   cooling does not subtract a separate stored CMB integral.
 
 # the Monte Carlo cross-check
+# in an input namelist, set radiation_field = 'mathis' (default),
+# 'mathis_orig', or 'hd23'; the drivers write *_field.dat.
 cd ../mc && make && ./main_mc_sed.x run_sed_default.nml
 #                                   -> output/sed_default_S2_U1.585_irem_mc.dat
 
@@ -418,23 +422,66 @@ and −2.8%, Zubko 3.0% (6.0% with `euv`). Energy conservation improved, from
 
 **Any SED produced before this fix includes photons that were not in the field**,
 in the top enthalpy bin of every stochastically heated grain. Do not compare
-against those products without accounting for it. The polarized emission
-`lamI_pol` moves with the total, since both are the same P(T).
+against those products without accounting for it. Polarized emission
+`lamI_pol` also uses the changed P(T), but its opacity weights differ, so
+its fractional spectral response need not match the total.
 
 ## Stochastic heating
+
+For three-dimensional radiative transfer, the default `heuristic` solver with
+200 temperature points remains the quick setting. The energy-space `qm`
+solver defaults to `qm_nstate_default=200` enthalpy bins and uses the
+full radiation-field grid for photon absorption (`qm_nisrf_max=0`).
+`nstate=N` selects more bins. `nisrf=N` (N >= 2, fewer than the field's own
+points) coarsens only the photon absorption grid to N points equally spaced
+in ln(lambda). Each coarse point carries the interval's mean cross section
+and absorption-weighted mean field. A positive normalization factor preserves
+the full-grid absorbed-power integral when the coarse cross section and field
+are each linearly interpolated between points; that integral includes their
+cross terms. Cooling rates and the emitted spectrum always use the original
+full-resolution opacity grid. Coarsening smooths photon-field structure
+narrower than an interval, such as an absorption edge or field band limit.
+Opacity and radiation between adjacent samples use nonnegative linear
+interpolation. Negative or nonfinite physical rates are refused rather than
+clipped; `raw_negative_count_out` retains the diagnostic count. The original
+Draine `PARAB_INTERPL` is preserved for comparison and state-density
+interpolation, and is not used to calculate radiative rates.
+
+The `qm` solver labels its enthalpy bins with its own vibrational-mode
+enthalpy (Draine & Li 2001 silicate or carbonaceous mode spectra), not with
+the model's continuous `H(T)` that the `heuristic` and `draine` solvers use.
+Where a model's `H(T)` differs from that mode enthalpy (astrodust stage S2,
+for example) the `qm` spectrum differs from the other solvers by design. A
+grain the solver cannot solve is reported by reason in a
+`[QM refusals: ...]` line and solved by the GD matrix instead
+(`qm_fail_to_gd` in the summary line): an atom count above the cap for the
+explicit mode spectrum, a bin window that has not converged after 30 passes,
+no steady state, an invalid transition rate, or an emitted power more than
+5% from the absorbed one.
+
+A larger count is a resolution choice, not a convergence guarantee. Compare
+spectra and absorbed versus emitted power at successive settings.
+
+Library callers can set the public `stoch_qm_mod` variables
+`qm_nstate_default` and `qm_nisrf_max` before parallel solves. Do not mutate
+these shared settings while any solve is active. `build_astrodust` takes
+`NT_in`; `build_dust` uses 200 temperature points when its optional `NT_in`
+is omitted.
+
 
 Small grains do not reach a steady temperature: each absorbed ultraviolet
 photon drives a large transient excursion, so the emission is set by the
 temperature probability distribution `P(T)` rather than by a single `T_eq`.
-SEDust provides three independent solvers, all reading the same cross sections
-and enthalpy, and agreeing with one another to a few percent in every band from
-the near-infrared through the sub-millimeter.
+SEDust provides three stochastic solver choices. The GD solvers use the
+supplied cross sections and enthalpy; QM uses the same cross sections but
+constructs vibrational-mode energy states for grains that it solves.
+Agreement between their spectra depends on the grain and cooling treatment.
 
 | `stoch_method` | solver | cooling treatment |
 |---|---|---|
 | `'heuristic'` | Guhathakurta & Draine matrix, look-ahead grid narrowing | continuous (**default**) |
 | `'draine'`    | Guhathakurta & Draine matrix, iterative refinement | continuous |
-| `'qm'`        | energy-space transition matrix, BiCG sparse solve | thermal-discrete (`dbdis`), thermal-continuous (`dbcon`), or exact-statistical (`stati`) |
+| `'qm'`        | energy-space transition matrix, GTH direct steady state | thermal-discrete (`dbdis`), thermal-continuous (`dbcon`), or exact-statistical (`stati`) |
 | `'equil'`     | equilibrium temperature, no stochastic solve | n/a |
 
 The three `'qm'` cooling treatments differ in how the downward rates are
@@ -445,23 +492,77 @@ collapses the cooling into a continuous term. `stati` is the exact-statistical
 density-of-states ratio `g_f/g_i`, counted exactly by the Beyer-Swinehart
 recursion over the grain's mode spectrum, and the emission kernel is
 degeneracy-weighted rather than a bin blackbody -- no grain temperature enters
-at all. The exact count is feasible only for the smallest carbonaceous grains:
-the path is capped at `a <= 25 A`, and in the production configuration it runs
-on PAHs with `N_C <= 116` (`a <= 6.3 A`) while every other grain, silicates
-included, reverts to `dbdis` within the same run. The total SED it produces
-agrees with the thermal-discrete one to 0.02% band-integrated, with the
-largest pointwise differences confined below 1.5 um where the SED is orders of
-magnitude under its peak. Select it with
+at all. The exact-statistical kernel requires a PAH radius of at most 25 A
+and counted state degeneracies. A positive minimum enthalpy or the counting
+work limits can make those degeneracies unavailable; that grain then uses
+`dbdis`, as do non-PAHs and larger PAHs. Rejected QM grains can use GD, and
+equilibrium grains use neither QM cooling method. A `qm_stati` spectrum can
+therefore combine these treatments. Each QM SED file records the actual
+`dbcon`, `dbdis`, and `stati` grain counts by emission channel in its header;
+the astrodust PAH header separates neutral and cation counts. These counts
+include successful QM solves only, excluding equilibrium grains and QM
+refusals solved by GD. Select it with
 `./calc_sed.x astrodust qm_stati [nstate=N]` -- or with the same word on
 `./calc_sed.x dl07` and `./calc_sed.x zubko`, whose carbonaceous populations reach the
 same solver.
 
+The `dbcon` continuous-cooling approximation needs a spectral check for
+weakly heated PAHs. In the Zubko BARE-GR-S calculation with Mathis U=1 and
+a 1e5 K hard component replacing the field below 0.0912 um, the
+300-3000 um PAH power from `qm_dbcon nisrf=150` is 1.22699 times the
+heuristic result, while the total is 1.00228 times it. With the same QM
+state count and field sampling, `qm` (`dbdis`) gives a PAH ratio of 0.98146.
+These measured ratios describe that input case, not a general error bound.
+Compare the cooling treatments and refine the state and radiation grids
+when interpreting a faint PAH far-infrared tail. In this same case, the
+3.5 A PAH emitted/absorbed ratios at 200 states and `nisrf=150` are
+0.996584 (`dbcon`), 0.998769 (`dbdis`), and 1.000135 (`stati`). These
+finite-grid closure measurements are separate from spectral-shape accuracy.
+
 The Monte Carlo solver in `mc/` follows Draine & Anderson (1985) and tracks
 `T(t)` through individual absorption events. It shares no code with the matrix
-solvers, which is what makes it a useful check on them.
+solvers, which makes it a useful check on them.
 
-Grains whose equilibrium enthalpy exceeds 150 eV are placed at `T_eq` and skip
-the stochastic solve; the gate propagates forward in grain size.
+`main_mc.x`, `main_mc_sed.x`, and `main_pT_compare.x` now start each simulated
+grain at the radiative-equilibrium temperature of its supplied field and
+advance a preparation trajectory before recording. The default preparation
+has the fixed duration `T_w = max(10 * tau_relax, 100 / rate_event)` when the
+discrete photon rate is positive. It lasts `10 * tau_relax` when that rate is
+zero. The second term corresponds to 100 **expected** photon events; the
+actual event count varies. These defaults set the preparation duration and
+do not establish statistical convergence by themselves. The event rate is
+constant with temperature, so photon arrivals form a homogeneous Poisson
+process. Recording begins at the predetermined time `T_w`, which need not
+coincide with an absorption event. The recording engine samples a fresh
+exponential residual waiting time, consistent with Poisson memorylessness.
+Preparation is excluded from the requested `N_events` or `t_max` recording
+budget and from the recorded histogram, absorption, emission, and stored-energy
+change. Each run logs `[mc_warmup]` with grain radius, initial equilibrium
+temperature, recording temperature, preparation time, and the actual number of
+preparation events. The SED log also identifies the composition.
+
+In `main_mc.x`, omit `T_init` for stationary recording. An explicit positive
+`T_init` requests a transient experiment and skips preparation. The driver
+rejects zero `T_init`, an unknown `mc_engine_kind`, and an unreadable or
+malformed input namelist with a nonzero exit status. For example:
+
+```fortran
+&mc_input
+  a_um=0.01, U_isrf=1.0, comp='gra_dl01', N_events=50000,
+  mc_engine_kind='2pass', out_prefix='output/run01'
+/
+```
+
+The `buffered` choice measures the complete sample count with a two-pass run,
+then replays from the same prepared temperature and random state with exactly
+that buffer capacity. It rejects counts above one billion samples (about
+16 GB for two real arrays) and a replay mismatch. The OpenMP SED builder
+serializes capacity measurement and buffered execution to bound memory use.
+The default engine is `2pass`.
+
+In the default hybrid SED, grains above the 150 eV equilibrium-enthalpy gate
+use equilibrium emission and skip MC. In all-MC mode, every simulated grain,
+including those above this gate, follows the preparation procedure.
 
 ## Polarization
 

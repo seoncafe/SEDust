@@ -22,7 +22,7 @@ module dust_model_mod
    !                      not contribute to polarization (NA)
    !   kappB    [..]      Planck-integral table used by calc_P/calc_Teq (NT, NA)
    !   H        [erg]     grain enthalpy (NT, NA)
-   !   kappCMB  [..]      CMB-pumped term for calc_P (NA)
+   !   kappCMB  [..]      legacy CMB integral above 1 mm (NA); not used in cooling
    !   rho_bulk [g/cm^3]  solid mass density of the grain material, which turns
    !                      the binned number per H into a mass per H
    !

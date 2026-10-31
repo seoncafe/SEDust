@@ -11,7 +11,7 @@ module q_silicate_mod
    ! Reads the Draine (2003) silicate dielectric function and drives the
    ! silicate Mie call.
 
-   use constants, only: wp
+   use constants, only: wp, hc_evum
    use sed_mathlib,   only: interp
    use mie_mod,   only: mie
    use sed_paths, only: sed_data_path
@@ -77,7 +77,7 @@ contains
          sil_eV(i)   = ener
          sil_n(i)    = 1.0_wp + rn1
          sil_k(i)    = rk
-         sil_wavl(i) = 1.23984_wp / ener     ! [um]
+         sil_wavl(i) = hc_evum / ener     ! [um]
       end do
       close(u)
       load_ok = .true.

@@ -31,6 +31,7 @@ module mc_grain_type
       integer  :: NCDF = 0
       real(wp), allocatable :: cdf_F(:)
       real(wp), allocatable :: cdf_lam(:)
+      real(wp), allocatable :: cdf_density(:)      ! normalized photon density at knots
 
       ! ---- thermo tables ----
       integer  :: NT = 0
